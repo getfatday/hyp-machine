@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(./{{RAW_DIR}}/**)",
+      "Edit(./{{JOURNAL_DIR}}/**)",
+      "Edit(./{{JOURNAL_FILE}})"
+    ]
+  }
+}

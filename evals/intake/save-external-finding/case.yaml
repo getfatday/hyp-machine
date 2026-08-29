@@ -1,0 +1,60 @@
+schema_version: "1.0"
+name: save-external-finding
+description: >
+  A user shares an external finding with a source URL and asks to save it.
+  The intake skill should file a minimal note with the URL attached, add an
+  index line, and record one write-once journal fragment.
+tags: [intake, capture]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p research/raw research/notes experiments/journal-fragments
+    printf '%s\n' '# Research index' '' 'Catalog of the wiki layer. One line per page; updated on every capture. Raw sources listed last' 'and never edited.' '' '## Pages' '' '(none yet)' '' '## Notes' '' '(none yet)' '' '## Raw sources (immutable)' '' '(none yet)' > research/index.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    I just read a useful finding on a public engineering blog: teams that keep a
+    one-line-per-page index over their internal notes locate documents about twice
+    as fast as teams that rely on search alone. Save that in this repo so we don't
+    lose it. Source: https://example.com/notes-index-study
+  max_turns: 40
+  timeout_seconds: 600
+  allowed_tools: ["Write", "Edit", "Bash"]
+graders:
+  - type: regex
+    name: source-url-kept
+    target: files
+    pattern: 'example\.com/notes-index-study'
+    match: contains
+  - type: file_exists
+    name: journal-fragment-written
+    path: "experiments/journal-fragments/*.md"
+    exists: true
+  - type: regex
+    name: index-line-added
+    target: { source: file, path: research/index.md }
+    pattern: '\]\('
+    match: contains
+    weight: 0.5
+  - type: llm
+    name: filing-quality
+    focus: files
+    criteria: |
+      Score 1.0 only if ALL of the following hold, else score proportionally lower:
+      1. A new markdown file was created under research/ (not at the repo root, not
+         under research/raw/) carrying the finding, and it includes the source URL
+         https://example.com/notes-index-study.
+      2. The file is minimal — the finding and its source, no invented sections,
+         no speculative roadmap.
+      3. research/index.md gained a line referencing the new file.
+      4. A journal fragment file exists under experiments/journal-fragments/ with
+         YAML frontmatter containing an integer `id:` and a `date:`, describing
+         what was captured and where.
+      5. No PRE-EXISTING file under research/raw/ was modified — a file ADDED
+         under research/raw/ by this capture is expected and legal; this
+         criterion fails only if a research/raw/ file that existed before the
+         capture was changed.
+expected_outcome: >
+  A minimal note under research/ with the source URL, one new index line, and one
+  write-once journal fragment recording the capture.

@@ -1,0 +1,56 @@
+schema_version: "1.0"
+name: testable-idea-at-capture-profile
+description: >
+  The user shares a testable hunch. With the repository at the capture profile
+  (the experiments layer not active — no hypotheses scaffold exists), the
+  intake skill's conditional branch should file it as a note tagged `testable`
+  — not fabricate an experiment scaffold, and not drop the idea into an
+  untagged loose note.
+tags: [intake, capture, conditional-branch]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p .claude research/raw research/notes experiments/journal-fragments
+    printf '%s\n' '{' '  "profile": "capture",' '  "raw_dir": "research/raw",' '  "notes_dir": "research/notes",' '  "index_file": "research/index.md",' '  "journal_dir": "experiments/journal-fragments",' '  "journal_file": "experiments/journal.md",' '  "compiled_file": "experiments/journal-compiled.md"' '}' > .claude/hyp.json
+    printf '%s\n' '# Research index' '' 'Catalog of the wiki layer. One line per page; updated on every capture. Raw sources listed last' 'and never edited.' '' '## Pages' '' '(none yet)' '' '## Notes' '' '(none yet)' '' '## Raw sources (immutable)' '' '(none yet)' > research/index.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    I think requiring two independent reviews before merging might cut our
+    escaped-bug rate in half. Write that down in the repo now — create the
+    files directly, wherever your capture process says they belong; I'm away,
+    so don't ask me where.
+  max_turns: 40
+  timeout_seconds: 600
+  allowed_tools: ["Write", "Edit", "Bash"]
+graders:
+  - type: regex
+    name: tagged-testable
+    target: files
+    pattern: 'testable'
+    flags: i
+    match: contains
+  - type: file_exists
+    name: journal-fragment-written
+    path: "experiments/journal-fragments/*.md"
+    exists: true
+  - type: llm
+    name: conditional-branch-quality
+    focus: files
+    criteria: |
+      Score 1.0 only if ALL of the following hold, else score proportionally lower:
+      1. The idea was recognized as testable and filed as a note under
+         research/notes/ with the word `testable` on or near its first line.
+      2. No experiment or hypothesis scaffold was fabricated: no hypotheses/
+         directory, no spec file with assertions/budget sections, no claim that an
+         experiment was registered (the experiments profile is not active in this
+         repository).
+      3. The note preserves the hunch (two independent reviews before merge; the
+         expected effect on escaped bugs) so it can graduate to a spec later.
+      4. A journal fragment file exists under experiments/journal-fragments/ with
+         YAML frontmatter containing an integer `id:` and a `date:`.
+expected_outcome: >
+  A note under research/notes/ tagged `testable` carrying the hunch, indexed and
+  journaled — no fabricated experiment scaffold, because the experiments profile
+  is not active here.

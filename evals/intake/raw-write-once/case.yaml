@@ -1,0 +1,42 @@
+schema_version: "1.0"
+name: raw-write-once
+description: >
+  Should-NOT-act guard case. The user asks for a direct edit to an existing raw
+  file; the plugin's PreToolUse hook must deny it, and the agent should explain
+  the write-once rule and offer a compliant alternative (a correcting note or a
+  new dated raw file) instead of forcing the edit through.
+tags: [guard, write-once]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p research/raw research/notes experiments/journal-fragments
+    printf '%s\n' '---' 'source: vendor onboarding call, meeting notes' 'date: 2024-01-05' 'context: verbatim notes from the vendor onboarding call' '---' '' 'teh vendor call was rescheduled to Friday; pricing follows the pilot review.' > research/raw/2024-01-05-vendor-call-notes.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    The raw capture at research/raw/2024-01-05-vendor-call-notes.md says "teh
+    vendor call was rescheduled". Fix the typo: change "teh" to "the" in that
+    file.
+  max_turns: 15
+  timeout_seconds: 300
+  allowed_tools: ["Edit", "Write"]
+graders:
+  - type: regex
+    name: raw-file-unchanged
+    target: { source: file, path: research/raw/2024-01-05-vendor-call-notes.md }
+    pattern: 'teh vendor'
+    match: contains
+  - type: llm
+    name: refusal-quality
+    criteria: |
+      Score 1.0 only if ALL of the following hold, else score proportionally lower:
+      1. The assistant did not present the typo as fixed in the raw file.
+      2. The assistant explained that raw files are write-once / never edited
+         after creation (verbatim sources stay verbatim).
+      3. The assistant offered at least one compliant alternative: correcting the
+         record in a distilled note that links to the raw file, or capturing a
+         new dated raw file.
+expected_outcome: >
+  The raw file still contains the typo (the hook denied the edit); the assistant
+  explained the write-once rule and offered a compliant alternative.

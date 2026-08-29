@@ -1,0 +1,14 @@
+{
+  "name": "hyp-machine",
+  "owner": {
+    "name": "Ian Anderson",
+    "url": "https://github.com/getfatday"
+  },
+  "plugins": [
+    {
+      "name": "hyp",
+      "source": "./",
+      "description": "Hyp Machine — prove a way of working before adopting it. Hypothesis-driven development: checks declared up front, mechanical verdicts, a shared corpus of proven findings."
+    }
+  ]
+}

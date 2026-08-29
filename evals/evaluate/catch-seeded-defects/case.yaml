@@ -1,0 +1,51 @@
+schema_version: "1.0"
+name: evaluate-catch-seeded-defects
+description: >
+  Should-act case. The fixture's operating model carries two seeded defects —
+  a command reading a read model no node declares (dangling reference), and an
+  event with no physical representation (unreified). The evaluate skill should
+  catch both with evidence pointers and fix nothing.
+tags: [evaluate, modeling, should-act]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p .claude operating-model/demo/actors operating-model/demo/commands operating-model/demo/events operating-model/demo/readmodels operating-model/demo/policies
+    printf '%s\n' '{"profile": "modeling", "model_dir": "operating-model", "context": "demo"}' > .claude/hyp.json
+    printf '%s\n' '# Operating model — demo context' '' '## Actors' '- actor/support-agent — answers customer tickets' '' '## Commands' '- command/handle-ticket — read the queue, reply, resolve' '' '## Events' '- event/ticket-resolved — a ticket reached resolved state' '- event/ticket-escalated — a ticket was escalated' '' '## Read models' '- read-model/open-tickets — tickets awaiting a reply' > operating-model/demo/model.md
+    printf '%s\n' '---' 'id: actor/support-agent' 'type: actor' 'context: demo' 'summary: Answers customer tickets.' 'status: current' '---' > operating-model/demo/actors/support-agent.md
+    printf '%s\n' '---' 'id: command/handle-ticket' 'type: command' 'context: demo' 'summary: Read the ticket queue, reply, and resolve.' 'status: current' 'issued-by: actor/support-agent' 'reads: [read-model/ticket-queue]' 'emits: [event/ticket-resolved]' '---' > operating-model/demo/commands/handle-ticket.md
+    printf '%s\n' '---' 'id: event/ticket-resolved' 'type: event' 'context: demo' 'summary: A ticket reached resolved state.' 'status: current' 'representation: file(tickets/resolved/<id>.md)' 'emitted-by: [command/handle-ticket]' '---' > operating-model/demo/events/ticket-resolved.md
+    printf '%s\n' '---' 'id: event/ticket-escalated' 'type: event' 'context: demo' 'summary: A ticket was escalated to engineering.' 'status: current' 'emitted-by: [command/handle-ticket]' '---' > operating-model/demo/events/ticket-escalated.md
+    printf '%s\n' '---' 'id: read-model/open-tickets' 'type: read-model' 'context: demo' 'summary: Tickets awaiting a reply.' 'status: current' 'implementation: file(tickets/open/)' 'maintainer: command/handle-ticket' '---' > operating-model/demo/readmodels/open-tickets.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    Audit the operating model in operating-model/demo/ for defects (evaluate
+    discipline): schema violations, dangling references, unreified events,
+    contradictions. Write one finding per line to findings.md — node, defect
+    class, evidence pointer. Fix nothing.
+  max_turns: 25
+  timeout_seconds: 600
+  allowed_tools: ["Read", "Write", "Bash", "Glob", "Grep"]
+graders:
+  - type: file_exists
+    name: findings-written
+    path: "findings.md"
+    exists: true
+  - type: regex
+    name: dangling-reference-caught
+    target: { source: file, path: findings.md }
+    pattern: 'ticket-queue'
+    match: contains
+  - type: regex
+    name: unreified-event-caught
+    target: { source: file, path: findings.md }
+    pattern: 'ticket-escalated'
+    match: contains
+expected_outcome: >
+  findings.md names (at least) the dangling read-model reference
+  (read-model/ticket-queue is read by command/handle-ticket but no such node
+  exists) and the unreified event (event/ticket-escalated has no
+  representation), each with an evidence pointer; nothing in the model was
+  edited.

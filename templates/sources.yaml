@@ -1,0 +1,22 @@
+# Evidence-source manifest for adopt (optional; empty by default).
+#
+# Each entry names one evidence source the adopt skill may mine, normalized to a snapshot
+# COMMITTED in this repository — runs stay offline-deterministic, and ground truth is never
+# fetched live. Kinds:
+#
+#   repo-tree      the working tree itself (docs, scripts, CI, hooks, templates)
+#   git-history    the repository's commit history
+#   session-jsonl  recorded agent session transcripts (JSONL)
+#   doc-corpus     a snapshot of documentation beyond the repo   (adapter not built yet)
+#   github         issues/PRs/reviews normalized to transcripts  (adapter not built yet)
+#   slack          conversation threads with permalinks          (adapter not built yet)
+#
+# The first three kinds are the proven slice adopt reads today. The last three are a
+# documented seam: each needs its own snapshot-normalizer adapter before use, and any
+# people-bearing source must pseudonymize third parties at capture ([P2], [P3], ...).
+#
+# Entry shape:
+#   - kind: session-jsonl
+#     locator: <where the source lives (path, URL, channel)>
+#     snapshot: <committed path holding the normalized snapshot>
+sources: []

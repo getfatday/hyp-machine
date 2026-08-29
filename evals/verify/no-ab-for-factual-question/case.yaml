@@ -1,0 +1,32 @@
+schema_version: "1.0"
+name: verify-no-ab-for-factual-question
+description: >
+  Should-NOT-act guard case. A plain factual question about the repo must be
+  answered directly — no A/B harness, no hypothesis spec, no experiment
+  scaffolding for something a file read answers.
+tags: [verify, modeling, should-not-act, guard]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p .github/workflows
+    printf '%s\n' 'name: nightly' 'on:' '  schedule:' '    - cron: "30 2 * * *"' 'jobs:' '  build:' '    runs-on: ubuntu-latest' '    steps:' '      - run: echo nightly' > .github/workflows/nightly.yml
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    What time does our nightly CI workflow run?
+  max_turns: 10
+  timeout_seconds: 300
+  allowed_tools: ["Read", "Bash", "Glob", "Grep"]
+graders:
+  - type: file_exists
+    name: no-spec-scaffolded
+    path: "hypotheses"
+    exists: false
+  - type: file_exists
+    name: no-runs-scaffolded
+    path: "experiments"
+    exists: false
+expected_outcome: >
+  A direct answer (02:30 UTC per the cron line) with no hypothesis spec,
+  experiment directory, or A/B harness created.

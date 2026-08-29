@@ -1,0 +1,42 @@
+schema_version: "1.0"
+name: run-execute-compiled-flow
+description: >
+  Should-act case. A compiled flow triple (portable runner + GWT tests
+  manifest) ships in the fixture next to a small operating model. The run
+  skill should execute the portable runner to its mechanical verdict and
+  report per-case results — grading from the results file, never from
+  impressions.
+tags: [run, modeling, should-act]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p .claude operating-model/demo/commands operating-model/demo/compiled inbox
+    printf '%s\n' '{"profile": "modeling", "model_dir": "operating-model", "context": "demo"}' > .claude/hyp.json
+    printf '%s\n' '---' 'id: command/greet-visitor' 'type: command' 'context: demo' 'summary: Greet a new visitor by writing a reply file.' 'status: current' 'issued-by: actor/host' 'emits: [event/visitor-greeted]' '---' > operating-model/demo/commands/greet-visitor.md
+    printf '%s\n' 'hello from a visitor' > inbox/request.txt
+    printf '%s\n' '{' '  "schema_version": "gwt-tests/v1",' '  "flow": "slice/greet-visitor",' '  "cases": [' '    {"id": "greet--happy-path",' '     "given": [{"kind": "bash", "cmd": "test -f inbox/request.txt"}],' '     "when": {"command": "command/greet-visitor"},' '     "then": [{"kind": "check", "op": "contains", "target": "outbox/reply.txt", "value": "hello"},' '              {"kind": "check", "op": "nonempty", "target": "outbox/reply.txt"}]}' '  ]' '}' > operating-model/demo/compiled/greet-visitor.tests.json
+    printf '%s\n' '#!/usr/bin/env python3' '"""COMPILED ARTIFACT - do not hand-edit; regenerate from the operating-model nodes.' 'source: command/greet-visitor (portable runner target). Deterministic tier-D flow:' 'every step is a subprocess; zero model calls."""' 'import json, os, subprocess, sys' '' 'HERE = os.path.dirname(os.path.abspath(__file__))' 'ROOT = os.getcwd()' '' 'def main():' '    tests = json.load(open(os.path.join(HERE, "greet-visitor.tests.json")))' '    results = {"flow": tests["flow"], "cases": [], "verdict": "PASS"}' '    for case in tests["cases"]:' '        ok = True' '        for g in case.get("given", []):' '            if g["kind"] == "bash":' '                ok = ok and subprocess.run(g["cmd"], shell=True, cwd=ROOT).returncode == 0' '        os.makedirs(os.path.join(ROOT, "outbox"), exist_ok=True)' '        body = open(os.path.join(ROOT, "inbox", "request.txt")).read().strip()' '        with open(os.path.join(ROOT, "outbox", "reply.txt"), "w") as f:' '            f.write("re: " + body + "\\n")' '        for chk in case["then"]:' '            target = os.path.join(ROOT, chk["target"])' '            data = open(target).read() if os.path.isfile(target) else ""' '            if chk["op"] == "contains":' '                ok = ok and (chk["value"] in data)' '            elif chk["op"] == "nonempty":' '                ok = ok and bool(data.strip())' '        results["cases"].append({"id": case["id"], "pass": ok})' '        if not ok:' '            results["verdict"] = "FAIL"' '    out = os.path.join(HERE, "greet-visitor.results.json")' '    with open(out, "w") as f:' '        json.dump(results, f, indent=1)' '    print("VERDICT: " + results["verdict"] + " (" + str(sum(1 for c in results["cases"] if c["pass"])) + "/" + str(len(results["cases"])) + " cases)")' '    return 0 if results["verdict"] == "PASS" else 1' '' 'if __name__ == "__main__":' '    sys.exit(main())' > operating-model/demo/compiled/greet-visitor.runner.py
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    Execute our compiled greet-visitor flow to its mechanical verdict and
+    report the per-case results.
+  max_turns: 15
+  timeout_seconds: 600
+  allowed_tools: ["Read", "Bash", "Glob", "Grep"]
+graders:
+  - type: file_exists
+    name: results-written
+    path: "operating-model/demo/compiled/greet-visitor.results.json"
+    exists: true
+  - type: regex
+    name: verdict-pass-recorded
+    target: { source: file, path: operating-model/demo/compiled/greet-visitor.results.json }
+    pattern: '"verdict": "PASS"'
+    match: contains
+expected_outcome: >
+  The portable runner executed (python3
+  operating-model/demo/compiled/greet-visitor.runner.py), its results file
+  records the GWT case passing and verdict PASS, and the report cites the
+  per-case results from the results file.

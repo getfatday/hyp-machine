@@ -1,0 +1,786 @@
+<!-- decisions-template.html — the decision-surface template the hyp compiler re-emits.
+
+     PROVENANCE — port of the source lab's scripts/decisions-template.html (decision
+     kit, 2026-08-28). The production decisions.html at your repo root is REGENERATED
+     whole by scripts/compile-dashboard.py from the ledger's decision +
+     decision-resolution rows: the compiler injects SNAPSHOT / REPO / DECISIONS and the
+     stamp line below at every render. The DECISIONS array in this file is a neutral
+     sample so the template stays previewable on its own; it is replaced at every
+     compile. Only the sample data, the stamp/empty-state placeholder text, and the
+     home-directory evidence-link expansion (dropped: consumer-generic) differ from the
+     lab copy — layout, card grammar, gloss tooltips, keyboard handling, and the
+     resolution tray are identical.
+
+     Transport (static-file form): every action composes the exact
+       python3 scripts/decisions.py resolve DEC-NNN ...
+     command, collapses the card to a receipt, and stages the command in the visible
+     pending-resolutions tray.
+
+     Demo states: open with ?state=empty for the zero-open compile, ?state=resolved for
+     the all-receipts view. No query string renders the sample queue. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hyp Machine — decisions waiting</title>
+<style>
+  :root {
+    --fs-0: 1.25rem; --fs-1: 1rem; --fs-2: .8rem; --fs-3: .64rem;
+    --bg: #FAFAF7; --ink: #1A1A1A; --accent: #2563EB; --accent-down: #1D4ED8;
+    --hot: #C2185B; --chip: #DDDDD6;
+    --row-border: #e2e2dc; --pane-border: #d8d8d2; --ctl-border: #767676;
+    --muted: #556; --meta: #667; --block: #7a5b00;
+    --err: #B3261E; --err-bg: #FDECEA; --ok: #2e7d32; --ok-bg: #eef6ee;
+    --pick-tint: #EAF1FE;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: var(--fs-2); line-height: 1.45;
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  ::selection { background: var(--pick-tint); }
+  textarea, input { caret-color: var(--accent); }
+  ::placeholder { color: var(--meta); opacity: 1; }
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden;
+        clip: rect(0 0 0 0); white-space: nowrap; }
+
+  main { max-width: 760px; margin: 0 0 96px 48px; padding-top: 28px; }
+  @media (max-width: 860px) { main { margin: 0 16px 96px; } }
+
+  /* ---------- page head ---------- */
+  .brand { font-size: var(--fs-2); font-weight: 700; letter-spacing: .01em; }
+  h1 { font-size: var(--fs-0); font-weight: 700; margin: 6px 0 4px; }
+  h1 .counts { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .subtitle { color: var(--muted); font-size: var(--fs-2); max-width: 620px; margin: 0 0 6px; }
+  .stamp { color: var(--meta); font-size: var(--fs-3); margin: 0 0 4px;
+           font-variant-numeric: tabular-nums; }
+
+  /* ---------- groups ---------- */
+  section.group { margin-top: 22px; }
+  .group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .group-label { font-size: var(--fs-1); font-weight: 700; margin: 0; }
+  .group-desc { color: var(--muted); font-size: var(--fs-3); margin: 0; }
+
+  /* ---------- chips + badges ---------- */
+  .chip {
+    display: inline-block; font-size: var(--fs-3); border-radius: 999px; padding: 2px 8px;
+    border: 1px solid var(--ink); background: #fff; color: var(--ink); white-space: nowrap;
+  }
+  .chip.hotfill { background: var(--hot); border-color: var(--hot); color: #fff; }
+  .chip.inkfill { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .chip.quietline { border-color: var(--meta); color: var(--muted); }
+  .chip.blocks { border-color: var(--block); color: var(--block); }
+  .chip.done { border-color: var(--ok); color: var(--ok); }
+  .chip.denied { border-color: var(--err); color: var(--err); }
+  .chip.commented { border-color: var(--accent); color: var(--accent); }
+
+  /* ---------- decision card ---------- */
+  ol.cards { list-style: none; margin: 0; padding: 0; }
+  li.cardwrap { display: grid; grid-template-rows: 1fr; }
+  li.cardwrap > .cardpad { min-height: 0; padding-bottom: 12px; }
+  article.card {
+    background: #fff; border: 1px solid var(--row-border); border-radius: 8px;
+    padding: 16px 16px 14px;
+  }
+  article.card:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .chiprow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .decid { font-size: var(--fs-3); font-weight: 700; color: var(--meta);
+           letter-spacing: .02em; font-variant-numeric: tabular-nums; }
+  .chiprow .grow { flex: 1; }
+  .age { font-size: var(--fs-3); color: var(--meta); white-space: nowrap;
+         font-variant-numeric: tabular-nums; }
+  h3.question { font-size: var(--fs-1); font-weight: 700; line-height: 1.4;
+                margin: 10px 0 0; max-width: 620px; }
+
+  fieldset.options { margin: 10px 0 0; padding: 0; border: 0; }
+  .opt {
+    display: flex; gap: 10px; align-items: baseline; border-radius: 6px; padding: 6px 8px;
+    cursor: pointer; max-width: 620px;
+  }
+  .opt:hover { background: #f7f7f4; }
+  .opt.picked { background: var(--pick-tint); }
+  .opt input { width: 14px; height: 14px; accent-color: var(--accent); flex: 0 0 auto;
+               cursor: pointer; margin: 0; position: relative; top: 1px; }
+  .opt .lbl { font-weight: 700; }
+  .opt .what { color: #444; }
+  .opt .rev { color: var(--meta); }
+  .opt .rev b { color: var(--ink); font-weight: 700; }
+  .opt .chip.rec { margin-left: 6px; position: relative; top: -1px; }
+  .askline { font-size: var(--fs-2); color: var(--muted); margin: 6px 0 0; max-width: 620px; }
+  .default-line { margin: 10px 0 0; font-size: var(--fs-2); color: var(--ink); max-width: 620px; }
+  .default-line .lead { font-weight: 700; letter-spacing: .02em; color: var(--meta); font-size: var(--fs-3); }
+  .gloss { text-decoration: underline dotted var(--meta); text-underline-offset: 2px; cursor: help; }
+
+  .other { margin: 8px 0 0; max-width: 620px; }
+  textarea {
+    width: 100%; min-height: 40px; font-family: inherit; font-size: var(--fs-2);
+    border: 1px solid var(--ctl-border); border-radius: 6px; padding: 8px; background: #fff;
+    color: var(--ink); resize: vertical; display: block;
+  }
+  textarea:focus { min-height: 64px; }
+  textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+
+  .cardmeta { margin: 10px 0 0; max-width: 620px; }
+  .cardmeta p { margin: 2px 0; font-size: var(--fs-3); color: var(--muted);
+                overflow-wrap: anywhere; }
+  .cardmeta .lead { font-weight: 700; color: var(--meta); letter-spacing: .02em; }
+  .cardmeta .blocked { font-weight: 700; color: var(--block); }
+  a.evlink { color: var(--accent); text-decoration: underline; }
+  .sha { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+         font-size: .95em; }
+
+  .answer { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            border-top: 1px solid var(--row-border); margin-top: 12px; padding-top: 12px; }
+  button { font-family: inherit; }
+  button.primary {
+    font-size: var(--fs-2); font-weight: 700; background: var(--accent); color: #fff;
+    border: 1px solid var(--accent); border-radius: 6px; padding: 6px 14px; cursor: pointer;
+  }
+  button.primary:hover { background: var(--accent-down); border-color: var(--accent-down); }
+  button.quiet {
+    font-size: var(--fs-2); background: #fff; color: var(--ink);
+    border: 1px solid var(--ctl-border); border-radius: 6px; padding: 5px 12px; cursor: pointer;
+  }
+  button.quiet:hover { background: #f0f0ea; }
+  button.quiet.deny { color: var(--err); border-color: var(--err); }
+  button.quiet.deny:hover { background: var(--err-bg); }
+  button:disabled { opacity: .5; pointer-events: none; }
+  button.linky {
+    font-size: var(--fs-3); color: var(--accent); background: none; border: 0;
+    padding: 2px; cursor: pointer; text-decoration: underline;
+  }
+  .cmd {
+    flex: 1 1 100%; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: var(--fs-3); color: var(--meta); overflow-wrap: anywhere; margin-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .cmd .k { font-weight: 700; letter-spacing: .02em; }
+
+  /* queued comment (stays open) */
+  .qcard { background: #fff; border: 1px solid var(--row-border); border-radius: 8px;
+           padding: 8px 10px; margin: 8px 0 0; max-width: 620px; }
+  .qcard .who { font-size: var(--fs-3); color: var(--meta); font-weight: 700; margin-bottom: 2px; }
+  .qcard .acts { margin-top: 4px; }
+
+  /* ---------- receipts ---------- */
+  ul.receipts { list-style: none; margin: 0; padding: 0; }
+  li.receipt {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    background: #fff; border: 1px solid var(--row-border); border-radius: 8px;
+    padding: 8px 12px; margin-bottom: 6px; font-size: var(--fs-2);
+    overflow-wrap: anywhere;
+  }
+  li.receipt .what { color: var(--muted); }
+  li.receipt .provenance { flex-basis: 100%; font-size: var(--fs-3); color: var(--meta);
+                           font-variant-numeric: tabular-nums; }
+
+  /* ---------- empty state ---------- */
+  #allclear { display: none; background: #fff; border: 1px solid var(--row-border);
+              border-radius: 8px; padding: 28px 24px; max-width: 620px; margin-top: 8px; }
+  #allclear.on { display: block; }
+  #allclear .mark { color: var(--ok); display: inline-flex; }
+  #allclear h3 { font-size: var(--fs-1); font-weight: 700; margin: 8px 0 4px; }
+  #allclear p { color: var(--muted); font-size: var(--fs-2); margin: 4px 0 0; max-width: 520px; }
+
+  /* ---------- tray ---------- */
+  #tray-section { margin-top: 26px; }
+  #tray-empty { color: var(--meta); font-size: var(--fs-2); margin: 6px 0 0; max-width: 620px; }
+  #tray {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: var(--fs-3); line-height: 1.7; min-height: 56px; margin-top: 8px;
+    background: #fff;
+  }
+  #tray-acts { display: flex; gap: 8px; margin-top: 6px; }
+
+  /* card -> receipt collapse: the one authored motion (grid rows, not layout props) */
+  li.cardwrap {
+    transition: grid-template-rows 220ms cubic-bezier(.16,1,.3,1),
+                opacity 220ms cubic-bezier(.16,1,.3,1);
+  }
+  li.cardwrap.leaving { grid-template-rows: 0fr; opacity: 0; }
+  li.cardwrap.leaving > .cardpad { overflow: hidden; }
+  li.receipt.arriving { animation: settle 220ms cubic-bezier(.16,1,.3,1); }
+  @keyframes settle { from { opacity: 0; transform: translateY(-3px); } }
+  @media (prefers-reduced-motion: reduce) {
+    li.cardwrap { transition: none; }
+    li.receipt.arriving { animation: none; }
+  }
+
+  #hint { position: fixed; left: 12px; bottom: 8px; font-size: var(--fs-3);
+          color: var(--meta); background: var(--bg); padding: 2px 4px; }
+  @media (max-width: 720px) { #hint { display: none; } }
+
+  @media print {
+    body { background: #fff; }
+    main { margin: 0; max-width: none; }
+    button, #hint, #tray-acts { display: none !important; }
+    .other textarea:placeholder-shown { display: none; }
+    article.card, li.receipt { break-inside: avoid; }
+    a.evlink { color: var(--ink); text-decoration: none; }
+    .cmd { color: var(--ink); }
+  }
+</style>
+</head>
+<body>
+<main>
+  <p class="brand">Hyp Machine · compiled read model</p>
+  <h1>Decisions waiting on you <span class="counts" id="h1-counts"></span></h1>
+  <p class="subtitle">Answer on this page or run the <span style="font-weight:700">answer:</span>
+    command — either way one <code style="font-family:inherit">decision-resolution</code> row lands in the
+    ledger. Decided-by, decided-at, and the commit are never typed: they derive from the git
+    commit that lands the row.</p>
+  <p class="stamp">snapshot (template) · head (template) · store (your work ledger) ·
+    regenerated by scripts/compile-dashboard.py</p>
+
+  <section class="group" id="open-section" aria-label="Open decisions">
+    <div class="group-head">
+      <h2 class="group-label">Yours — needs your answer</h2>
+      <span class="chip hotfill" id="open-count">0</span>
+    </div>
+    <p class="group-desc">grouped by urgency, then oldest ask first · a comment stays open; accept or deny closes</p>
+    <ol class="cards" id="cards"></ol>
+    <div id="allclear" role="status">
+      <span class="mark" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="9"/><path d="m8.5 12.3 2.3 2.3 4.7-5.2"/>
+        </svg>
+      </span>
+      <h3>Nothing is waiting on you.</h3>
+      <p id="allclear-line">New decisions appear here the moment a decision row lands in the
+        ledger.</p>
+      <p>Lanes keep moving on everything already delegated.</p>
+    </div>
+  </section>
+
+  <section class="group" id="receipts-section" hidden>
+    <div class="group-head">
+      <h2 class="group-label">Resolved this visit</h2>
+      <span class="chip quietline" id="receipt-count">0</span>
+    </div>
+    <p class="group-desc">receipts — the ledger row is the record; the receipt is its shadow</p>
+    <ul class="receipts" id="receipts" aria-live="polite"></ul>
+  </section>
+
+  <section class="group" id="tray-section">
+    <div class="group-head">
+      <h2 class="group-label">Pending resolutions</h2>
+      <span class="chip quietline" id="tray-count">0</span>
+    </div>
+    <p class="group-desc">copy, then run from the repo root — each line appends one resolution row and commits with attribution</p>
+    <p id="tray-empty">Nothing staged. Accept, deny, or comment on a card and the exact
+      <code>decisions.py</code> command lands here.</p>
+    <label class="vh" for="tray">Pending resolution commands</label>
+    <textarea id="tray" readonly hidden rows="3" spellcheck="false"></textarea>
+    <div id="tray-acts" hidden>
+      <button class="quiet" id="copy-all">Copy all</button>
+    </div>
+  </section>
+</main>
+
+<div id="hint" aria-hidden="true">j/k move · 1–9 pick · a accept · d deny · c comment · print-clean</div>
+<div class="vh" role="status" aria-live="polite" id="announce"></div>
+
+<script>
+"use strict";
+/* Sample queue — REPLACED at every compile: scripts/compile-dashboard.py injects the
+   logical decision rows it joins from your configured work ledger (the decisions:[...]
+   shape of docs/decisions.md section 6). */
+const SNAPSHOT = "2026-08-28";
+const REPO = "";
+const DECISIONS = [
+  {
+    kind: "decision", id: "DEC-001", date: "2026-01-01", requested_at: "2026-01-01",
+    requested_by: "sample lane",
+    title: "Sample decision (template preview)",
+    ask: {
+      header: "Sample", multiSelect: false,
+      question: "This is the template's built-in sample card — the compiler replaces it with your ledger's open decisions. Keep the sample visible when previewing the raw template?",
+      options: [
+        { label: "keep-sample", description: "the raw template previews with one demonstration card" },
+        { label: "compile-now", description: "run scripts/compile-dashboard.py and this file regenerates from your ledger" }
+      ]
+    },
+    context_pointers: ["docs/decisions.md"],
+    blocks: [], urgency: "normal", "class": "hygiene",
+    why_only_you: "a template preview decides nothing — real cards carry the physical or irreversible part only you can perform"
+  }
+];
+
+/* ---------------- state ---------------- */
+const state = {
+  picks: {},        // id -> Set of option labels
+  resolved: {},     // id -> { disposition, chosen, comment, cmd, when }
+  comments: {},     // id -> { text, cmd }   (commented — stays open)
+  focusIdx: -1
+};
+const byId = {}; DECISIONS.forEach(d => byId[d.id] = d);
+
+/* ---------------- house-vocabulary gloss tooltips ----------------
+   This static subset mirrors scripts/house-vocabulary.json (rule L3 of
+   docs/communication-contract.md) so the emitted page stays self-contained;
+   keep the two in step when you extend the vocabulary. */
+const VOCAB = {
+  "lane": "one experiment's full pipeline (write-up, runs, scoring, verdict) executed by automated agents",
+  "lanes": "experiments' full pipelines (write-up, runs, scoring, verdict) executed by automated agents",
+  "wave": "a batch of experiments run together toward one release version",
+  "kept": "final verdict: the tested change passed its pre-declared checks and is adopted as standard practice",
+  "keep": "final verdict: the tested change passed its pre-declared checks and is adopted as standard practice",
+  "verdict": "the mechanical keep/discard/drop outcome computed from checks declared before the run",
+  "counted": "scores count toward the verdict (practice or broken runs are excluded)",
+  "fixture": "the input set an experiment runs against, locked before the run starts",
+  "gate": "an automated check that can block work until it passes",
+  "enforcing": "the check actually blocks violations instead of just logging them",
+  "report-only": "the check logs violations but blocks nothing",
+  "advisory": "a non-blocking warning shown to working sessions",
+  "ledger": "the append-only file listing commitments and open items; one entry per line",
+  "fragment": "one write-once journal entry recording what happened and why",
+  "retrofit": "applying a new rule to already-existing items",
+  "bracket": "a pre-registered follow-up that opens automatically when a result lands",
+  "triage": "sorting open questions into: handle automatically, test instead, or genuinely needs a human",
+  "blast radius": "everything a change can affect beyond the lab, especially other people",
+  "two-way door": "a reversible decision — anything that lands as a commit can be undone, so it should not wait on a human",
+  "one-way door": "an irreversible decision — it cannot be undone, so a human makes it"
+};
+const VOCAB_RE = (() => {
+  const keys = Object.keys(VOCAB).sort((a, b) => b.length - a.length)
+    .map(k => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[\s-]+/g, "[\\s-]+"));
+  return new RegExp("\\b(?:" + keys.join("|") + ")\\b", "gi");
+})();
+const VOCAB_NORM = (() => {
+  const norm = {};
+  Object.keys(VOCAB).forEach(k => {
+    norm[k.toLowerCase().replace(/[\s-]+/g, " ")] = VOCAB[k];
+  });
+  return norm;
+})();
+function glossFor(term) {
+  const k = term.toLowerCase().replace(/[\s-]+/g, " ");
+  return VOCAB_NORM[k] || VOCAB_NORM[k.replace(/s$/, "")] || "";
+}
+function glossify(host, text) {
+  let last = 0;
+  String(text).replace(VOCAB_RE, (m, off) => {
+    const gloss = glossFor(m);
+    host.appendChild(document.createTextNode(text.slice(last, off)));
+    if (gloss) {
+      const s = el("span", "gloss", m);
+      s.title = gloss;
+      host.appendChild(s);
+    } else {
+      host.appendChild(document.createTextNode(m));
+    }
+    last = off + m.length;
+    return m;
+  });
+  host.appendChild(document.createTextNode(text.slice(last)));
+}
+
+/* ---------------- helpers ---------------- */
+function dq(s) { return '"' + String(s).replace(/(["\\$`])/g, "\\$1").replace(/\n/g, " ") + '"'; }
+function cmdFor(id, disposition, chosen, comment) {
+  let c = "python3 scripts/decisions.py resolve " + id;
+  if (disposition === "accepted") chosen.forEach(o => { c += " --accept " + dq(o); });
+  if (disposition === "denied") c += " --deny";
+  if (comment) c += " --comment " + dq(comment);
+  return c;
+}
+function ageDays(d) {
+  const ms = new Date(SNAPSHOT + "T12:00:00") - new Date(String(d).slice(0, 10) + "T12:00:00");
+  return Math.max(0, Math.round(ms / 86400000));
+}
+function ageLabel(d) {
+  const n = ageDays(d.requested_at);
+  return n === 0 ? "new today" : "waiting " + n + " day" + (n === 1 ? "" : "s");
+}
+function evHref(ref) {
+  if (ref.startsWith("~/")) return "#";  /* home-relative refs render unlinked (consumer-generic) */
+  return REPO + ref.split(":")[0].split(" ")[0];
+}
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+function announce(msg) { document.getElementById("announce").textContent = msg; }
+function copyText(text, btn) {
+  const done = () => { if (btn) { const t = btn.textContent; btn.textContent = "Copied"; setTimeout(() => btn.textContent = t, 1200); } };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
+  else done();
+}
+
+/* ---------------- ordering: urgency, then oldest ask, then id ---------------- */
+const URG = { high: 0, normal: 1, low: 2 };
+function openList() {
+  return DECISIONS.filter(d => !state.resolved[d.id])
+    .sort((a, b) => (URG[a.urgency] - URG[b.urgency]) ||
+                    (ageDays(b.requested_at) - ageDays(a.requested_at)) ||
+                    a.id.localeCompare(b.id));
+}
+
+/* ---------------- card ---------------- */
+function renderCard(d) {
+  const li = el("li", "cardwrap"); li.dataset.id = d.id;
+  const card = el("article", "card"); card.tabIndex = -1;
+  card.setAttribute("aria-label", d.id + " — " + d.title);
+
+  const chips = el("div", "chiprow");
+  chips.appendChild(el("span", "chip inkfill", d.ask.header));
+  chips.appendChild(el("span", "decid", d.id));
+  chips.appendChild(el("span", "chip quietline", d["class"]));
+  if (d.ask.multiSelect) chips.appendChild(el("span", "chip commented", "pick many"));
+  if (d.blocks.length) chips.appendChild(el("span", "chip blocks",
+    "blocks " + (d.blocks.length === 1 ? d.blocks[0].replace(/\s*\(.*\)$/, "") : d.blocks.length)));
+  chips.appendChild(el("span", "grow"));
+  chips.appendChild(el("span", "chip " + (d.urgency === "high" ? "hotfill" : "quietline"), d.urgency));
+  chips.appendChild(el("span", "age", ageLabel(d)));
+  card.appendChild(chips);
+
+  /* impact line first (communication contract L1): d.headline states what changes
+     in the world; the operational ask drops to a quiet second line. Rows without the
+     new fields render exactly as before. */
+  const q = el("h3", "question");
+  q.id = "q-" + d.id;
+  glossify(q, d.headline || d.ask.question);
+  card.appendChild(q);
+  if (d.headline && d.ask.question) {
+    const askp = el("p", "askline");
+    askp.appendChild(el("span", null, "ask — "));
+    glossify(askp, d.ask.question);
+    card.appendChild(askp);
+  }
+
+  const fs = el("fieldset", "options");
+  const lg = el("legend", "vh", "Options — " + d.title + (d.ask.multiSelect ? " (pick many)" : ""));
+  fs.appendChild(lg);
+  d.ask.options.forEach((o, i) => {
+    const lab = el("label", "opt");
+    const inp = document.createElement("input");
+    inp.type = d.ask.multiSelect ? "checkbox" : "radio";
+    inp.name = "opt-" + d.id; inp.value = o.label;
+    inp.addEventListener("change", () => {
+      const set = state.picks[d.id] = state.picks[d.id] || new Set();
+      if (!d.ask.multiSelect) set.clear();
+      inp.checked ? set.add(o.label) : set.delete(o.label);
+      syncCard(d.id);
+    });
+    lab.appendChild(inp);
+    const span = el("span");
+    span.appendChild(el("span", "lbl", o.label));
+    if (o.recommended) span.appendChild(el("span", "chip done rec", "recommended"));
+    const what = el("span", "what");
+    what.appendChild(document.createTextNode(" — "));
+    glossify(what, o.consequence || o.description);
+    if (o.reversible || o.not_reversible) {
+      const rev = el("span", "rev");
+      rev.appendChild(document.createTextNode(" "));
+      rev.appendChild(el("b", null, o.reversible ? "Reversible:" : "Not reversible:"));
+      rev.appendChild(document.createTextNode(" " + (o.reversible || o.not_reversible)));
+      what.appendChild(rev);
+    }
+    span.appendChild(what);
+    lab.appendChild(span);
+    fs.appendChild(lab);
+  });
+  card.appendChild(fs);
+
+  if (d.default_on_silence) {
+    const dl = el("p", "default-line");
+    dl.appendChild(el("span", "lead", "IF YOU DO NOTHING"));
+    dl.appendChild(document.createTextNode(" — "));
+    glossify(dl, d.default_on_silence);
+    card.appendChild(dl);
+  }
+
+  const other = el("div", "other");
+  const ta = document.createElement("textarea");
+  ta.placeholder = "Other — write your own answer, or a comment. Free text is a first-class answer.";
+  ta.setAttribute("aria-label", "Other / free comment — " + d.title);
+  ta.addEventListener("input", () => syncCard(d.id));
+  ta.addEventListener("keydown", ev => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter" && ta.value.trim()) {
+      ev.preventDefault(); stageComment(d.id);
+    }
+  });
+  other.appendChild(ta);
+  card.appendChild(other);
+  card.appendChild(el("div", "comment-slot"));
+
+  const meta = el("div", "cardmeta");
+  const why = el("p");
+  why.appendChild(el("span", "lead", "why only you"));
+  why.appendChild(document.createTextNode(" — " + d.why_only_you));
+  meta.appendChild(why);
+  const ev = el("p");
+  ev.appendChild(el("span", "lead", "evidence"));
+  d.context_pointers.forEach((ref, i) => {
+    ev.appendChild(document.createTextNode(i ? " · " : " — "));
+    const a = el("a", "evlink", ref);
+    a.href = evHref(ref);
+    ev.appendChild(a);
+  });
+  meta.appendChild(ev);
+  const who = el("p");
+  who.appendChild(el("span", "lead", "asked by"));
+  who.appendChild(document.createTextNode(" — " + d.requested_by +
+    (d.blocks.length ? " · blocks " : "")));
+  if (d.blocks.length) who.appendChild(el("span", "blocked", d.blocks.join(", ")));
+  meta.appendChild(who);
+  if (d.note) meta.appendChild(el("p", null, d.note));
+  card.appendChild(meta);
+
+  const ans = el("div", "answer");
+  const accept = el("button", "primary", "Accept");
+  accept.disabled = true;
+  accept.addEventListener("click", () => resolve(d.id, "accepted"));
+  const deny = el("button", "quiet deny", "Deny");
+  deny.addEventListener("click", () => resolve(d.id, "denied"));
+  const comment = el("button", "quiet", "Add comment");
+  comment.disabled = true;
+  comment.addEventListener("click", () => stageComment(d.id));
+  ans.appendChild(accept); ans.appendChild(deny); ans.appendChild(comment);
+  const cmd = el("code", "cmd");
+  cmd.setAttribute("aria-hidden", "true");
+  ans.appendChild(cmd);
+  card.appendChild(ans);
+
+  const pad = el("div", "cardpad");
+  pad.appendChild(card);
+  li.appendChild(pad);
+  return li;
+}
+
+function cardParts(id) {
+  const li = document.querySelector('li.cardwrap[data-id="' + id + '"]');
+  if (!li) return null;
+  return {
+    li, card: li.querySelector("article.card"),
+    ta: li.querySelector("textarea"),
+    accept: li.querySelector("button.primary"),
+    comment: li.querySelectorAll(".answer button")[2],
+    cmd: li.querySelector(".cmd"),
+    slot: li.querySelector(".comment-slot")
+  };
+}
+
+function syncCard(id) {
+  const p = cardParts(id); if (!p) return;
+  const picks = Array.from(state.picks[id] || []);
+  const text = p.ta.value.trim();
+  p.li.querySelectorAll(".opt").forEach(o =>
+    o.classList.toggle("picked", o.querySelector("input").checked));
+  p.accept.disabled = !(picks.length || text);
+  p.comment.disabled = !text;
+  p.cmd.textContent = "";
+  p.cmd.appendChild(el("span", "k", "answer: "));
+  if (picks.length || text) {
+    const chosen = picks.length ? picks : [text];
+    const comment = picks.length && text ? text : "";
+    p.cmd.appendChild(document.createTextNode(cmdFor(id, "accepted", chosen, comment)));
+  } else {
+    p.cmd.appendChild(document.createTextNode(
+      "pick an option or write your own — the exact command composes here"));
+  }
+}
+
+/* ---------------- actions ---------------- */
+function stageComment(id) {
+  const p = cardParts(id); if (!p) return;
+  const text = p.ta.value.trim(); if (!text) return;
+  const cmd = cmdFor(id, "commented", [], text);
+  state.comments[id] = { text, cmd };
+  p.ta.value = "";
+  renderCommentSlot(id);
+  syncCard(id); renderTray();
+  announce(id + " comment staged — the decision stays open.");
+}
+function renderCommentSlot(id) {
+  const p = cardParts(id); if (!p) return;
+  p.slot.textContent = "";
+  const c = state.comments[id]; if (!c) return;
+  const q = el("div", "qcard");
+  q.appendChild(el("div", "who", "queued comment — stays open"));
+  q.appendChild(el("div", null, c.text));
+  const acts = el("div", "acts");
+  const edit = el("button", "linky", "Edit");
+  edit.addEventListener("click", () => {
+    delete state.comments[id];
+    renderCommentSlot(id);
+    p.ta.value = c.text; renderTray(); syncCard(id); p.ta.focus();
+  });
+  const rm = el("button", "linky", "Remove");
+  rm.addEventListener("click", () => {
+    delete state.comments[id]; renderCommentSlot(id); renderTray();
+  });
+  acts.appendChild(edit); acts.appendChild(document.createTextNode(" · ")); acts.appendChild(rm);
+  q.appendChild(acts);
+  p.slot.appendChild(q);
+}
+
+function resolve(id, disposition) {
+  const p = cardParts(id); if (!p) return;
+  const d = byId[id];
+  const picks = Array.from(state.picks[id] || []);
+  const text = p.ta.value.trim();
+  let chosen = [], comment = "";
+  if (disposition === "accepted") {
+    chosen = picks.length ? picks : [text];      // Other semantics: the text IS the answer
+    comment = picks.length && text ? text : "";
+  } else {
+    comment = text;
+  }
+  const cmd = cmdFor(id, disposition, chosen, comment);
+  state.resolved[id] = { disposition, chosen, comment, cmd, when: SNAPSHOT };
+  const next = nextOpenAfter(id);
+  const drop = () => { p.li.remove(); renderCounts(); };
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) drop();
+  else requestAnimationFrame(() => {
+    p.li.classList.add("leaving");
+    p.li.addEventListener("transitionend", drop, { once: true });
+  });
+  addReceipt(d, state.resolved[id]);
+  renderTray(); renderCounts();
+  announce(id + " " + disposition + (chosen.length ? " — " + chosen.join(", ") : "") +
+           ". Command staged in the pending-resolutions tray.");
+  if (next) { const np = cardParts(next); if (np) np.card.focus(); }
+}
+function nextOpenAfter(id) {
+  const list = openList().map(d => d.id).filter(x => x !== id);
+  return list.length ? list[0] : null;
+}
+
+/* ---------------- receipts ---------------- */
+function addReceipt(d, r) {
+  const host = document.getElementById("receipts");
+  const li = el("li", "receipt arriving"); li.dataset.id = d.id;
+  li.appendChild(el("span", "chip " + ({ accepted: "done", denied: "denied" })[r.disposition], r.disposition));
+  const t = el("span"); t.appendChild(el("strong", null, d.id));
+  t.appendChild(document.createTextNode(" " + d.title));
+  li.appendChild(t);
+  if (r.chosen.length) li.appendChild(el("span", "what", "— " + r.chosen.join(", ")));
+  if (r.comment) li.appendChild(el("span", "what", "· “" + r.comment + "”"));
+  const copy = el("button", "linky", "Copy command");
+  copy.addEventListener("click", () => copyText(r.cmd, copy));
+  li.appendChild(copy);
+  const undo = el("button", "linky", "Undo");
+  undo.addEventListener("click", () => {
+    delete state.resolved[d.id]; li.remove(); renderQueue(); renderTray(); renderCounts();
+    const p = cardParts(d.id); if (p) p.card.focus();
+  });
+  li.appendChild(undo);
+  li.appendChild(el("span", "provenance",
+    "staged " + SNAPSHOT + " · decided-by, decided-at, and the commit derive from git when the resolution row lands (H-084)"));
+  host.appendChild(li);
+}
+
+/* ---------------- tray ---------------- */
+function trayLines() {
+  const lines = [];   // resolutions first, then open-card comments, both in queue order
+  DECISIONS.forEach(d => { const r = state.resolved[d.id]; if (r) lines.push(r.cmd); });
+  DECISIONS.forEach(d => { const c = state.comments[d.id]; if (c) lines.push(c.cmd); });
+  return lines;
+}
+function renderTray() {
+  const lines = trayLines();
+  const ta = document.getElementById("tray");
+  const n = lines.length;
+  document.getElementById("tray-count").textContent = String(n);
+  document.getElementById("tray-empty").hidden = n > 0;
+  ta.hidden = n === 0;
+  document.getElementById("tray-acts").hidden = n === 0;
+  ta.value = lines.join("\n");
+  ta.rows = Math.max(3, n + 1);
+}
+
+/* ---------------- page render ---------------- */
+function renderQueue() {
+  const host = document.getElementById("cards");
+  const drafts = {};   // preserve un-staged Other text across re-renders (undo path)
+  host.querySelectorAll("li.cardwrap").forEach(li => {
+    const ta = li.querySelector("textarea");
+    if (ta && ta.value) drafts[li.dataset.id] = ta.value;
+  });
+  host.textContent = "";
+  openList().forEach(d => {
+    host.appendChild(renderCard(d));
+    renderCommentSlot(d.id);
+    const set = state.picks[d.id];
+    if (set) host.querySelectorAll('li[data-id="' + d.id + '"] .options input').forEach(inp => {
+      inp.checked = set.has(inp.value);
+    });
+    if (drafts[d.id]) { const p = cardParts(d.id); if (p) p.ta.value = drafts[d.id]; }
+    syncCard(d.id);
+  });
+  renderCounts();
+}
+function renderCounts() {
+  const open = openList().length;
+  const done = Object.keys(state.resolved).length;
+  document.getElementById("h1-counts").textContent =
+    "(" + open + " open — yours " + open + " · others 0)";
+  document.getElementById("open-count").textContent = String(open);
+  document.getElementById("receipt-count").textContent = String(done);
+  document.getElementById("receipts-section").hidden = done === 0;
+  const clear = document.getElementById("allclear");
+  clear.classList.toggle("on", open === 0);
+  if (open === 0 && done > 0)
+    document.getElementById("allclear-line").textContent =
+      done + " resolved this visit — receipts below, commands in the tray. New decisions " +
+      "appear here the moment a decision row lands in the ledger.";
+  document.title = open ? "Hyp Machine — decisions waiting (" + open + ")" : "Hyp Machine — nothing waiting";
+}
+
+/* ---------------- keyboard ---------------- */
+document.addEventListener("keydown", ev => {
+  const tag = (ev.target.tagName || "").toLowerCase();
+  if (tag === "textarea" || tag === "input" || tag === "button" || ev.metaKey || ev.ctrlKey) return;
+  const list = openList();
+  if (!list.length) return;
+  const move = delta => {
+    state.focusIdx = Math.min(list.length - 1, Math.max(0, state.focusIdx + delta));
+    const p = cardParts(list[state.focusIdx].id);
+    if (p) { p.card.focus(); p.card.scrollIntoView({ block: "nearest" }); }
+    ev.preventDefault();
+  };
+  if (ev.key === "j" || ev.key === "ArrowDown") return move(1);
+  if (ev.key === "k" || ev.key === "ArrowUp") return move(-1);
+  const cur = list[Math.max(0, state.focusIdx)];
+  if (!cur) return;
+  const p = cardParts(cur.id);
+  if (/^[1-9]$/.test(ev.key)) {
+    const inp = p.li.querySelectorAll(".options input")[Number(ev.key) - 1];
+    if (inp) { inp.checked = inp.type === "radio" ? true : !inp.checked;
+               inp.dispatchEvent(new Event("change")); }
+    ev.preventDefault();
+  }
+  if (ev.key === "a" && !p.accept.disabled) { resolve(cur.id, "accepted"); ev.preventDefault(); }
+  if (ev.key === "d") { resolve(cur.id, "denied"); ev.preventDefault(); }
+  if (ev.key === "c") { p.ta.focus(); ev.preventDefault(); }
+});
+
+/* ---------------- demo states (?state=empty | ?state=resolved) ---------------- */
+const demo = new URLSearchParams(location.search).get("state");
+if (demo === "empty") {
+  DECISIONS.length = 0;
+} else if (demo === "resolved") {
+  DECISIONS.forEach(d => {
+    const first = d.ask.options[0].label;
+    state.resolved[d.id] = { disposition: "accepted", chosen: [first], comment: "",
+      cmd: cmdFor(d.id, "accepted", [first], ""), when: SNAPSHOT };
+  });
+}
+
+document.getElementById("copy-all").addEventListener("click", function () {
+  copyText(document.getElementById("tray").value, this);
+});
+renderQueue();
+if (demo === "resolved") DECISIONS.forEach(d => addReceipt(d, state.resolved[d.id]));
+renderTray();
+</script>
+</body>
+</html>

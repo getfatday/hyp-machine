@@ -1,0 +1,46 @@
+schema_version: "1.0"
+name: init-scaffold-capture-profile
+description: >
+  Should-act case. Invoking /hyp:init on a bare repository scaffolds the
+  capture profile: the config file, the capture directories and index seed,
+  GOVERNANCE.md, the CLAUDE.md rules block, and the settings deny rules.
+tags: [init, scaffold, should-act]
+context:
+  scaffold_script: |
+    git init -q .
+    printf '%s\n' '# Widget project' '' 'A small widget repository.' > README.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    /hyp:init
+  max_turns: 25
+  timeout_seconds: 600
+  allowed_tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+graders:
+  - type: file_exists
+    name: config-written
+    path: ".claude/hyp.json"
+    exists: true
+  - type: file_exists
+    name: index-seeded
+    path: "research/index.md"
+    exists: true
+  - type: file_exists
+    name: governance-installed
+    path: "GOVERNANCE.md"
+    exists: true
+  - type: regex
+    name: rules-block-installed
+    target: { source: file, path: CLAUDE.md }
+    pattern: 'BEGIN hyp rules'
+    match: contains
+  - type: regex
+    name: deny-rules-written
+    target: { source: file, path: .claude/settings.json }
+    pattern: 'deny'
+    match: contains
+expected_outcome: >
+  The capture-profile scaffold exists: .claude/hyp.json, the raw/notes/journal
+  directories with the index seed, GOVERNANCE.md, the marker-delimited hyp
+  rules block in CLAUDE.md, and Edit deny rules in .claude/settings.json.

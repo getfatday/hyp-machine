@@ -1,0 +1,24 @@
+{
+  "schema_version": "cost-table/v1",
+  "note": "Per-step cost table SHAPE. Budgets come from MEASURED per-step costs, never guessed: replace every null with a price measured from your own run ledgers before compiling a ceiling. The compiler refuses to ceiling a flow whose steps have no measured price.",
+  "provenance": {
+    "S": "unmeasured — record USD per tool-using child session from your own run ledgers",
+    "L": "unmeasured — record USD per single-turn judgment session (gates and graders)",
+    "D_t1": "unmeasured — record USD per pinned script step run as a budgeted child session",
+    "D_t2": "0 by construction: the portable runner executes deterministic steps as subprocesses",
+    "H": "no measured basis — the compiler REFUSES to ceiling a flow containing high-freedom steps until a measured price lands here"
+  },
+  "usd": {
+    "D_t1": null,
+    "D_t2": 0.0,
+    "L": null,
+    "S": null,
+    "H": null
+  },
+  "attempts_budgeted": {
+    "D": 1,
+    "L": 2,
+    "S": 2,
+    "H": 2
+  }
+}

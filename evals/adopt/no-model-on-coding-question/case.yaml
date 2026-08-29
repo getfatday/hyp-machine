@@ -1,0 +1,33 @@
+schema_version: "1.0"
+name: adopt-no-model-on-coding-question
+description: >
+  Should-NOT-act guard case. The user asks a plain coding question about a
+  small utility file. No operating model should be demanded, mined, or
+  scaffolded — the adopt skill must not trigger on ordinary code questions.
+tags: [adopt, modeling, should-not-act, guard]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p lib
+    printf '%s\n' 'def count_words(text):' '    """Number of whitespace-separated words in text."""' '    return len(text.split())' > lib/utils.py
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    Quick question about lib/utils.py: what does count_words return for an
+    empty string, and why?
+  max_turns: 10
+  timeout_seconds: 300
+  allowed_tools: ["Read", "Bash", "Glob", "Grep"]
+graders:
+  - type: file_exists
+    name: no-model-scaffolded
+    path: "operating-model"
+    exists: false
+  - type: file_exists
+    name: no-catalog-invented
+    path: "operating-model/**/model.md"
+    exists: false
+expected_outcome: >
+  A direct answer (0 — str.split on an empty string yields an empty list) with
+  no operating-model directory or node files created.

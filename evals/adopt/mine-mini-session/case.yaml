@@ -1,0 +1,47 @@
+schema_version: "1.0"
+name: adopt-mine-mini-session
+description: >
+  Should-act case. A tiny recorded session transcript ships in the fixture; the
+  adopt skill should mine it into a SCHEMA-shaped operating-model scaffold —
+  node files with frontmatter plus a model.md catalog — grounding every node in
+  the transcript rather than inventing elements.
+tags: [adopt, modeling, should-act]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p sessions scripts .claude
+    printf '%s\n' '{"profile": "modeling", "model_dir": "operating-model", "context": "demo"}' > .claude/hyp.json
+    printf '%s\n' '#!/bin/sh' 'echo "release notes assembled"' > scripts/assemble-notes.sh
+    printf '%s\n' '{"message":{"id":"msg_demo0001","role":"user","content":[{"type":"text","text":"Assemble the release notes for version 1.2 from the merged changelog entries."}]}}' '{"message":{"id":"msg_demo0002","role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"changelog/1.2/entry-a.md"}}],"usage":{"output_tokens":52}}}' '{"message":{"id":"msg_demo0003","role":"user","content":[{"type":"tool_result","content":"- fix: retry failed uploads"}]}}' '{"message":{"id":"msg_demo0004","role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"changelog/1.2/entry-b.md"}}],"usage":{"output_tokens":41}}}' '{"message":{"id":"msg_demo0005","role":"user","content":[{"type":"tool_result","content":"- feat: dark mode for dashboards"}]}}' '{"message":{"id":"msg_demo0006","role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"release-notes/1.2.md","content":"Release 1.2: retry failed uploads; dark mode for dashboards."}}],"usage":{"output_tokens":88}}}' '{"message":{"id":"msg_demo0007","role":"user","content":[{"type":"tool_result","content":"file written"}]}}' '{"message":{"id":"msg_demo0008","role":"assistant","content":[{"type":"text","text":"Release notes assembled at release-notes/1.2.md from the two changelog entries."}],"usage":{"output_tokens":30}}}' > sessions/demo.jsonl
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    Model how work happened here: mine the recorded session at
+    sessions/demo.jsonl into an explicit operating model under
+    operating-model/demo/ — one node file per actor/command/event/read model
+    with YAML frontmatter, plus a model.md catalog listing every node. Ground
+    each node in the transcript; do not invent anything it does not evidence.
+  max_turns: 40
+  timeout_seconds: 900
+  allowed_tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+graders:
+  - type: file_exists
+    name: catalog-created
+    path: "operating-model/demo/model.md"
+    exists: true
+  - type: regex
+    name: command-node-with-frontmatter
+    target: files
+    pattern: 'type: command'
+    match: contains
+  - type: regex
+    name: catalog-names-a-command
+    target: { source: file, path: operating-model/demo/model.md }
+    pattern: 'command'
+    match: contains
+expected_outcome: >
+  A SCHEMA-shaped scaffold under operating-model/demo/ — at least a command
+  node with frontmatter (the release-notes assembly operation the transcript
+  evidences) and a model.md catalog — with node content grounded in the
+  recorded session.

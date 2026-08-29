@@ -1,0 +1,54 @@
+schema_version: "1.0"
+name: one-variable-split
+description: >
+  The user bundles two changes into one proposed experiment. The hypothesis
+  skill's one-variable rule should push back and split the idea into two
+  single-variable hypotheses with a shared fixture and comparable assertions,
+  positioning any combined-arm test after the singles have verdicts — not
+  silently spec both changes as one variable. The contract of this case is the
+  WRITE: the split specs are registered as files under hypotheses/ (both the
+  deterministic grader and the llm criteria require it) — a split that is only
+  proposed in prose does not pass.
+tags: [hypothesis, one-variable]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p .claude research/raw research/notes experiments/journal-fragments experiments/runs hypotheses
+    printf '%s\n' '{' '  "profile": "experiments",' '  "raw_dir": "research/raw",' '  "notes_dir": "research/notes",' '  "index_file": "research/index.md",' '  "journal_dir": "experiments/journal-fragments",' '  "journal_file": "experiments/journal.md",' '  "compiled_file": "experiments/journal-compiled.md",' '  "hypotheses_dir": "hypotheses",' '  "runs_dir": "experiments/runs",' '  "template_file": "hypotheses/TEMPLATE.md",' '  "preflight_file": "experiments/preflight.py"' '}' > .claude/hyp.json
+    printf '%s\n' '# H-NNN-slug: <short title>' '' '## Status' 'draft' '' '## Hypothesis' '<!-- One falsifiable sentence. -->' '' '## Motivation' '<!-- 2-3 sentences max. -->' '' '## Variable under test' '<!-- Exactly one. -->' '' '## Baseline' '<!-- The current practice this is compared against. -->' '' '## Method' '1. <!-- numbered steps; fixed budget per run so runs are comparable -->' '- Fixture: <!-- pinned starting state both arms share -->' '- Repetitions per arm: <!-- e.g. 3 -->' '- Budget per run: <!-- e.g. 30 min wall-clock -->' '' '## Binary assertions' '<!-- 3-5 pass/fail checks. The ONLY basis for the verdict. No subjective scores. -->' '1.' '2.' '3.' '' '## Verdict rule' '<!-- Mechanical: all assertions pass = keep-eligible; any failure = discard or refine. -->' '' '## On keep' '- none' '' '## Runs' '| # | Date | Assertions passed | Journal entry |' '|---|------|-------------------|---------------|' > hypotheses/TEMPLATE.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    I want to test whether running the test suite in parallel AND adding a
+    dependency cache together make our CI meaningfully faster. Set that up as
+    one experiment. Register whatever specs are right directly in the repo —
+    I'm away from my desk, so write the files and state your assumptions in
+    them instead of waiting for me to confirm.
+  max_turns: 40
+  timeout_seconds: 600
+  allowed_tools: ["Write", "Edit", "Bash"]
+graders:
+  - type: file_exists
+    name: at-least-one-spec
+    path: "hypotheses/H-*.md"
+    exists: true
+  - type: llm
+    name: split-quality
+    criteria: |
+      Score 1.0 only if ALL of the following hold, else score proportionally lower:
+      1. The agent recognized that the idea bundles two variables (parallel test
+         execution; dependency cache) and said so explicitly rather than silently
+         proceeding.
+      2. No hypothesis spec claims both changes together as its single "variable
+         under test".
+      3. The idea was split: two single-variable hypothesis specs were REGISTERED
+         as files under hypotheses/ (the write is the contract — a split only
+         proposed in prose does not satisfy this), sharing a fixture and
+         comparable assertions so results can be compared.
+      4. Any combined-arm (interaction) test was positioned as legitimate only
+         after each single variable has its own verdict — not run first.
+expected_outcome: >
+  Pushback on the two-variable design and a split into two comparable
+  single-variable hypothesis specs registered on disk under hypotheses/, with
+  the combined arm deferred until the singles have verdicts.

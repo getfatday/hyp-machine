@@ -1,0 +1,34 @@
+schema_version: "1.0"
+name: run-adopt-first-refusal
+description: >
+  Should-NOT-act guard case (the refusal routing that replaced a package
+  split). Asked to run "the compiled workflow" in a repository with no
+  operating model and nothing compiled, the run skill must refuse with an
+  adopt-first pointer — never fabricate a model, a flow, or results.
+tags: [run, modeling, should-not-act, guard]
+context:
+  scaffold_script: |
+    git init -q .
+    printf '%s\n' '# Widget project' '' 'A small widget repository with no operating model.' > README.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    Run our team's compiled workflow for handling new requests and give me the
+    verdict.
+  max_turns: 10
+  timeout_seconds: 300
+  allowed_tools: ["Read", "Bash", "Glob", "Grep"]
+graders:
+  - type: file_exists
+    name: no-model-fabricated
+    path: "operating-model"
+    exists: false
+  - type: file_exists
+    name: no-results-fabricated
+    path: "**/*results*.json"
+    exists: false
+expected_outcome: >
+  A refusal: this repository has no operating model or compiled flow — route
+  to adopt (mine the model from the repo and its recorded sessions), then
+  compile, then run. No fabricated verdict or results.

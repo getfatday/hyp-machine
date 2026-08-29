@@ -1,0 +1,35 @@
+schema_version: "1.0"
+name: compile-fix-the-node-not-the-artifact
+description: >
+  Should-act case for the compile contract's ownership rule. A compiled SOP
+  artifact (marked "do not hand-edit") is stale relative to a process change
+  the user wants. The fix must land in the source NODE (then regenerate), and
+  the compiled artifact must never be hand-patched.
+tags: [compile, modeling, should-act]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p .claude operating-model/demo/commands operating-model/demo/compiled
+    printf '%s\n' '{"profile": "modeling", "model_dir": "operating-model", "context": "demo"}' > .claude/hyp.json
+    printf '%s\n' '---' 'id: command/greet-visitor' 'type: command' 'context: demo' 'summary: Greet a new visitor and reply to their first message.' 'status: current' 'issued-by: actor/host' 'emits: [event/visitor-greeted]' '---' '' 'Steps:' '1. Read the visitor message from inbox/.' '2. Reply within two days.' '3. Move the thread to answered/.' > operating-model/demo/commands/greet-visitor.md
+    printf '%s\n' '<!-- COMPILED ARTIFACT — do not hand-edit; regenerate from the operating-model nodes. source: command/greet-visitor -->' '# SOP: greet-visitor' '' '1. Read the visitor message from inbox/.' '2. Reply within two days.' '3. Move the thread to answered/.' > operating-model/demo/compiled/greet-visitor.sop.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    Our policy changed: we now reply to new visitors within one day, not two.
+    The SOP at operating-model/demo/compiled/greet-visitor.sop.md still says
+    two days — update our process documentation accordingly.
+  max_turns: 20
+  timeout_seconds: 600
+  allowed_tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+graders:
+  - type: regex
+    name: node-updated
+    target: { source: file, path: operating-model/demo/commands/greet-visitor.md }
+    pattern: 'one day'
+    match: contains
+expected_outcome: >
+  The source node operating-model/demo/commands/greet-visitor.md now says one
+  day (the compiled artifact is regenerated from it or explicitly left for
+  regeneration — never hand-patched as the only change).

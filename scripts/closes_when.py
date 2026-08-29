@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""closes_when.py -- shared closes-when predicate parser + evaluator.
+
+PROVENANCE — port of the source lab's scripts/closes_when.py (H-100 kept lineage;
+the decision-resolved predicate joined it with the decision kit, directive
+2026-08-28). One predicate evaluator, shared by the session resolver
+(hooks/scripts/session_resolver.py) and any consumer sweep, so two readers of the
+same ledger can never disagree on open/closed (the split-brain guard). Differences
+from the lab copy: the maintainer-ruling directory and the decision-store ledger
+path resolve through .claude/hyp.json (raw_dir, default research/raw; ledger_file,
+default ledger/ledger.jsonl). Predicate semantics are identical.
+
+Grammar (at most one bracket per line, appended to the committing line):
+
+    [closes-when: <predicate>=<argument>]
+
+parsed by:
+
+    \\[closes-when:\\s*(path-exists|commit-grep|hypothesis-kept|maintainer-ruling|decision-resolved)=([^\\]]+)\\]
+
+Unknown predicate or empty argument = malformed. The design treats "malformed" and
+"bracket absent" identically -- both are "no valid closes-when" -- so parse_bracket()
+returns None for both.
+
+All five predicates are evaluated read-only, against committed (HEAD) state ONLY, never
+the working tree: "committed at HEAD" (path-exists), "some commit message" (commit-grep),
+"landed as kept ... at HEAD" (hypothesis-kept), "some committed filename" (maintainer-
+ruling), "an accepted|denied decision-resolution row in the ledger at HEAD"
+(decision-resolved, docs/decisions.md section 4) -- the Durability invariant
+("uncommitted work effectively does not exist").
+
+Stdlib + git only. No network. No writes.
+"""
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+
+def _hyp_config(repo_root):
+    """raw_dir + ledger_file from <repo_root>/.claude/hyp.json; hyp defaults
+    on any failure. Never raises."""
+    cfg = {"raw_dir": "research/raw", "ledger_file": "ledger/ledger.jsonl"}
+    try:
+        with open(os.path.join(str(repo_root), ".claude", "hyp.json"),
+                  encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            for key in cfg:
+                val = data.get(key)
+                if isinstance(val, str) and val.strip():
+                    cfg[key] = val.strip().strip("/")
+    except (OSError, ValueError):
+        pass
+    return cfg
+
+# ---------- bracket grammar ----------
+
+CLOSES_WHEN_RE = re.compile(
+    r"\[closes-when:\s*(path-exists|commit-grep|hypothesis-kept|maintainer-ruling"
+    r"|decision-resolved)=([^\]]+)\]"
+)
+
+# Shared with commitment_lint.py's On-keep-block gating: both need "what word does this
+# spec's Status carry" and must agree, or the sweep and the hypothesis-kept predicate could
+# split-brain on the same file.
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+STATUS_HEADING_RE = re.compile(r"(?m)^##\s*Status\s*$")
+NEXT_HEADING_RE = re.compile(r"(?m)^##\s")
+
+GIT_TIMEOUT = 5  # seconds per git call; defensive only -- local repo reads are near-instant.
+
+
+def parse_bracket(line):
+    """Parse the closes-when bracket out of one line of text.
+
+    Returns (predicate, arg) for a well-formed bracket: one of the four known predicate
+    names, '=', then a non-empty (after stripping) argument, closed by ']'.
+
+    Returns None for every other case -- the design's single "no valid closes-when" class:
+      - no bracket present on the line at all;
+      - an unknown predicate name (the regex's alternation only matches the four known
+        names, so anything else simply fails to match at that position);
+      - a present-but-empty or whitespace-only argument.
+
+    Callers that must honor "visible, not an HTML comment" (design S2: a bracket hidden
+    inside an HTML comment must not count, because invisible carriers are exactly what
+    leaked in the census) pass a comment-masked line in, rather than the raw line -- this
+    function itself is a pure, context-free regex parse of whatever text it is given.
+    """
+    m = CLOSES_WHEN_RE.search(line)
+    if not m:
+        return None
+    predicate, arg = m.group(1), m.group(2).strip()
+    if not arg:
+        return None
+    return predicate, arg
+
+
+def extract_status_word(text):
+    """First non-comment word under a '## Status' heading in hypothesis-spec text.
+
+    None if the heading is absent, or its content -- after stripping HTML comments, which
+    is where most specs carry their status rationale (e.g. "kept <!-- 2026-08-14: ... -->")
+    -- is empty. Shared by _check_hypothesis_kept below and commitment_lint.py's On-keep-
+    block gating, so both agree on what a spec's status "word" is.
+    """
+    m = STATUS_HEADING_RE.search(text)
+    if not m:
+        return None
+    rest = text[m.end():]
+    nxt = NEXT_HEADING_RE.search(rest)
+    block = rest[:nxt.start()] if nxt else rest
+    block = HTML_COMMENT_RE.sub(" ", block)
+    stripped = block.strip()
+    if not stripped:
+        return None
+    return stripped.split()[0]
+
+
+# ---------- git plumbing ----------
+
+def _git(repo_root, args):
+    """Run git in repo_root. Never raises: returns (returncode, stdout); on any failure to
+    even launch git, or on timeout, returns (1, "")."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root)] + list(args),
+            capture_output=True, text=True, timeout=GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return proc.returncode, proc.stdout
+
+
+# ---------- the predicates (v1: four; v2 adds decision-resolved) ----------
+
+def _check_path_exists(arg, repo_root):
+    """path-exists=<repo-relative-path> -- committed at HEAD."""
+    code, _ = _git(repo_root, ["cat-file", "-e", "HEAD:" + arg])
+    return code == 0
+
+
+def _check_commit_grep(arg, repo_root):
+    """commit-grep=<needle> -- some commit message contains the literal needle."""
+    code, out = _git(repo_root, ["log", "--fixed-strings", "--grep=" + arg,
+                                  "--format=%H", "-n1"])
+    return code == 0 and out.strip() != ""
+
+
+def _check_hypothesis_kept(arg, repo_root):
+    """hypothesis-kept=H-NNN -- exactly one committed hypotheses/H-NNN-*.md at HEAD whose
+    first non-comment word under '## Status' is 'kept' (case-insensitive: this repo's real
+    specs use both 'kept' and 'KEPT'). Zero or more-than-one match is not satisfied --
+    ambiguity does not close a commitment, the same safe-default the ledger resolver uses
+    for a missing operating_model_dir."""
+    code, out = _git(repo_root, ["ls-tree", "-r", "--name-only", "HEAD", "--", "hypotheses"])
+    if code != 0:
+        return False
+    pattern = re.compile(r"^hypotheses/%s-.*\.md$" % re.escape(arg))
+    matches = [p for p in out.splitlines() if pattern.match(p)]
+    if len(matches) != 1:
+        return False
+    code, content = _git(repo_root, ["show", "HEAD:" + matches[0]])
+    if code != 0:
+        return False
+    word = extract_status_word(content)
+    return word is not None and word.lower() == "kept"
+
+
+def _check_maintainer_ruling(arg, repo_root):
+    """maintainer-ruling=<slug> -- some committed filename under the configured raw
+    dir (hyp.json raw_dir, default research/raw) contains both <slug> and 'ruling',
+    case-insensitive."""
+    raw_dir = _hyp_config(repo_root)["raw_dir"]
+    code, out = _git(repo_root, ["ls-tree", "-r", "--name-only", "HEAD", "--", raw_dir])
+    if code != 0:
+        return False
+    needle = arg.lower()
+    for path in out.splitlines():
+        name = Path(path).name.lower()
+        if needle in name and "ruling" in name:
+            return True
+    return False
+
+
+def _check_decision_resolved(arg, repo_root):
+    """decision-resolved=<DEC-id> -- a kind:"decision-resolution" row for <id> with
+    disposition accepted|denied exists in the configured ledger AT HEAD
+    (docs/decisions.md section 4; committed state only, like every other predicate --
+    a staged, uncommitted resolution does not close anything)."""
+    ledger_rel = _hyp_config(repo_root)["ledger_file"]
+    code, out = _git(repo_root, ["show", "HEAD:" + ledger_rel])
+    if code != 0:
+        return False
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if (isinstance(rec, dict) and rec.get("kind") == "decision-resolution"
+                and rec.get("id") == arg
+                and rec.get("disposition") in ("accepted", "denied")):
+            return True
+    return False
+
+
+_CHECKERS = {
+    "path-exists": _check_path_exists,
+    "commit-grep": _check_commit_grep,
+    "hypothesis-kept": _check_hypothesis_kept,
+    "maintainer-ruling": _check_maintainer_ruling,
+    "decision-resolved": _check_decision_resolved,
+}
+
+
+def check(predicate, arg, repo_root):
+    """True iff <predicate>=<arg> is satisfied in the repo at repo_root, evaluated against
+    committed (HEAD) state. Unknown predicate -> False (defensive; commitment_lint.py only
+    ever calls check() with a predicate parse_bracket already validated as one of the
+    five known names)."""
+    fn = _CHECKERS.get(predicate)
+    return bool(fn and fn(arg, repo_root))

@@ -1,0 +1,62 @@
+schema_version: "1.0"
+name: register-spec-before-run
+description: >
+  The user shares a testable idea and asks to set it up as an experiment. The
+  hypothesis skill should register a spec from the template — one falsifiable
+  sentence, exactly one variable, a baseline, a fixed budget, 3-5 binary
+  assertions, a mechanical verdict rule — and journal the registration, without
+  executing any run in the same breath.
+tags: [hypothesis, spec-first]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p .claude research/raw research/notes experiments/journal-fragments experiments/runs hypotheses
+    printf '%s\n' '{' '  "profile": "experiments",' '  "raw_dir": "research/raw",' '  "notes_dir": "research/notes",' '  "index_file": "research/index.md",' '  "journal_dir": "experiments/journal-fragments",' '  "journal_file": "experiments/journal.md",' '  "compiled_file": "experiments/journal-compiled.md",' '  "hypotheses_dir": "hypotheses",' '  "runs_dir": "experiments/runs",' '  "template_file": "hypotheses/TEMPLATE.md",' '  "preflight_file": "experiments/preflight.py"' '}' > .claude/hyp.json
+    printf '%s\n' '# H-NNN-slug: <short title>' '' '## Status' 'draft' '' '## Hypothesis' '<!-- One falsifiable sentence. -->' '' '## Motivation' '<!-- 2-3 sentences max. -->' '' '## Variable under test' '<!-- Exactly one. -->' '' '## Baseline' '<!-- The current practice this is compared against. -->' '' '## Method' '1. <!-- numbered steps; fixed budget per run so runs are comparable -->' '- Fixture: <!-- pinned starting state both arms share -->' '- Repetitions per arm: <!-- e.g. 3 -->' '- Budget per run: <!-- e.g. 30 min wall-clock -->' '' '## Binary assertions' '<!-- 3-5 pass/fail checks. The ONLY basis for the verdict. No subjective scores. -->' '1.' '2.' '3.' '' '## Verdict rule' '<!-- Mechanical: all assertions pass = keep-eligible; any failure = discard or refine. -->' '' '## On keep' '- none' '' '## Runs' '| # | Date | Assertions passed | Journal entry |' '|---|------|-------------------|---------------|' > hypotheses/TEMPLATE.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    I suspect that running our linter as a required pre-commit check would cut
+    broken-main incidents roughly in half. Set that up as an experiment:
+    register the spec and journal the registration now — write the files
+    directly and state your assumptions in the spec, since I'm away and can't
+    confirm details — but do not execute any run yet.
+  max_turns: 40
+  timeout_seconds: 600
+  allowed_tools: ["Write", "Edit", "Bash"]
+graders:
+  - type: file_exists
+    name: spec-registered
+    path: "hypotheses/H-*.md"
+    exists: true
+  - type: regex
+    name: assertions-section-present
+    target: files
+    pattern: '## Binary assertions'
+    match: contains
+  - type: file_exists
+    name: registration-journaled
+    path: "experiments/journal-fragments/*.md"
+    exists: true
+  - type: llm
+    name: spec-quality
+    focus: files
+    criteria: |
+      Score 1.0 only if ALL of the following hold, else score proportionally lower:
+      1. A hypothesis spec exists under hypotheses/ (H-NNN-<slug>.md shape) with: one
+         falsifiable hypothesis sentence, exactly one variable under test, a stated
+         baseline, and a fixed budget per run.
+      2. The spec has between 3 and 5 numbered binary assertions, each a pass/fail
+         check a grader could verify mechanically — no subjective scores.
+      3. The spec has a mechanical verdict rule naming keep and refine/discard
+         conditions derived only from the assertions.
+      4. No run was executed in this session: the spec came first, and the agent
+         either asked for confirmation or explicitly stated its assumptions in the
+         spec.
+      5. A write-once journal fragment records the registration (YAML frontmatter
+         with an integer id: and a date:).
+expected_outcome: >
+  A registered hypothesis spec built from the template — one variable, budget,
+  3-5 binary assertions, mechanical verdict rule — plus a journal fragment for
+  the registration, and no run executed before the spec.

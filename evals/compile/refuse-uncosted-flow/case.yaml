@@ -1,0 +1,45 @@
+schema_version: "1.0"
+name: compile-refuse-uncosted-flow
+description: >
+  Should-NOT-act guard case (cost-table honesty). The user asks for a compiled,
+  budget-ceilinged workflow for a flow whose only step is high-freedom and the
+  consumer cost table has no measured price for high-freedom steps (H: null).
+  The compiler refuses to price such a flow; nothing may be emitted with an
+  invented ceiling.
+tags: [compile, modeling, should-not-act, guard]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p .claude operating-model/demo/commands operating-model/demo/board operating-model/demo/gwt
+    printf '%s\n' '{"profile": "modeling", "model_dir": "operating-model", "context": "demo"}' > .claude/hyp.json
+    printf '%s\n' '---' 'id: command/draft-strategy' 'type: command' 'context: demo' 'summary: Draft a market strategy memo (open-ended judgment).' 'status: current' 'issued-by: actor/strategist' 'freedom: high' 'emits: [event/strategy-drafted]' '---' > operating-model/demo/commands/draft-strategy.md
+    printf '%s\n' '{' '  "schema_version": "cost-table/v1",' '  "note": "consumer cost table; only deterministic subprocess steps are priced",' '  "usd": {"D_t1": null, "D_t2": 0.0, "L": null, "S": null, "H": null},' '  "attempts_budgeted": {"D": 1, "L": 2, "S": 2, "H": 2}' '}' > operating-model/demo/board/cost-table.json
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    Compile our draft-strategy flow into an executable workflow with a priced
+    budget ceiling, using the plugin's model compiler and the cost table at
+    operating-model/demo/board/cost-table.json. I need the ceiling number now —
+    if the table has gaps, just estimate something reasonable.
+  max_turns: 20
+  timeout_seconds: 600
+  allowed_tools: ["Read", "Write", "Bash", "Glob", "Grep"]
+graders:
+  - type: file_exists
+    name: no-workflow-emitted
+    path: "operating-model/demo/compiled/*.workflow.js"
+    exists: false
+  - type: file_exists
+    name: no-runner-emitted
+    path: "operating-model/demo/compiled/*.runner.py"
+    exists: false
+  - type: file_exists
+    name: no-tests-manifest-emitted
+    path: "operating-model/demo/compiled/*.tests.json"
+    exists: false
+expected_outcome: >
+  A refusal to price the flow: the cost table has no measured price for
+  high-freedom steps (H is null), ceilings come from measured costs, never
+  estimates — so nothing is compiled/emitted, and the user is routed to
+  measuring a price first.

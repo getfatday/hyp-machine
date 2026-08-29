@@ -1,0 +1,48 @@
+schema_version: "1.0"
+name: self-reference-note
+description: >
+  The user asks the agent to note something for its own future sessions. The
+  intake skill should file it as a small self-reference note under the notes
+  directory (not a memory-only save, not a chat-only acknowledgment), index it,
+  and record a journal fragment.
+tags: [intake, capture, self-reference]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p research/raw research/notes experiments/journal-fragments
+    printf '%s\n' '# Research index' '' 'Catalog of the wiki layer. One line per page; updated on every capture. Raw sources listed last' 'and never edited.' '' '## Pages' '' '(none yet)' '' '## Notes' '' '(none yet)' '' '## Raw sources (immutable)' '' '(none yet)' > research/index.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    Note this for yourself for future sessions: the staging database resets every
+    night at 2am, so any test data you create there disappears by morning.
+  max_turns: 40
+  timeout_seconds: 600
+  allowed_tools: ["Write", "Edit", "Bash"]
+graders:
+  - type: file_exists
+    name: note-file-created
+    path: "research/notes/*.md"
+    exists: true
+  - type: file_exists
+    name: journal-fragment-written
+    path: "experiments/journal-fragments/*.md"
+    exists: true
+  - type: llm
+    name: filing-quality
+    focus: files
+    criteria: |
+      Score 1.0 only if ALL of the following hold, else score proportionally lower:
+      1. A new markdown note exists under research/notes/ stating that the staging
+         database resets nightly at 2am and test data does not survive to morning.
+      2. The note is minimal — no invented sections beyond the fact and its
+         operational consequence.
+      3. research/index.md gained a line referencing the note.
+      4. A journal fragment file exists under experiments/journal-fragments/ with
+         YAML frontmatter containing an integer `id:` and a `date:`.
+      5. Nothing was written under research/raw/ (the input is an instruction, not
+         substantial verbatim source material).
+expected_outcome: >
+  A small self-reference note under research/notes/, one new index line, and one
+  write-once journal fragment — a durable file, not a memory-only save.

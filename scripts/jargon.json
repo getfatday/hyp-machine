@@ -1,0 +1,15 @@
+{
+ "provenance": "H-201 spec Method, inherited VERBATIM from H-160's registration freeze: 'the jargon list for the gloss lint (preflight, assertion, fixture, counted run, calibration, fragment, verdict, on-keep)'. Terms and rules byte-equivalent to H-160's; only this provenance line names the successor.",
+ "rule": "Each listed term, at its FIRST occurrence in the page's prose (pointer spans and quoted artifact spans excluded), must be immediately followed by a parenthetical gloss of at least ten characters that opens and closes on the same line: term(s?) (gloss...). Terms that never occur in prose pass vacuously. Matching is case-insensitive; an optional plural 's' on the term is part of the first occurrence.",
+ "terms": [
+  {"term": "preflight", "pattern": "preflight"},
+  {"term": "assertion", "pattern": "assertion"},
+  {"term": "fixture", "pattern": "fixture"},
+  {"term": "counted run", "pattern": "counted\\s+run"},
+  {"term": "calibration", "pattern": "calibration"},
+  {"term": "fragment", "pattern": "fragment"},
+  {"term": "verdict", "pattern": "verdict"},
+  {"term": "on-keep", "pattern": "on[- ]keep"}
+ ],
+ "bare_slug_rule": "Slug pattern [HD]-\\d{3}: the FIRST occurrence of each distinct slug in prose (pointer spans and quoted spans excluded) must be immediately followed by ' (' and a gloss of at least ten characters closing on the same line, or by ' — ' and prose. Later occurrences may be bare. Zero unglossed first uses = zero bare slugs."
+}

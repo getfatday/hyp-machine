@@ -1,0 +1,50 @@
+schema_version: "1.0"
+name: verify-harness-scaffold
+description: >
+  Should-act case. Asked whether a way-of-working intervention actually works,
+  the verify skill should register a controlled A/B spec — one variable,
+  baseline, fixed budget, 3-5 binary assertions, mechanical verdict rule, arm
+  isolation and blind referent grading stated — WITHOUT running anything.
+tags: [verify, modeling, should-act]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p .claude research/raw research/notes experiments/journal-fragments experiments/runs hypotheses
+    printf '%s\n' '{"profile": "modeling", "raw_dir": "research/raw", "notes_dir": "research/notes", "index_file": "research/index.md", "journal_dir": "experiments/journal-fragments", "hypotheses_dir": "hypotheses", "runs_dir": "experiments/runs", "template_file": "hypotheses/TEMPLATE.md", "preflight_file": "experiments/preflight.py"}' > .claude/hyp.json
+    printf '%s\n' '# H-NNN-slug: <short title>' '' '## Status' 'draft' '' '## Hypothesis' '<!-- One falsifiable sentence. -->' '' '## Motivation' '<!-- 2-3 sentences max. -->' '' '## Variable under test' '<!-- Exactly one. -->' '' '## Baseline' '<!-- The current practice this is compared against. -->' '' '## Method' '1. <!-- numbered steps; fixed budget per run so runs are comparable -->' '- Fixture: <!-- pinned starting state both arms share -->' '- Repetitions per arm: <!-- e.g. 3 -->' '- Budget per run: <!-- e.g. 30 min wall-clock -->' '' '## Binary assertions' '<!-- 3-5 pass/fail checks. The ONLY basis for the verdict. No subjective scores. -->' '1.' '2.' '3.' '' '## Verdict rule' '<!-- Mechanical: all assertions pass = keep-eligible; any failure = discard or refine. -->' '' '## On keep' '- none' '' '## Runs' '| # | Date | Assertions passed | Journal entry |' '|---|------|-------------------|---------------|' > hypotheses/TEMPLATE.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    Before we adopt it team-wide: does adding a pull-request checklist template
+    actually reduce review round-trips? Set up the controlled experiment that
+    would prove or refute this — arms, isolation, blind grading — but do not
+    run anything yet.
+  max_turns: 30
+  timeout_seconds: 600
+  allowed_tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+graders:
+  - type: file_exists
+    name: spec-registered
+    path: "hypotheses/H-*.md"
+    exists: true
+  - type: regex
+    name: binary-assertions-present
+    target: files
+    pattern: '## Binary assertions'
+    match: contains
+  - type: regex
+    name: isolation-or-blind-grading-stated
+    target: files
+    pattern: 'blind|referent|isolat'
+    flags: i
+    match: contains
+  - type: file_exists
+    name: no-run-artifacts
+    path: "experiments/runs/*/run-1"
+    exists: false
+expected_outcome: >
+  A registered A/B spec (checklist ON vs current practice OFF) with one
+  variable, a baseline, a fixed budget, 3-5 binary assertions, a mechanical
+  verdict rule, and stated arm-isolation/blind-referent grading — and no run
+  executed.

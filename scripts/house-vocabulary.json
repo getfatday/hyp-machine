@@ -1,0 +1,475 @@
+{
+  "_purpose": "Gloss list backing rule L3 of communication-contract.md: no term below (or its variants) appears in a decision card or session report without its gloss on first use — or is replaced by the gloss entirely.",
+  "_gloss_style": "one clause, plain words, no other house terms inside a gloss",
+  "_source": "insider terms surfaced by the source lab's 2026-08-28 decision-clarity audit (language failures across its live decision cards, queue, and session reports); PORTED term-for-term into the hyp plugin with clarity-lint.py — see docs/communication-contract.md",
+  "_target_path": "scripts/house-vocabulary.json (beside clarity-lint.py, which reads it by default)",
+  "_extend": "add your own repository's insider terms here; clarity-lint.py and the decisions.html gloss tooltips pick them up on the next run/render",
+  "terms": {
+    "lane": {
+      "gloss": "one experiment's full pipeline (write-up, runs, scoring, verdict) executed by automated agents",
+      "variants": [
+        "lanes",
+        "lane chain"
+      ]
+    },
+    "wave": {
+      "gloss": "a batch of experiments run together toward one release version",
+      "variants": [
+        "waves",
+        "wave plan"
+      ]
+    },
+    "ship": {
+      "gloss": "commit and publish so it is live for users",
+      "variants": [
+        "shipped",
+        "shipping"
+      ]
+    },
+    "keep": {
+      "gloss": "final verdict: the tested change passed its pre-declared checks and is adopted as standard practice",
+      "variants": [
+        "kept",
+        "keeps",
+        "on-keep"
+      ]
+    },
+    "discard": {
+      "gloss": "final verdict: the idea failed its checks and is dropped",
+      "variants": [
+        "discarded"
+      ]
+    },
+    "refine": {
+      "gloss": "final verdict: partial pass — revise the idea and run it again",
+      "variants": [
+        "refined",
+        "refine-to-keep"
+      ]
+    },
+    "verdict": {
+      "gloss": "the mechanical keep/discard/drop outcome computed from checks declared before the run",
+      "variants": [
+        "verdicts",
+        "verdict time"
+      ]
+    },
+    "counted run": {
+      "gloss": "a run whose scores count toward the verdict (practice or broken runs are excluded)",
+      "variants": [
+        "counted",
+        "counted window",
+        "counted lanes"
+      ]
+    },
+    "void": {
+      "gloss": "a run thrown out before scoring; it counts neither for nor against",
+      "variants": [
+        "voided",
+        "voids"
+      ]
+    },
+    "sweep": {
+      "gloss": "one automated pass applying the same check or fix across many items",
+      "variants": [
+        "sweeps",
+        "swept"
+      ]
+    },
+    "gap": {
+      "gloss": "a found mismatch between what was claimed or planned and what actually exists",
+      "variants": [
+        "gaps",
+        "gap analysis"
+      ]
+    },
+    "fixture": {
+      "gloss": "the input set an experiment runs against, locked before the run starts",
+      "variants": [
+        "fixtures",
+        "frozen fixture",
+        "fixture law"
+      ]
+    },
+    "frozen": {
+      "gloss": "locked against edits once registered; changing it invalidates the result",
+      "variants": [
+        "freeze",
+        "frozen at registration"
+      ]
+    },
+    "arm": {
+      "gloss": "one of the compared conditions in an experiment (like treatment vs control)",
+      "variants": [
+        "arms",
+        "arm-visible",
+        "arm-adherence"
+      ]
+    },
+    "armed default": {
+      "gloss": "a pre-committed action that fires automatically on a named trigger unless vetoed first",
+      "variants": [
+        "armed-default",
+        "arms and fires"
+      ]
+    },
+    "preflight": {
+      "gloss": "automated checks run before launch to catch setup mistakes",
+      "variants": [
+        "pre-flight",
+        "pre-flighted",
+        "preflighted"
+      ]
+    },
+    "pair economics": {
+      "gloss": "the cost/benefit of running the same task twice in parallel to compare outcomes",
+      "variants": [
+        "pair-economics",
+        "parity pair"
+      ]
+    },
+    "gate": {
+      "gloss": "an automated check that can block work until it passes",
+      "variants": [
+        "gates",
+        "gated",
+        "gating"
+      ]
+    },
+    "report-only": {
+      "gloss": "the check logs violations but blocks nothing",
+      "variants": [
+        "report only mode"
+      ]
+    },
+    "enforcing": {
+      "gloss": "the check actually blocks violations instead of just logging them",
+      "variants": [
+        "enforcement",
+        "enforcement flip",
+        "enforcing mode"
+      ]
+    },
+    "hook": {
+      "gloss": "a script that runs automatically around tool actions to enforce a rule",
+      "variants": [
+        "hooks",
+        "hooks.json",
+        "hook wiring"
+      ]
+    },
+    "advisory": {
+      "gloss": "a non-blocking warning shown to working sessions",
+      "variants": [
+        "advisories",
+        "ninth-advisory"
+      ]
+    },
+    "lint": {
+      "gloss": "a mechanical text or code check with a pass/fail result",
+      "variants": [
+        "lints",
+        "lintable",
+        "linted"
+      ]
+    },
+    "ledger": {
+      "gloss": "the append-only file listing commitments and open items; one entry per line",
+      "variants": [
+        "work ledger",
+        "ledger row"
+      ]
+    },
+    "row": {
+      "gloss": "one entry in the lab's open-items file",
+      "variants": [
+        "rows",
+        "ledgered",
+        "unledgered"
+      ]
+    },
+    "fragment": {
+      "gloss": "one write-once journal entry recording what happened and why",
+      "variants": [
+        "fragments",
+        "journal fragment"
+      ]
+    },
+    "canon": {
+      "gloss": "the repository's authoritative rules and write-ups; changing it requires the maintainer",
+      "variants": [
+        "canonical"
+      ]
+    },
+    "spec": {
+      "gloss": "the written experiment plan, including its pass/fail checks, fixed before running",
+      "variants": [
+        "specs",
+        "specced"
+      ]
+    },
+    "zero-run spec": {
+      "gloss": "a registered experiment plan that has not run yet",
+      "variants": [
+        "zero-run specs"
+      ]
+    },
+    "supersede": {
+      "gloss": "replace an old item with a new one, leaving a pointer from old to new",
+      "variants": [
+        "superseded",
+        "supersession",
+        "supersede pointer"
+      ]
+    },
+    "amendment": {
+      "gloss": "a tracked edit to an already-registered experiment plan",
+      "variants": [
+        "amendments",
+        "amend",
+        "amendment path"
+      ]
+    },
+    "bracket": {
+      "gloss": "a pre-registered follow-up that opens automatically when a result lands (if kept, then ...)",
+      "variants": [
+        "brackets",
+        "on-keep bracket",
+        "closes-when"
+      ]
+    },
+    "grade": {
+      "gloss": "scoring one run against its pre-declared checks",
+      "variants": [
+        "grades",
+        "graded",
+        "grading",
+        "regraded"
+      ]
+    },
+    "board": {
+      "gloss": "the maintainer-facing decision list (or, in design experiments, the rendered diagram under review — say which)",
+      "variants": [
+        "boards",
+        "final board",
+        "dashboard"
+      ]
+    },
+    "doors green": {
+      "gloss": "all pre-launch readiness checks passing",
+      "variants": [
+        "doors-green",
+        "doors"
+      ]
+    },
+    "calibrated": {
+      "gloss": "verified against known-answer cases before live use",
+      "variants": [
+        "calibration",
+        "calibrations"
+      ]
+    },
+    "orchestrator": {
+      "gloss": "the automated session that schedules experiment runs and applies the verdict rules",
+      "variants": [
+        "orchestrator-attributed",
+        "orchestrator ruling"
+      ]
+    },
+    "ruling": {
+      "gloss": "a recorded decision, by the maintainer or the automation, that later work cites",
+      "variants": [
+        "rulings",
+        "ruled"
+      ]
+    },
+    "triage": {
+      "gloss": "sorting open questions into: handle automatically, test instead, or genuinely needs a human",
+      "variants": [
+        "triaged",
+        "ask-triage",
+        "retriage"
+      ]
+    },
+    "blast radius": {
+      "gloss": "everything a change can affect beyond the lab, especially other people",
+      "variants": [
+        "blast-radius"
+      ]
+    },
+    "live surface": {
+      "gloss": "anything outside the lab that real people see or depend on",
+      "variants": [
+        "live-surface",
+        "live surfaces"
+      ]
+    },
+    "two-way door": {
+      "gloss": "a reversible decision — anything that lands as a commit can be undone, so it should not wait on a human",
+      "variants": [
+        "two-way doors",
+        "2-way door"
+      ]
+    },
+    "one-way door": {
+      "gloss": "an irreversible decision — it cannot be undone, so a human makes it",
+      "variants": [
+        "one-way doors",
+        "1-way door"
+      ]
+    },
+    "scratch repo": {
+      "gloss": "a throwaway repository used only for a test",
+      "variants": [
+        "scratch repository",
+        "scratch dir",
+        "scratch consumer"
+      ]
+    },
+    "round-trip": {
+      "gloss": "write it out, read it back, and verify nothing changed",
+      "variants": [
+        "roundtrip",
+        "round trip",
+        "round-trips"
+      ]
+    },
+    "parity": {
+      "gloss": "two implementations produce identical results on the same input",
+      "variants": [
+        "parity check",
+        "parity-check"
+      ]
+    },
+    "kept bundle": {
+      "gloss": "the exact set of files an experiment proved out, preserved at its passing state",
+      "variants": [
+        "bundle",
+        "live bundle"
+      ]
+    },
+    "lineage": {
+      "gloss": "a chain of commits treated as one unit of history",
+      "variants": [
+        "lineages",
+        "publish lineage"
+      ]
+    },
+    "re-sign": {
+      "gloss": "add the maintainer's cryptographic signature to existing commits after the fact",
+      "variants": [
+        "resign",
+        "re-signed",
+        "re-signing",
+        "unsigned history"
+      ]
+    },
+    "device flow": {
+      "gloss": "a login where a human types a short code shown on one device into another",
+      "variants": [
+        "device-flow",
+        "device-code entry",
+        "device code"
+      ]
+    },
+    "NEEDS-IAN": {
+      "gloss": "flagged as requiring the maintainer personally",
+      "variants": [
+        "needs-ian",
+        "needs Ian"
+      ]
+    },
+    "dispatch": {
+      "gloss": "launching queued experiment runs",
+      "variants": [
+        "dispatched",
+        "frontier dispatch",
+        "queue dispatch"
+      ]
+    },
+    "stagger": {
+      "gloss": "deliberately delaying runs so they do not overlap",
+      "variants": [
+        "staggered",
+        "staggering"
+      ]
+    },
+    "WIP cap": {
+      "gloss": "a limit on how much work may be in progress at once",
+      "variants": [
+        "wip-cap",
+        "WIP-cap"
+      ]
+    },
+    "retrofit": {
+      "gloss": "applying a new rule to already-existing items",
+      "variants": [
+        "retrofits",
+        "retrofitted",
+        "retrofit annotations"
+      ]
+    },
+    "hyp": {
+      "gloss": "this lab's installable plugin — the packaged version of its way of working",
+      "variants": [
+        "hyp plugin"
+      ]
+    },
+    "plugin": {
+      "gloss": "an installable extension package for Claude Code",
+      "variants": [
+        "plugins"
+      ]
+    },
+    "score notation": {
+      "gloss": "NxM/M means: passed M of M checks in each of N scored runs (2x5/5 = all 5 checks passed in both runs)",
+      "variants": [
+        "2x5/5",
+        "2x4/4",
+        "7/7",
+        "5/5",
+        "4/5"
+      ]
+    },
+    "wall clock": {
+      "gloss": "elapsed real-world time, as opposed to compute time",
+      "variants": [
+        "wall-clock"
+      ]
+    },
+    "decoy": {
+      "gloss": "a planted non-problem used to test for false alarms",
+      "variants": [
+        "decoys"
+      ]
+    },
+    "drift": {
+      "gloss": "unintended divergence between two copies that should stay identical",
+      "variants": [
+        "drifted",
+        "drift-checked"
+      ]
+    },
+    "H-NNN": {
+      "gloss": "a numbered testable idea with pass/fail checks declared before any run (an experiment id)",
+      "variants": [
+        "hypothesis id"
+      ]
+    },
+    "DEC-NNN": {
+      "gloss": "a numbered open question waiting on the maintainer (a decision id)",
+      "variants": [
+        "decision id",
+        "DEC row"
+      ]
+    },
+    "N-id": {
+      "gloss": "a numbered design-note item, not yet an experiment (N5, N13, ...)",
+      "variants": [
+        "N5/N6",
+        "N13",
+        "N1"
+      ]
+    }
+  }
+}

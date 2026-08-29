@@ -1,0 +1,14 @@
+{
+  "schema_version": "gwt-case/v1",
+  "id": "example--happy-path",
+  "slice": "slice/example",
+  "given": [
+    {"kind": "bash", "cmd": "mkdir -p inbox && printf 'hello\n' > inbox/request.txt"}
+  ],
+  "when": {"command": "command/handle-request"},
+  "then": [
+    {"kind": "check", "op": "contains", "target": "outbox/reply.txt", "value": "hello"},
+    {"kind": "check", "op": "nonempty", "target": "outbox/reply.txt"}
+  ],
+  "note": "GWT case shape (format only): Given seeds a reachable state with allowlisted deterministic commands; When names exactly the slice's drawn command; Then is a list of mechanical checks (ops: contains, not-contains, regex, nonempty, empty, truthy, eq) or a named rejection the slice declares. Deterministic and side-effect-free: same Given/When always yields the same Then."
+}

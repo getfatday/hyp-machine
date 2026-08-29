@@ -1,0 +1,1 @@
+I can file this as a GitHub issue on {repo} under your GitHub account. Here is the exact payload. Found {n} similar issues — comment there instead? [file / comment-on-#{dupe} / save locally / drop]

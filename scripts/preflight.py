@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Mechanical pre-flight for hypothesis specs (hyp).
+
+Usage: preflight.py <hypotheses/H-NNN-slug.md>
+Exit 0 = PASS (spec auto-activates and runs, no human intervention).
+Exit 1 = ESCALATE (one-way-door signal or checklist failure; human review required).
+Exit 2 = MALFORMED (spec missing required sections; fix and re-run).
+
+Deterministic checks only. Prints one line per check: PASS/FAIL <check>: <detail>.
+"""
+import re, sys, os
+
+ONE_WAY_SIGNALS = [
+    # phrases that indicate external or irreversible effects in Method/Fixture text
+    r'--dangerously-skip-permissions',
+    r'\bproduction\b', r'\blive (?:system|service|api|deploy)\b',
+    r'\bdelete[s]? (?:the )?(?:remote|repository|branch)\b',
+    r'\bsend[s]? (?:an? )?(?:email|message|slack)\b', r'\bpost[s]? to\b',
+    r'\bpurchas', r'\bpayment\b', r'\bspend[s]? (?:real )?money\b',
+]
+SANDBOX_SIGNALS = [r'\bsandbox', r'\bworktree\b', r'\bclone\b', r'\btransplant', r'\bisolated\b', r'\bscratch', r'\bfixture\b']
+
+def main(path):
+    text = open(path).read()
+    ok = True
+    def check(name, cond, detail):
+        nonlocal ok
+        print(("PASS " if cond else "FAIL ") + name + ": " + detail)
+        if not cond: ok = False
+
+    required = ['## Status', '## Hypothesis', '## Variable under test', '## Baseline',
+                '## Method', '## Binary assertions', '## Verdict rule', '## Runs']
+    missing = [h for h in required if h not in text]
+    if missing:
+        print("MALFORMED missing sections: " + ", ".join(missing)); return 2
+
+    method = text.split('## Method',1)[1].split('## Binary assertions',1)[0]
+
+    hits = [p for p in ONE_WAY_SIGNALS if re.search(p, method, re.I)]
+    check("two-way-door", not hits, "no one-way-door signals in Method" if not hits else "signals: " + "; ".join(hits))
+
+    sandboxed = any(re.search(p, method, re.I) for p in SANDBOX_SIGNALS)
+    check("sandboxing", sandboxed, "Method references an isolated execution surface" if sandboxed else "no sandbox/isolation reference found")
+
+    gt = bool(re.search(r'(never|not).{0,60}(arm[- ]visible|copied into|shown to arms|see[s]? the manifest)|directive 8|(arm|arms) never sees?', text, re.I))
+    check("ground-truth-isolation", gt, "spec states arm-invisible ground truth" if gt else "no arm-invisible ground-truth statement found")
+
+    frozen = bool(re.search(r'[Ff]rozen at registration|[Ff]rozen \(', text)) or 'FROZEN' in text
+    check("frozen-protocol/rubric", frozen, "freeze language present" if frozen else "no freeze statement")
+
+    budget = bool(re.search(r'Budget per run', text))
+    check("budget-declared", budget, "budget line present (no cap applies; cost recorded per run)" if budget else "no budget line")
+
+    # scope exclusions: any 'excludes/exclusion/out of scope/deferred' sentence must carry a mapping
+    excl = re.findall(r'[^.\n]*\b(?:out of scope|scope exclusion|excludes?|deferred)\b[^.\n]*\.', text, re.I)
+    unmapped = [e.strip()[:90] for e in excl
+                if not re.search(r'DoD|definition of done|H-\d{3}|future hypothesis|separate .{0,20}hypothesis|plugin', e, re.I)]
+    check("scope-exclusions-mapped", not unmapped,
+          f"{len(excl)} exclusion sentence(s), all mapped" if not unmapped else "unmapped: " + " | ".join(unmapped))
+
+    assertions = text.split('## Binary assertions',1)[1].split('## Verdict rule',1)[0]
+    n = len(re.findall(r'^\d+\.', assertions, re.M))
+    check("binary-assertions", 3 <= n <= 5, f"{n} numbered assertions")
+
+    verdict = text.split('## Verdict rule',1)[1].split('## Runs',1)[0]
+    mech = bool(re.search(r'[Kk]eep if .*assertions pass', verdict)) and bool(re.search(r'refine|discard', verdict))
+    check("mechanical-verdict", mech, "keep/refine/discard rule present" if mech else "verdict rule not mechanical")
+
+    print("RESULT: " + ("PASS — auto-activate and run" if ok else "ESCALATE — human review required"))
+    return 0 if ok else 1
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1]))

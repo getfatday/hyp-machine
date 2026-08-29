@@ -1,0 +1,52 @@
+schema_version: "1.0"
+name: observe-trace-seeded-transcript
+description: >
+  Should-act case. A recorded session transcript and a small pre-built
+  operating model ship in the fixture; the observe skill should produce a
+  node-tagged trace whose steps cite transcript message ids (msg_...), so the
+  citations are mechanically validatable.
+tags: [observe, modeling, should-act]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p sessions .claude operating-model/demo/actors operating-model/demo/commands operating-model/demo/events operating-model/demo/readmodels operating-model/demo/policies
+    printf '%s\n' '{"profile": "modeling", "model_dir": "operating-model", "context": "demo"}' > .claude/hyp.json
+    printf '%s\n' '{"message":{"id":"msg_demo0001","role":"user","content":[{"type":"text","text":"Assemble the release notes for version 1.2 from the merged changelog entries."}]}}' '{"message":{"id":"msg_demo0002","role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"changelog/1.2/entry-a.md"}}],"usage":{"output_tokens":52}}}' '{"message":{"id":"msg_demo0003","role":"user","content":[{"type":"tool_result","content":"- fix: retry failed uploads"}]}}' '{"message":{"id":"msg_demo0004","role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"changelog/1.2/entry-b.md"}}],"usage":{"output_tokens":41}}}' '{"message":{"id":"msg_demo0005","role":"user","content":[{"type":"tool_result","content":"- feat: dark mode for dashboards"}]}}' '{"message":{"id":"msg_demo0006","role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"release-notes/1.2.md","content":"Release 1.2: retry failed uploads; dark mode for dashboards."}}],"usage":{"output_tokens":88}}}' '{"message":{"id":"msg_demo0007","role":"user","content":[{"type":"tool_result","content":"file written"}]}}' '{"message":{"id":"msg_demo0008","role":"assistant","content":[{"type":"text","text":"Release notes assembled at release-notes/1.2.md."}],"usage":{"output_tokens":30}}}' > sessions/demo.jsonl
+    printf '%s\n' '# Operating model — demo context' '' '## Actors' '- actor/release-editor — assembles release notes from changelog entries' '' '## Commands' '- command/assemble-release-notes — read merged changelog entries, write the release-notes file' '' '## Events' '- event/release-notes-written — release-notes/<version>.md exists (file)' '' '## Read models' '- read-model/changelog-entries — the merged changelog entry files consulted' > operating-model/demo/model.md
+    printf '%s\n' '---' 'id: actor/release-editor' 'type: actor' 'context: demo' 'summary: Assembles release notes from merged changelog entries.' 'status: current' '---' > operating-model/demo/actors/release-editor.md
+    printf '%s\n' '---' 'id: command/assemble-release-notes' 'type: command' 'context: demo' 'summary: Read merged changelog entries and write the release-notes file.' 'status: current' 'issued-by: actor/release-editor' 'reads: [read-model/changelog-entries]' 'emits: [event/release-notes-written]' '---' > operating-model/demo/commands/assemble-release-notes.md
+    printf '%s\n' '---' 'id: event/release-notes-written' 'type: event' 'context: demo' 'summary: A release-notes file exists for the version.' 'status: current' 'representation: file(release-notes/<version>.md)' 'emitted-by: [command/assemble-release-notes]' '---' > operating-model/demo/events/release-notes-written.md
+    printf '%s\n' '---' 'id: read-model/changelog-entries' 'type: read-model' 'context: demo' 'summary: Merged changelog entry files consulted during assembly.' 'status: current' 'implementation: file(changelog/)' 'maintainer: command/assemble-release-notes' '---' > operating-model/demo/readmodels/changelog-entries.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    Trace the recorded session at sessions/demo.jsonl against the operating
+    model in operating-model/demo/ (observe discipline): write trace.json at
+    the repo root — a JSON array of ordered steps, each tagged with the model
+    node ids it touched and citing the transcript message id (msg_...) it is
+    grounded in, with its output_tokens. Report any deviations and the top
+    output-token step.
+  max_turns: 30
+  timeout_seconds: 900
+  allowed_tools: ["Read", "Write", "Bash", "Glob", "Grep"]
+graders:
+  - type: file_exists
+    name: trace-written
+    path: "trace.json"
+    exists: true
+  - type: regex
+    name: trace-cites-message-ids
+    target: { source: file, path: trace.json }
+    pattern: 'msg_demo'
+    match: contains
+  - type: regex
+    name: trace-tags-model-nodes
+    target: { source: file, path: trace.json }
+    pattern: 'command/assemble-release-notes'
+    match: contains
+expected_outcome: >
+  A trace.json array whose steps carry model node tags (the assemble command,
+  its read model and event) and msg_demo... citations resolvable in the
+  transcript, plus a report naming the top token step (the Write at
+  msg_demo0006).
