@@ -1,30 +1,40 @@
 {
-  "_purpose": "Gloss list backing rule L3 of communication-contract.md: no term below (or its variants) appears in a decision card or session report without its gloss on first use — or is replaced by the gloss entirely.",
-  "_gloss_style": "one clause, plain words, no other house terms inside a gloss",
-  "_source": "insider terms surfaced by the source lab's 2026-08-28 decision-clarity audit (language failures across its live decision cards, queue, and session reports); PORTED term-for-term into the hyp plugin with clarity-lint.py — see docs/communication-contract.md",
-  "_target_path": "scripts/house-vocabulary.json (beside clarity-lint.py, which reads it by default)",
-  "_extend": "add your own repository's insider terms here; clarity-lint.py and the decisions.html gloss tooltips pick them up on the next run/render",
+  "_purpose": "Single house vocabulary backing the communication contract (research/communication-contract.md): rule L3 (gloss on first use in reader-facing artifacts) and the L12 term-choice law (reuse, borrow, coin) in its addendum. One source, many render points: the crux mirror, decision-card tooltips, the dashboard render, the case-study renderer, and clarity-lint all read or derive from this file.",
+  "_schema": "v2 (additive). Per entry: gloss (one clause, plain words, <= 25 words, no ids, no score shorthand, no house-only coinages from other entries; pattern keys exempt from the id/score scans because they define those patterns); variants (exact strings the lint also matches, including deprecated spellings); known_equivalent (the established external name for the same or nearest concept, or null); anchor (ONE stable https URL defining the known concept - prefer en.wikipedia.org, rfc-editor.org, ISO, vendor canon; no implementation artifacts in paths - or null); anchor_waiver (required one-line reason when a house-only entry has anchor null); status (preferred | house-only | deprecated-alias-of:<headword>); first_defined (optional provenance: hypothesis id or artifact path where coined). v1 entries stay loadable: absent fields default to known_equivalent null, anchor null, status house-only.",
+  "_admission": "The naming law for new terms, in strict order: (1) if a known term fits, the known term is the headword and any house coinage for the same concept enters as deprecated-alias-of it; (2) a house term that stays anchors externally to the nearest well-known concept so a glance gives context; (3) every gloss passes the gloss lint - the glossary itself reads plain. Entries land agent-drafted, maintainer-ratified.",
+  "_status_semantics": "preferred: the headword IS the known or plain name (borrowed like andon, or plain English in its ordinary sense); free to use, gloss-on-first-use still applies in reader-facing modes. house-only: a coinage with no adequate known name; legal only with gloss on first use; must carry known_equivalent plus anchor or anchor_waiver; density counted per artifact (title ceiling: max 1). deprecated-alias-of:<headword>: never written in new artifacts; any use is a finding naming the canonical headword; old write-once artifacts are never edited - the alias entry is the tombstone a reader resolves through.",
+  "_source": "v1: insider terms surfaced by the 2026-08-28 decision-clarity audit. v2 upgrade + additions: the 2026-08-29 artifact-language census (live unregistered coinages) under the maintainer language-integrity directive.",
+  "_target_path": "scripts/house-vocabulary.json (byte-mirrored to experiments/deploy/hyp-machine/scripts/house-vocabulary.json; parity-checked)",
   "terms": {
     "lane": {
       "gloss": "one experiment's full pipeline (write-up, runs, scoring, verdict) executed by automated agents",
       "variants": [
         "lanes",
         "lane chain"
-      ]
+      ],
+      "known_equivalent": "pipeline run (one experiment, end to end)",
+      "anchor": "https://en.wikipedia.org/wiki/Continuous_integration",
+      "status": "house-only"
     },
     "wave": {
       "gloss": "a batch of experiments run together toward one release version",
       "variants": [
         "waves",
         "wave plan"
-      ]
+      ],
+      "known_equivalent": "release train",
+      "anchor": "https://en.wikipedia.org/wiki/Software_release_train",
+      "status": "house-only"
     },
     "ship": {
       "gloss": "commit and publish so it is live for users",
       "variants": [
         "shipped",
         "shipping"
-      ]
+      ],
+      "known_equivalent": "software release",
+      "anchor": "https://en.wikipedia.org/wiki/Software_release_life_cycle",
+      "status": "preferred"
     },
     "keep": {
       "gloss": "final verdict: the tested change passed its pre-declared checks and is adopted as standard practice",
@@ -32,27 +42,39 @@
         "kept",
         "keeps",
         "on-keep"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "discard": {
       "gloss": "final verdict: the idea failed its checks and is dropped",
       "variants": [
         "discarded"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "refine": {
       "gloss": "final verdict: partial pass — revise the idea and run it again",
       "variants": [
         "refined",
         "refine-to-keep"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "verdict": {
-      "gloss": "the mechanical keep/discard/drop outcome computed from checks declared before the run",
+      "gloss": "the mechanical keep/discard/refine outcome computed from checks declared before the run",
       "variants": [
         "verdicts",
         "verdict time"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "counted run": {
       "gloss": "a run whose scores count toward the verdict (practice or broken runs are excluded)",
@@ -60,28 +82,41 @@
         "counted",
         "counted window",
         "counted lanes"
-      ]
+      ],
+      "known_equivalent": "valid trial (scores count toward the outcome)",
+      "anchor": null,
+      "anchor_waiver": "no single established page separates counted from voided trials; the nearest concept is named in known_equivalent",
+      "status": "house-only"
     },
     "void": {
       "gloss": "a run thrown out before scoring; it counts neither for nor against",
       "variants": [
         "voided",
         "voids"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "sweep": {
       "gloss": "one automated pass applying the same check or fix across many items",
       "variants": [
         "sweeps",
         "swept"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "gap": {
       "gloss": "a found mismatch between what was claimed or planned and what actually exists",
       "variants": [
         "gaps",
         "gap analysis"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "fixture": {
       "gloss": "the input set an experiment runs against, locked before the run starts",
@@ -89,14 +124,20 @@
         "fixtures",
         "frozen fixture",
         "fixture law"
-      ]
+      ],
+      "known_equivalent": "test fixture",
+      "anchor": "https://en.wikipedia.org/wiki/Test_fixture",
+      "status": "preferred"
     },
     "frozen": {
       "gloss": "locked against edits once registered; changing it invalidates the result",
       "variants": [
         "freeze",
         "frozen at registration"
-      ]
+      ],
+      "known_equivalent": "freeze (software engineering)",
+      "anchor": "https://en.wikipedia.org/wiki/Freeze_(software_engineering)",
+      "status": "preferred"
     },
     "arm": {
       "gloss": "one of the compared conditions in an experiment (like treatment vs control)",
@@ -104,14 +145,20 @@
         "arms",
         "arm-visible",
         "arm-adherence"
-      ]
+      ],
+      "known_equivalent": "arm (clinical trials)",
+      "anchor": "https://en.wikipedia.org/wiki/Treatment_and_control_groups",
+      "status": "preferred"
     },
     "armed default": {
       "gloss": "a pre-committed action that fires automatically on a named trigger unless vetoed first",
       "variants": [
         "armed-default",
         "arms and fires"
-      ]
+      ],
+      "known_equivalent": "dead man's switch (pre-committed trigger)",
+      "anchor": "https://en.wikipedia.org/wiki/Dead_man%27s_switch",
+      "status": "house-only"
     },
     "preflight": {
       "gloss": "automated checks run before launch to catch setup mistakes",
@@ -119,14 +166,20 @@
         "pre-flight",
         "pre-flighted",
         "preflighted"
-      ]
+      ],
+      "known_equivalent": "preflight checklist",
+      "anchor": "https://en.wikipedia.org/wiki/Preflight_checklist",
+      "status": "preferred"
     },
     "pair economics": {
       "gloss": "the cost/benefit of running the same task twice in parallel to compare outcomes",
       "variants": [
         "pair-economics",
         "parity pair"
-      ]
+      ],
+      "known_equivalent": "A/B test cost-benefit",
+      "anchor": "https://en.wikipedia.org/wiki/A/B_testing",
+      "status": "house-only"
     },
     "gate": {
       "gloss": "an automated check that can block work until it passes",
@@ -134,13 +187,19 @@
         "gates",
         "gated",
         "gating"
-      ]
+      ],
+      "known_equivalent": "quality gate",
+      "anchor": "https://en.wikipedia.org/wiki/Quality_gate",
+      "status": "preferred"
     },
     "report-only": {
       "gloss": "the check logs violations but blocks nothing",
       "variants": [
         "report only mode"
-      ]
+      ],
+      "known_equivalent": "report-only enforcement mode",
+      "anchor": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy-Report-Only",
+      "status": "preferred"
     },
     "enforcing": {
       "gloss": "the check actually blocks violations instead of just logging them",
@@ -148,7 +207,10 @@
         "enforcement",
         "enforcement flip",
         "enforcing mode"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "hook": {
       "gloss": "a script that runs automatically around tool actions to enforce a rule",
@@ -156,14 +218,20 @@
         "hooks",
         "hooks.json",
         "hook wiring"
-      ]
+      ],
+      "known_equivalent": "hooking",
+      "anchor": "https://en.wikipedia.org/wiki/Hooking",
+      "status": "preferred"
     },
     "advisory": {
       "gloss": "a non-blocking warning shown to working sessions",
       "variants": [
         "advisories",
         "ninth-advisory"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "lint": {
       "gloss": "a mechanical text or code check with a pass/fail result",
@@ -171,14 +239,20 @@
         "lints",
         "lintable",
         "linted"
-      ]
+      ],
+      "known_equivalent": "lint (software)",
+      "anchor": "https://en.wikipedia.org/wiki/Lint_(software)",
+      "status": "preferred"
     },
     "ledger": {
       "gloss": "the append-only file listing commitments and open items; one entry per line",
       "variants": [
         "work ledger",
         "ledger row"
-      ]
+      ],
+      "known_equivalent": "append-only log",
+      "anchor": "https://en.wikipedia.org/wiki/Append-only",
+      "status": "preferred"
     },
     "row": {
       "gloss": "one entry in the lab's open-items file",
@@ -186,33 +260,48 @@
         "rows",
         "ledgered",
         "unledgered"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "fragment": {
       "gloss": "one write-once journal entry recording what happened and why",
       "variants": [
         "fragments",
         "journal fragment"
-      ]
+      ],
+      "known_equivalent": "changelog entry (write-once)",
+      "anchor": "https://en.wikipedia.org/wiki/Changelog",
+      "status": "house-only"
     },
     "canon": {
       "gloss": "the repository's authoritative rules and write-ups; changing it requires the maintainer",
       "variants": [
         "canonical"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "spec": {
       "gloss": "the written experiment plan, including its pass/fail checks, fixed before running",
       "variants": [
         "specs",
         "specced"
-      ]
+      ],
+      "known_equivalent": "preregistration (research plan)",
+      "anchor": "https://en.wikipedia.org/wiki/Preregistration_(science)",
+      "status": "preferred"
     },
     "zero-run spec": {
       "gloss": "a registered experiment plan that has not run yet",
       "variants": [
         "zero-run specs"
-      ]
+      ],
+      "known_equivalent": "preregistered study that has not yet run",
+      "anchor": "https://en.wikipedia.org/wiki/Preregistration_(science)",
+      "status": "house-only"
     },
     "supersede": {
       "gloss": "replace an old item with a new one, leaving a pointer from old to new",
@@ -220,7 +309,10 @@
         "superseded",
         "supersession",
         "supersede pointer"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "amendment": {
       "gloss": "a tracked edit to an already-registered experiment plan",
@@ -228,15 +320,21 @@
         "amendments",
         "amend",
         "amendment path"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "bracket": {
-      "gloss": "a pre-registered follow-up that opens automatically when a result lands (if kept, then ...)",
+      "gloss": "a pre-registered follow-up that opens automatically when a result lands (if the result passes, then ...)",
       "variants": [
         "brackets",
         "on-keep bracket",
         "closes-when"
-      ]
+      ],
+      "known_equivalent": "postcondition (a checkable follow-up)",
+      "anchor": "https://en.wikipedia.org/wiki/Postcondition",
+      "status": "house-only"
     },
     "grade": {
       "gloss": "scoring one run against its pre-declared checks",
@@ -245,7 +343,10 @@
         "graded",
         "grading",
         "regraded"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "board": {
       "gloss": "the maintainer-facing decision list (or, in design experiments, the rendered diagram under review — say which)",
@@ -253,35 +354,50 @@
         "boards",
         "final board",
         "dashboard"
-      ]
+      ],
+      "known_equivalent": "kanban board",
+      "anchor": "https://en.wikipedia.org/wiki/Kanban_board",
+      "status": "preferred"
     },
     "doors green": {
       "gloss": "all pre-launch readiness checks passing",
       "variants": [
         "doors-green",
         "doors"
-      ]
+      ],
+      "known_equivalent": "go/no-go launch poll",
+      "anchor": "https://en.wikipedia.org/wiki/Launch_status_check",
+      "status": "house-only"
     },
     "calibrated": {
       "gloss": "verified against known-answer cases before live use",
       "variants": [
         "calibration",
         "calibrations"
-      ]
+      ],
+      "known_equivalent": "calibration",
+      "anchor": "https://en.wikipedia.org/wiki/Calibration",
+      "status": "preferred"
     },
     "orchestrator": {
       "gloss": "the automated session that schedules experiment runs and applies the verdict rules",
       "variants": [
         "orchestrator-attributed",
         "orchestrator ruling"
-      ]
+      ],
+      "known_equivalent": "orchestration (computing)",
+      "anchor": "https://en.wikipedia.org/wiki/Orchestration_(computing)",
+      "status": "preferred"
     },
     "ruling": {
       "gloss": "a recorded decision, by the maintainer or the automation, that later work cites",
       "variants": [
         "rulings",
         "ruled"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "triage": {
       "gloss": "sorting open questions into: handle automatically, test instead, or genuinely needs a human",
@@ -289,34 +405,49 @@
         "triaged",
         "ask-triage",
         "retriage"
-      ]
+      ],
+      "known_equivalent": "triage",
+      "anchor": "https://en.wikipedia.org/wiki/Triage",
+      "status": "preferred"
     },
     "blast radius": {
       "gloss": "everything a change can affect beyond the lab, especially other people",
       "variants": [
         "blast-radius"
-      ]
+      ],
+      "known_equivalent": "blast radius (failure spread)",
+      "anchor": "https://en.wikipedia.org/wiki/Blast_radius",
+      "status": "preferred"
     },
     "live surface": {
       "gloss": "anything outside the lab that real people see or depend on",
       "variants": [
         "live-surface",
         "live surfaces"
-      ]
+      ],
+      "known_equivalent": "production-facing surface",
+      "anchor": "https://en.wikipedia.org/wiki/Deployment_environment",
+      "status": "house-only"
     },
     "two-way door": {
       "gloss": "a reversible decision — anything that lands as a commit can be undone, so it should not wait on a human",
       "variants": [
         "two-way doors",
         "2-way door"
-      ]
+      ],
+      "known_equivalent": "two-way door decision (Bezos 2015 shareholder letter)",
+      "anchor": null,
+      "status": "preferred"
     },
     "one-way door": {
       "gloss": "an irreversible decision — it cannot be undone, so a human makes it",
       "variants": [
         "one-way doors",
         "1-way door"
-      ]
+      ],
+      "known_equivalent": "one-way door decision (Bezos 2015 shareholder letter)",
+      "anchor": null,
+      "status": "preferred"
     },
     "scratch repo": {
       "gloss": "a throwaway repository used only for a test",
@@ -324,7 +455,10 @@
         "scratch repository",
         "scratch dir",
         "scratch consumer"
-      ]
+      ],
+      "known_equivalent": "sandbox repository",
+      "anchor": "https://en.wikipedia.org/wiki/Sandbox_(software_development)",
+      "status": "preferred"
     },
     "round-trip": {
       "gloss": "write it out, read it back, and verify nothing changed",
@@ -332,28 +466,40 @@
         "roundtrip",
         "round trip",
         "round-trips"
-      ]
+      ],
+      "known_equivalent": "round-trip engineering",
+      "anchor": "https://en.wikipedia.org/wiki/Round-trip_engineering",
+      "status": "preferred"
     },
     "parity": {
       "gloss": "two implementations produce identical results on the same input",
       "variants": [
         "parity check",
         "parity-check"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "kept bundle": {
       "gloss": "the exact set of files an experiment proved out, preserved at its passing state",
       "variants": [
         "bundle",
         "live bundle"
-      ]
+      ],
+      "known_equivalent": "release artifact set",
+      "anchor": "https://en.wikipedia.org/wiki/Artifact_(software_development)",
+      "status": "house-only"
     },
     "lineage": {
-      "gloss": "a chain of commits treated as one unit of history",
+      "gloss": "a sequence of commits treated as one unit of history",
       "variants": [
         "lineages",
         "publish lineage"
-      ]
+      ],
+      "known_equivalent": "data lineage",
+      "anchor": "https://en.wikipedia.org/wiki/Data_lineage",
+      "status": "preferred"
     },
     "re-sign": {
       "gloss": "add the maintainer's cryptographic signature to existing commits after the fact",
@@ -362,7 +508,10 @@
         "re-signed",
         "re-signing",
         "unsigned history"
-      ]
+      ],
+      "known_equivalent": "digital signature (applied after the fact)",
+      "anchor": "https://en.wikipedia.org/wiki/Digital_signature",
+      "status": "preferred"
     },
     "device flow": {
       "gloss": "a login where a human types a short code shown on one device into another",
@@ -370,14 +519,21 @@
         "device-flow",
         "device-code entry",
         "device code"
-      ]
+      ],
+      "known_equivalent": "OAuth 2.0 device authorization grant",
+      "anchor": "https://www.rfc-editor.org/rfc/rfc8628",
+      "status": "preferred"
     },
     "NEEDS-IAN": {
       "gloss": "flagged as requiring the maintainer personally",
       "variants": [
         "needs-ian",
         "needs Ian"
-      ]
+      ],
+      "known_equivalent": "escalation to the named owner",
+      "anchor": null,
+      "anchor_waiver": "repo-local escalation label naming this lab's maintainer; no external page defines it",
+      "status": "house-only"
     },
     "dispatch": {
       "gloss": "launching queued experiment runs",
@@ -385,21 +541,30 @@
         "dispatched",
         "frontier dispatch",
         "queue dispatch"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "stagger": {
       "gloss": "deliberately delaying runs so they do not overlap",
       "variants": [
         "staggered",
         "staggering"
-      ]
+      ],
+      "known_equivalent": null,
+      "anchor": null,
+      "status": "preferred"
     },
     "WIP cap": {
       "gloss": "a limit on how much work may be in progress at once",
       "variants": [
         "wip-cap",
         "WIP-cap"
-      ]
+      ],
+      "known_equivalent": "WIP limit (kanban)",
+      "anchor": "https://en.wikipedia.org/wiki/Kanban_(development)",
+      "status": "preferred"
     },
     "retrofit": {
       "gloss": "applying a new rule to already-existing items",
@@ -407,19 +572,29 @@
         "retrofits",
         "retrofitted",
         "retrofit annotations"
-      ]
+      ],
+      "known_equivalent": "retrofitting",
+      "anchor": "https://en.wikipedia.org/wiki/Retrofitting",
+      "status": "preferred"
     },
-    "hyp": {
-      "gloss": "this lab's installable plugin — the packaged version of its way of working",
+    "crux": {
+      "gloss": "the plugin's former name, replaced by Hyp Machine after a blind naming study",
       "variants": [
-        "hyp plugin"
-      ]
+        "crux plugin"
+      ],
+      "known_equivalent": "this lab's packaged plugin (proper name)",
+      "anchor": "https://github.com/getfatday/hyp-machine",
+      "status": "house-only",
+      "first_defined": "DEC-009"
     },
     "plugin": {
       "gloss": "an installable extension package for Claude Code",
       "variants": [
         "plugins"
-      ]
+      ],
+      "known_equivalent": "plug-in (computing)",
+      "anchor": "https://en.wikipedia.org/wiki/Plug-in_(computing)",
+      "status": "preferred"
     },
     "score notation": {
       "gloss": "NxM/M means: passed M of M checks in each of N scored runs (2x5/5 = all 5 checks passed in both runs)",
@@ -429,39 +604,60 @@
         "7/7",
         "5/5",
         "4/5"
-      ]
+      ],
+      "known_equivalent": "test pass ratio",
+      "anchor": null,
+      "anchor_waiver": "house notation fully defined by its own gloss; pattern key (exempt from gloss id/score scans)",
+      "status": "house-only"
     },
     "wall clock": {
       "gloss": "elapsed real-world time, as opposed to compute time",
       "variants": [
         "wall-clock"
-      ]
+      ],
+      "known_equivalent": "elapsed real time",
+      "anchor": "https://en.wikipedia.org/wiki/Elapsed_real_time",
+      "status": "preferred"
     },
     "decoy": {
       "gloss": "a planted non-problem used to test for false alarms",
       "variants": [
         "decoys"
-      ]
+      ],
+      "known_equivalent": "negative control",
+      "anchor": "https://en.wikipedia.org/wiki/Scientific_control",
+      "status": "preferred"
     },
     "drift": {
       "gloss": "unintended divergence between two copies that should stay identical",
       "variants": [
         "drifted",
         "drift-checked"
-      ]
+      ],
+      "known_equivalent": "configuration drift",
+      "anchor": null,
+      "status": "preferred"
     },
     "H-NNN": {
       "gloss": "a numbered testable idea with pass/fail checks declared before any run (an experiment id)",
       "variants": [
         "hypothesis id"
-      ]
+      ],
+      "known_equivalent": "experiment identifier (like a ticket number)",
+      "anchor": null,
+      "anchor_waiver": "this repo's id grammar; pattern key (exempt from gloss id/score scans)",
+      "status": "house-only"
     },
     "DEC-NNN": {
       "gloss": "a numbered open question waiting on the maintainer (a decision id)",
       "variants": [
         "decision id",
         "DEC row"
-      ]
+      ],
+      "known_equivalent": "decision identifier (like a ticket number)",
+      "anchor": null,
+      "anchor_waiver": "this repo's id grammar; pattern key (exempt from gloss id/score scans)",
+      "status": "house-only"
     },
     "N-id": {
       "gloss": "a numbered design-note item, not yet an experiment (N5, N13, ...)",
@@ -469,7 +665,140 @@
         "N5/N6",
         "N13",
         "N1"
-      ]
+      ],
+      "known_equivalent": "design-note identifier",
+      "anchor": null,
+      "anchor_waiver": "this repo's id grammar; pattern key (exempt from gloss id/score scans)",
+      "status": "house-only"
+    },
+    "K-strikes": {
+      "gloss": "after K failed relaunches an automated gate stops retrying the experiment and flags it for the maintainer",
+      "variants": [
+        "k-strikes",
+        "K-strikes gate",
+        "k-strikes quarantine"
+      ],
+      "known_equivalent": "circuit breaker (bounded retry)",
+      "anchor": "https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern",
+      "status": "house-only",
+      "first_defined": "H-218"
+    },
+    "andon": {
+      "gloss": "a tripwire that halts related work and summons the maintainer when a defect class fires",
+      "variants": [
+        "andon cord",
+        "andon lamp",
+        "andon-incident",
+        "andon rows"
+      ],
+      "known_equivalent": "andon (Toyota signal cord)",
+      "anchor": "https://en.wikipedia.org/wiki/Andon_(manufacturing)",
+      "status": "preferred",
+      "first_defined": "H-190"
+    },
+    "muri": {
+      "gloss": "overload from asking one worker or window to carry more concurrent work than it can absorb",
+      "variants": [
+        "muri class"
+      ],
+      "known_equivalent": "muri (Toyota overburden)",
+      "anchor": "https://en.wikipedia.org/wiki/Muri_(Japanese_term)",
+      "status": "preferred",
+      "first_defined": "H-136"
+    },
+    "conwip": {
+      "gloss": "a scheduling rule admitting new work only when an item in progress finishes, keeping total load constant",
+      "variants": [
+        "CONWIP",
+        "conwip cap"
+      ],
+      "known_equivalent": "CONWIP (constant work in progress)",
+      "anchor": "https://en.wikipedia.org/wiki/CONWIP",
+      "status": "preferred",
+      "first_defined": "H-195"
+    },
+    "tranche": {
+      "gloss": "one named batch of related work items planned and shipped together",
+      "variants": [
+        "tranches"
+      ],
+      "known_equivalent": "tranche (a portioned slice)",
+      "anchor": "https://en.wikipedia.org/wiki/Tranche",
+      "status": "preferred",
+      "first_defined": "H-155"
+    },
+    "observatory": {
+      "gloss": "the live status view showing in-flight experiment runs and their evidence",
+      "variants": [
+        "observatory lane"
+      ],
+      "known_equivalent": "observability dashboard",
+      "anchor": "https://en.wikipedia.org/wiki/Observability_(software)",
+      "status": "house-only",
+      "first_defined": "H-151"
+    },
+    "frontier": {
+      "gloss": "the queue of work items currently eligible to launch, across all planned batches",
+      "variants": [
+        "frontier dispatch queue"
+      ],
+      "known_equivalent": "ready queue",
+      "anchor": "https://en.wikipedia.org/wiki/Scheduling_(computing)",
+      "status": "house-only",
+      "first_defined": "H-193"
+    },
+    "chain": {
+      "gloss": "a scripted sequence of unattended agent steps (run, score, verdict) executed one after another",
+      "variants": [
+        "chains",
+        "chain terminal",
+        "run chain"
+      ],
+      "known_equivalent": "pipeline",
+      "anchor": "https://en.wikipedia.org/wiki/Pipeline_(software)",
+      "status": "house-only",
+      "first_defined": "H-036"
+    },
+    "quarantine": {
+      "gloss": "set a failing item aside, blocked from relaunch, until the maintainer reviews it",
+      "variants": [
+        "quarantined",
+        "quarantines"
+      ],
+      "known_equivalent": "quarantine",
+      "anchor": "https://en.wikipedia.org/wiki/Quarantine",
+      "status": "preferred",
+      "first_defined": "H-218"
+    },
+    "blip": {
+      "gloss": "a transient infrastructure failure during a run, recorded and retried without voiding the result",
+      "variants": [
+        "blips",
+        "blip amendment"
+      ],
+      "known_equivalent": "transient fault",
+      "anchor": "https://en.wikipedia.org/wiki/Fault_tolerance",
+      "status": "preferred",
+      "first_defined": "H-167"
+    },
+    "doctrine": {
+      "gloss": "a standing taught rule that agents must apply without being reminded",
+      "variants": [
+        "doctrines"
+      ],
+      "known_equivalent": "policy",
+      "anchor": "https://en.wikipedia.org/wiki/Policy",
+      "status": "preferred",
+      "first_defined": "H-084"
+    },
+    "headword": {
+      "gloss": "the canonical form under which a glossary entry is listed; variants map to it",
+      "variants": [
+        "headwords"
+      ],
+      "known_equivalent": "headword (lexicography)",
+      "anchor": "https://en.wikipedia.org/wiki/Headword",
+      "status": "preferred"
     }
   }
 }

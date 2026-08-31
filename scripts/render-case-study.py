@@ -41,7 +41,30 @@ jargon list glossed at first use, zero bare slugs, curly double quotes reserved 
 artifact quotes, no timestamps, no invented aggregates (per-run figures only — a sum
 appears in no artifact of record, so no sum appears here).
 
-CLI: render_case_study.py --source <fixture/source> --out <dir>
+H-225 CANDIDATE — the optional `--vocab` gloss-lookup join (default OFF; absent
+flag = the shipped code path, byte-unchanged):
+  * `--vocab <path>` names a house-vocabulary JSON (v2 schema; v1 files load with
+    defaults) read as a SUPERSET of the frozen jargon floor by construction: the
+    floor keeps its hardcoded page glosses and its unchanged lint; the vocabulary
+    only ever ADDS glosses, never edits the floor.
+  * trigger: files in the pinned source bundle BEYOND the fact table (extra
+    artifacts). For each house-only vocabulary term those extra artifacts use in
+    prose, the page's FIRST bare prose use of that term (same span exclusions as
+    the content lint) gains the vocabulary gloss byte-for-byte: `term (gloss)`.
+    A bundle that is exactly the fact table — the counted reference — is a
+    structural no-op: the page reproduces byte-identically with and without the
+    flag.
+  * unregistered coinages in extra artifacts (tokens resolving through neither
+    the pinned wordlist beside the vocabulary nor the vocabulary's own forms,
+    used twice or more in one artifact) are REPORTED on stdout
+    (VOCAB-REPORT\tunregistered-coinage\t...) and never glossed: no gloss text
+    is ever invented — every inserted byte comes from a vocabulary entry.
+  * fail-closed: an unreadable vocabulary, a missing pinned wordlist, or a
+    triggered gloss that would break the page grammar (digits, parens, brackets,
+    quote characters, under ten characters) REFUSES the render loudly. The
+    frozen self-checks below run UNCHANGED on the final (joined) page.
+
+CLI: render_case_study.py --source <fixture/source> --out <dir> [--vocab <vocabulary.json>]
 """
 import argparse
 import json
@@ -58,13 +81,224 @@ SPEC = "hypotheses/H-188-dangling-end-pickup-v3.md"
 F0196 = "experiments/journal-fragments/0196-h187-refined-h170-judge-parse-defect.md"
 F0198 = "experiments/journal-fragments/0198-h188-kept-wave-at-4of7.md"
 F0200 = "experiments/journal-fragments/0200-wave-020-complete.md"
-F0201 = "experiments/journal-fragments/0201-hyp-0-2-0-published.md"
+F0201 = "experiments/journal-fragments/0201-crux-0-2-0-published.md"
 RR1 = "experiments/runs/H-188/run-1/run-record.json"
 SC1 = "experiments/runs/H-188/run-1/h188-score.json"
 RR2 = "experiments/runs/H-188/run-2/run-record.json"
 SC2 = "experiments/runs/H-188/run-2/h188-score.json"
 
 OUTPUTS = ("case-study.md", "extraction-manifest.json")
+
+FACT_RELS = (SPEC, F0196, F0198, F0200, F0201, RR1, SC1, RR2, SC2)
+
+# ---------------------------------------------------------------------------
+# The --vocab gloss-lookup join (H-225 candidate). Everything above and below
+# this block is the shipped renderer byte-unchanged (per-keep constants aside);
+# the Renderer class, content laws, and fail-closed self-checks are untouched.
+# Term matching, span exclusions, and the coinage scan are vendored VERBATIM
+# from the staged clarity-lint-v2 (the artifact-language program's L12
+# machinery) and from content_lint's frozen prose-span semantics.
+# ---------------------------------------------------------------------------
+
+VOCAB_WORDLIST_NAME = "vocab-wordlist.txt"
+
+_TECH_COMMON = frozenset("""
+admin ai api apis ascii auth bash bool boolean backlog byte bytes cert certs changelog
+cli config configs commit commits csv curl cwd dashboard dataset datasets dir dirs
+email emails filename filenames frontmatter git github glob grep html http https id ids
+iso json jsonl kanban llm markdown metadata regex readme repo repos rfc runbook runtime
+sandbox semver sha shas sop stderr stdin stdlib stdout timestamp timestamps toml
+tooltip tooltips tripwire tsv unicode url urls utf wiki wikipedia workflow workflows
+workspace workspaces worktree worktrees yaml zsh
+""".split())
+_ID_RE = re.compile(r"\b(?:H-\d{2,4}|DEC-\d{2,4}|N\d{1,2}|\d+\.\d+\.\d+"
+                    r"|(?:fragment|row)\s+\d{1,4})\b")
+_DRAFT_ID_RE = re.compile(r"\b[A-Z]+-DRAFT-[\w-]+")
+_URL_RE = re.compile(r"https?://\S+")
+_PATH_RE = re.compile(r"(?:~?/|\.{1,2}/)?(?:[\w.@-]+/)+[\w.@*-]+"
+                      r"|\b[\w-]+\.(?:py|md|json|jsonl|sh|html|yml|yaml|png|txt|tsv|log|patch)\b")
+_CAMEL_RE = re.compile(r"[a-z][A-Z]")
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'\u2019/-]*[A-Za-z]|[A-Za-z]")
+_SUFFIXES = ("ings", "ing", "ers", "ors", "ies", "es", "ed", "er", "or", "ly", "s")
+_PREFIXES = ("counter", "anti", "micro", "multi", "super", "inter", "over", "post",
+             "pre", "under", "non", "mis", "sub", "co", "re", "un", "de")
+
+
+def _vocab_refuse(msg):
+    raise SystemExit("RENDER REFUSE: " + msg)
+
+
+def _phrase_re(forms):
+    return re.compile(r"\b(?:" + "|".join(
+        re.escape(f).replace(r"\ ", r"[\s-]+").replace(r"\-", r"[\s-]+")
+        for f in sorted(forms, key=len, reverse=True)) + r")\b", re.I)
+
+
+def _strip_excluded(text):
+    text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    text = re.sub(r"`[^`\n]*`", " ", text)
+    text = re.sub("\u201c[^\u201d\n]{0,300}\u201d", " ", text)
+    text = re.sub(r'"[^"\n]{0,300}"', " ", text)
+    text = _URL_RE.sub(" ", text)
+    text = _PATH_RE.sub(" ", text)
+    return text
+
+
+def _lookup(w, known):
+    if len(w) <= 1:
+        return False
+    if w in known:
+        return True
+    for suf in _SUFFIXES:
+        if w.endswith(suf) and len(w) - len(suf) >= 3:
+            base = w[: -len(suf)]
+            if base in known or base + "e" in known:
+                return True
+            if len(base) >= 3 and base[-1] == base[-2] and base[:-1] in known:
+                return True
+    return False
+
+
+def _resolves(w, known):
+    w = re.sub(r"['\u2019]s$", "", w.strip("'\u2019")).lower()
+    if not w or len(w) == 1 or any(c.isdigit() for c in w):
+        return True
+    if _lookup(w, known):
+        return True
+    for p in _PREFIXES:
+        if w.startswith(p) and len(w) - len(p) >= 3 and _lookup(w[len(p):], known):
+            return True
+    return False
+
+
+def _coinage_counts(prose, forms, known):
+    prose = _DRAFT_ID_RE.sub(" ", _ID_RE.sub(" ", prose))
+    counts = {}
+    for tok in _TOKEN_RE.findall(prose):
+        if len(tok) == 1 or any(c.isdigit() for c in tok):
+            continue
+        low = tok.lower()
+        if low in forms:
+            continue
+        parts = [p for p in re.split(r"[/-]", tok) if p]
+        if len(parts) > 1:
+            fires = any(len(p) == 1 for p in parts) or \
+                not all(_resolves(p, known) or p.lower() in forms for p in parts)
+        elif _CAMEL_RE.search(tok):
+            camel = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", tok)
+            fires = not all(_resolves(p, known) for p in camel)
+        else:
+            fires = not _resolves(tok, known)
+        if fires:
+            counts[low] = counts.get(low, 0) + 1
+    return counts
+
+
+def _sorted_walk(root):
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        for name in sorted(filenames):
+            rel = os.path.relpath(os.path.join(dirpath, name), root)
+            out.append(rel.replace(os.sep, "/"))
+    return sorted(out)
+
+
+def _first_prose_use(page, forms):
+    """First prose use of any form across the page, per the content lint's own
+    span exclusions and gloss-adjacency grammar. -> (lineno, bare) or (None, None)."""
+    rx = _phrase_re(forms)
+    for i, prose in content_lint.prose_lines(page):
+        m = rx.search(prose)
+        if not m:
+            continue
+        return i, not re.match(content_lint.GLOSS_PAREN, prose[m.end():])
+    return None, None
+
+
+def _insert_gloss(page, lineno, forms, gloss):
+    """Insert ' (gloss)' after the first non-excluded match on the given raw line."""
+    rx = _phrase_re(forms)
+    lines = page.split("\n")
+    raw = lines[lineno - 1]
+    excluded = [m.span() for m in content_lint.POINTER_RE.finditer(raw)]
+    excluded += [m.span() for m in content_lint.QUOTE_RE.finditer(raw)]
+    for m in rx.finditer(raw):
+        if any(a <= m.start() < b or a < m.end() <= b for a, b in excluded):
+            continue
+        lines[lineno - 1] = raw[:m.end()] + " (" + gloss + ")" + raw[m.end():]
+        return "\n".join(lines), m.group(0)
+    _vocab_refuse("gloss join lost the prose match on page line %d" % lineno)
+
+
+def vocab_join(page, source_dir, vocab_path):
+    """-> (page, report_lines). Pure function of the page bytes, the source tree,
+    the vocabulary file, and the pinned wordlist beside it. Fail-closed throughout."""
+    try:
+        vocab = json.load(open(vocab_path, encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        _vocab_refuse("--vocab file unreadable: %s" % e)
+    terms = vocab.get("terms")
+    if not isinstance(terms, dict) or not terms:
+        _vocab_refuse("--vocab file carries no terms dict")
+    wordlist_path = os.path.join(os.path.dirname(os.path.abspath(vocab_path)),
+                                 VOCAB_WORDLIST_NAME)
+    if not os.path.isfile(wordlist_path):
+        _vocab_refuse("pinned wordlist missing beside --vocab: %s" % wordlist_path)
+    forms = {}
+    for head in sorted(terms):
+        for f in [head] + list(terms[head].get("variants") or []):
+            forms.setdefault(str(f).lower(), head)
+    known = set(_TECH_COMMON)
+    with open(wordlist_path, encoding="utf-8", errors="ignore") as f:
+        known.update(w.strip().lower() for w in f)
+    known.update(w.lower() for form in forms for w in re.split(r"[\s/-]+", form) if w)
+
+    extras = [rel for rel in _sorted_walk(source_dir) if rel not in set(FACT_RELS)]
+    report = []
+    if not extras:
+        return page, report  # the counted reference bundle: structurally a no-op
+
+    triggered = {}
+    coinages = {}
+    for rel in extras:
+        with open(os.path.join(source_dir, rel), "rb") as f:
+            raw = f.read().decode("utf-8", errors="replace")
+        prose = _strip_excluded(raw)
+        for head in sorted(terms):
+            if str(terms[head].get("status", "house-only")) != "house-only":
+                continue
+            fs = [head] + list(terms[head].get("variants") or [])
+            if _phrase_re(fs).search(prose):
+                triggered.setdefault(head, []).append(rel)
+        for tok, n in sorted(_coinage_counts(prose, forms, known).items()):
+            if n >= 2:
+                coinages[(tok, rel)] = n
+
+    for head in sorted(triggered):
+        gloss = str(terms[head].get("gloss") or "")
+        fs = [head] + list(terms[head].get("variants") or [])
+        lineno, bare = _first_prose_use(page, fs)
+        if lineno is None:
+            report.append("VOCAB-JOIN\tnot-in-page\t%s" % head)
+            continue
+        if not bare:
+            report.append("VOCAB-JOIN\talready-glossed\t%s" % head)
+            continue
+        if len(gloss) < 10:
+            _vocab_refuse("vocabulary gloss for %r is under ten characters" % head)
+        if re.search("[\\d()\\[\\]\"\u201c\u201d\\n]", gloss):
+            _vocab_refuse("vocabulary gloss for %r carries digits, parens, brackets, "
+                          "or quote characters the page grammar reserves" % head)
+        page, matched = _insert_gloss(page, lineno, fs, gloss)
+        report.append("VOCAB-JOIN\tglossed\t%s\tline %d\t%s" % (head, lineno, matched))
+
+    for (tok, rel), n in sorted(coinages.items()):
+        report.append("VOCAB-REPORT\tunregistered-coinage\t%s\t%dx\t%s\t"
+                      "no gloss invented" % (tok, n, rel))
+    return page, sorted(report)
+
 
 
 class Renderer(object):
@@ -216,7 +450,7 @@ def render(source_dir):
     a("")
     a("Then it shipped. The release record titled %s notes the plugin release of %s "
       "carrying %s — the kept mechanism, as product %s."
-      % (r.quote(F0201, "hyp 0.2.0 published"), ship_date,
+      % (r.quote(F0201, "crux 0.2.0 published"), ship_date,
          r.quote(F0201, "review-cadence with the multi-evidence law"), ptr(F0201)))
     a("")
     a("## The artifacts of record")
@@ -255,11 +489,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--vocab", default=None,
+                    help="optional house-vocabulary JSON read as a superset of "
+                         "the frozen jargon floor (default off = shipped path)")
     o = ap.parse_args()
     source_dir = os.path.abspath(o.source)
     out_dir = os.path.abspath(o.out)
 
     page, manifest = render(source_dir)
+    vocab_report = []
+    if o.vocab:
+        page, vocab_report = vocab_join(page, source_dir, os.path.abspath(o.vocab))
 
     # fail-closed self-checks: the frozen fidelity grammar + the content lint
     fid = fact_fidelity.check(page, manifest, source_dir)
@@ -279,6 +519,8 @@ def main():
               encoding="utf-8") as f:
         json.dump(manifest, f, indent=1, sort_keys=True)
         f.write("\n")
+    for line in vocab_report:
+        print(line)
     print("rendered: %d facts (%d quotes, %d numbers), lint clean"
           % (fid["facts_extracted"], fid["quotes_extracted"],
              fid["numbers_extracted"]))

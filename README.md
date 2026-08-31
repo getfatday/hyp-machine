@@ -122,6 +122,12 @@ config files and CLAUDE.md rules blocks in place.
 | `scripts/doctor-remediate.py` | Environment-health doctor, remediation half: the frozen four-state ladder — exactly one next step per typed state, fail-closed heal verification |
 | `scripts/review-cadence.py` | The verdict-forcing review cadence: ranked REVIEW DEBT surface + append-only verdict appender (multi-evidence) — see `docs/review-cadence.md` |
 | `scripts/waste-status.py` | Advisory flow instrument: idle-runnable, terminal-pickup, and void-meter waste metrics from committed timestamps alone (exit 0 always, never a gate) |
+| `scripts/dispatch-status.py` | The ranked next-item dispatch surface: open items from COMMITTED spec statuses only (no promise string closes an item), claim-joined (fresh-heartbeat filter) and orphan-joined (dead-pid recovery verbs) — counted H-213/H-215/H-217; the Stop dispatcher hook joins to it (see `docs/workgraph.md`) |
+| `scripts/lane-takeover.py` | The claim door: TTL-gated takeover of another executor's lane — typed exit-3 refusal while the heartbeat is fresh, attributed record committed BEFORE any lane write on grant — counted H-216 |
+| `scripts/dispatch-gate.py` | The shared relaunch governor: permit/deny consults + K-strikes quarantine (K=2) behind one committed decision card only a human ruling closes — counted H-218 |
+| `scripts/hyp-resume.sh` + `scripts/install-resume-timer.sh` + `scripts/resume-prompt.md` | The reboot-surviving scheduled resume: emitted (never auto-loaded) launchd plist, one dispatch read + at most one capped adoption per firing — counted H-217 |
+| `scripts/compile-findings-index.py` | The corpus layer, index half: one plain-language line per resolved hypothesis (id, verdict, date, finding, evidence pointer) plus lineage edges — counted H-226/H-228 |
+| `scripts/prior-art-sweep.py` | The corpus layer, consult half: typed OVERLAP/LINEAGE flags plus a ready-to-paste Prior-work section for any draft spec, so registration mechanically consults everything already proven or disproven — counted H-227/H-228 |
 | `scripts/parity-check.py` | Byte-parity checker between an installed hyp copy and a published manifest or pinned reference tree (see “Install parity” below) |
 | `scripts/issueops-fetch.py`, `scripts/issueops-reply.py`, `scripts/issueops-teardown.py`, `scripts/issueops_gh.py` | The audited GitHub-issues intake: CRLF-normalizing transport adapter, deterministic reply templater, manifest-scoped teardown, and the account-pinned audited gh helper they share — outward writes confined to a frozen allowlist (see `docs/issueops.md`) |
 | `scripts/preflight-rigor.py` | The ethics extension to preflight, REPORT-ONLY: six calibrated rows over each spec's `## Ethical assumptions` section; the enforcement flip is maintainer-gated (see `docs/preflight-rigor.md`) |
@@ -158,7 +164,7 @@ every mechanism ships three ways:
 | PreToolUse (`Bash`, `git commit`) | Advisory backstop (experiments profile): a tinker-shaped commit with no hypothesis spec staged prints a one-line nudge. Never blocks. |
 | UserPromptSubmit | Capture-intent nudge on phrases like "note this" / "save that". Precision-first; silent otherwise. |
 | SessionStart | Standing rules pointer + drift check against the plugin's canonical templates; uncommitted-capture warning; stale-dashboard check and refresh; ledger resolver (`hooks/scripts/session_resolver.py`): open decisions surface first (`DECISION-LEDGER` lines + summary), then unresolved intent/amendment/commitment/directive rows, capped at 20 lines. |
-| Stop | Unjournaled-work backstop (blocks once with instructions when new knowledge files have no journal fragment); dashboard refresh. |
+| Stop | Verdict-gated dispatch (experiments profile): non-empty dispatch with cap headroom re-presents the TOP open item by name — ending a cycle is permitted only by the committed artifact check, never a promise string; frozen caps (12 cycles / 1800 s per lineage) then it stands down; `touch .claude/stop-snooze` silences it 24 h (see `docs/workgraph.md`). Unjournaled-work backstop (blocks once with instructions when new knowledge files have no journal fragment); dashboard refresh. |
 
 All hook scripts are stdlib-only Python, fail open on any error, and use consumer-generic
 paths.
@@ -238,6 +244,36 @@ One suite per skill under `evals/<skill>/<case>/case.yaml`; see `evals/README.md
 
 ## Changelog
 
+- 0.2.0 (hyp — the first release under the new name; entries below this one are the
+  crux-era versions that 0.1.0 consolidated) — work-graph dispatch and session
+  durability: ranked next-item dispatch at session boundaries, claim TTL takeover,
+  K-strikes quarantine, reboot-surviving resume, compression-surviving re-hydration
+  protocol (`docs/workgraph.md`). The dispatch surface (`scripts/dispatch-status.py` +
+  the Stop-boundary dispatcher hook — H-213 kept 2x5/5 2026-08-29; the named-top-item
+  block shape measured by H-230, kept 2x5/5 2026-08-30 with the <=8-tool-call naming
+  window): an item is open until its COMMITTED spec-status verdict lands — no promise
+  string ends a cycle. The claim layer (`scripts/lane-takeover.py` — H-216 kept 2x5/5
+  2026-08-29; the claim join, H-215 kept 2x5/5 2026-08-29): heartbeat-TTL liveness
+  (ttl_s = 1800) with typed refusal and record-before-write takeover. The relaunch
+  governor (`scripts/dispatch-gate.py` — H-218 kept 2x5/5 2026-08-29): K=2 consecutive
+  non-green terminals quarantines a lane behind one committed decision card. The
+  scheduled resume (`scripts/hyp-resume.sh` + `scripts/install-resume-timer.sh` +
+  `scripts/resume-prompt.md` — H-217 kept 2x5/5 2026-08-29): an emitted-never-loaded
+  RunAtLoad timer plist; each firing = one dispatch read + at most one capped
+  adoption. The re-hydration protocol (H-231 kept 2x5/5 2026-08-30, successor to
+  H-162's 3/3 discard) ships as the `docs/workgraph.md` procedure: verify from the
+  graph observe-only, assert back in writing, dispatch by the recomputed frontier,
+  end only at empty frontier or a FAILURE record. The corpus layer staged at 0.1.0
+  flips to shipped (`scripts/compile-findings-index.py` + `scripts/prior-art-sweep.py`
+  — H-226/H-227/H-228 all kept 2x5/5 2026-08-29). All ports are the source lab's live
+  installs with paths/config adaptation only (consumer repo-root and `.claude/hyp.json`
+  resolution; item enumeration from the consumer's own hypotheses corpus instead of
+  the lab's release-train wave plan; quarantine rows typed `needs-maintainer`).
+  Deliberately NOT shipped: the lab's release-train reader (lab infrastructure),
+  `graph-check.py` + the durability-check command and the SessionStart ranked
+  injection (follow-on tranche per H-231/H-230's On-keep routing — not yet landed in
+  the lab either), and the lab's machine-specific reference plist (the installer
+  emits per-repo).
 - 0.4.0 — decide less, see more: the decision kit and the observatory. The decision kit
   (`scripts/decisions.py` + `scripts/decisions-template.html` +
   `scripts/proactive-open.sh` + `scripts/closes_when.py` + the compile-dashboard v3

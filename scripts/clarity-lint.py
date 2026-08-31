@@ -1,425 +1,517 @@
 #!/usr/bin/env python3
-"""clarity-lint.py — the communication contract's lintable rules (L1-L11).
+"""clarity-lint-v2.py — the communication contract's term-choice and register rules
+(addendum L12-L15), extending the committed L1-L11 lint (scripts/clarity-lint.py).
 
-PROVENANCE — MEASURED, byte-preserving port of the source lab's clarity lint
-(scripts/clarity-lint.py there; landed 2026-08-28 with the clarity canon —
-measured firing 104 findings on the status-quo corpus and silent on the
-contract-conformant corpus; the naive-reader eval behind the contract measured
-comprehension 78.6%->100% at -35% reader effort. Counted hardening specs
-H-207..H-211 are registered in the source lab; this lint ships on the advisory
-pattern pending those verdicts). Only this provenance framing and the contract
-pointer (docs/communication-contract.md) differ from the lab copy.
+STAGED apply-now artifact (artifact-language program, 2026-08-29). At land these modes
+merge into scripts/clarity-lint.py in one commit; until then this file delegates the
+committed card/report modes and implements only the NEW modes. Contract addendum:
+apply-now/communication-contract-addendum.md. Vocabulary: house-vocabulary v2
+(apply-now/house-vocabulary-v2.json schema; v1 files stay loadable — absent fields
+default to known_equivalent null, anchor null, status house-only).
 
 Usage:
-  clarity-lint.py card   <card.md>   [--vocab house-vocabulary.json]
-  clarity-lint.py report <report.md> [--vocab house-vocabulary.json]
+  clarity-lint-v2.py vocab  <vocabulary.json>                      # L12b birth certificates
+  clarity-lint-v2.py gloss  <vocabulary.json> [--term <headword>]  # gloss rules only
+  clarity-lint-v2.py spec   <spec.md>   [options]                  # L13/L15 + L12a/c on hypothesis specs
+  clarity-lint-v2.py scan   <file.md>   [options] [--kind KIND]    # L12a/c on any artifact class
+  clarity-lint-v2.py card   <card.md>   [--v1 <clarity-lint.py>]   # delegated to committed L1-L11 lint
+  clarity-lint-v2.py report <report.md> [--v1 <clarity-lint.py>]   # delegated to committed L1-L11 lint
 
-Exit 0 = compliant (zero findings). Exit 1 = findings. Exit 2 = usage/malformed input.
-One line per finding: CLARITY-LINT\t<file>\t<rule>\t<detail>.
+Options: --vocab <json> (default: house-vocabulary-v2.json beside this script, else
+scripts/house-vocabulary.json under --repo), --repo <dir> (default: cwd; supplies
+scripts/grounding-wordlist.txt and operating-model/*/GLOSSARY.md), --enforce <rules>
+(comma list; promotes report-only rules, e.g. --enforce L12a — the per-class
+enforcement flip a counted keep licenses), --kind generic|fragment|ruling|
+coordination|research|waveplan (scan classes).
 
-Contract: docs/communication-contract.md (decision-clarity program, 2026-08-28).
-Vocabulary: house-vocabulary.json (rule L3's gloss list; default: beside this script).
+Exit 0 = no hard findings. Exit 1 = hard findings. Exit 2 = usage/malformed input.
+Hard findings:  CLARITY-LINT\t<file>\t<rule>\t<detail>
+Report-only:    CLARITY-LINT-REPORT\t<file>\t<rule>\t<detail>   (exit-neutral until flipped)
 
-First-cut choices, documented (the H-DRAFT-clarity-lint experiment hardens these):
-- HTML comments and the `# ...` title heading are stripped before any check.
-- "Body" = HEADLINE..WHY ONLY YOU (cards) / WHAT CHANGED..NEXT (reports); section
-  labels, option labels, `(recommended ...)` tags, and machine lines (evidence:/answer:)
-  are excluded from word counts per L8.
-- L2/L3 gloss = a parenthetical within 80 chars of first use, OR (L3 only, the
-  "replaced by the gloss" path) >= 2 significant gloss-word stems present in the
-  artifact, never counting words that overlap the term itself.
-- L4 unknown first tokens are reported as ESCALATE findings (judge territory), which
-  still exit 1 — the contract routes them to a judge, not past the gate.
-- Vocabulary entries that are id/score patterns (H-NNN, DEC-NNN, N-id, score notation)
-  are enforced by L2/L9, not scanned as L3 terms.
+Rules implemented here (see the addendum for prose):
+  L12a NEW-TERM     unregistered coinage (report-only at birth; hard in titles via L15)
+  L12b VOCAB        glossary birth certificate: schema, gloss lint, statuses, anchors,
+                    variant uniqueness — hard; wired into harden-check on vocabulary diffs
+  L12c DEPRECATED   a deprecated-alias term in a new artifact — hard; names the canonical
+                    headword (mechanically substitutable outside quoted spans; --fix lands
+                    with the merge, not in this staging)
+  L12d/L15 TITLE    title register: <= 25 words, max 1 house-only term, zero unregistered
+                    coinages, zero score shorthand — hard
+  L13  HEADER       plain-language header per artifact class (spec "## In plain terms",
+                    fragment "**In plain terms:**" first line, ruling above-the-fold,
+                    coordination above-the-fold) — hard on NEW artifacts (pre-land gate;
+                    the migration plan stages the existing corpus)
+  L14  AUDIENCE     research pages declare their register (audience tag first line;
+                    reader pages open "**In one sentence:**") — hard
+  FROZEN-GRAMMAR    spec headings never rename or reorder (the eight preflight headings)
+
+Documented first-cut choices (the term-lint hypothesis hardens these):
+  * "no other house terms in a gloss" is enforced against HOUSE-ONLY forms only:
+    preferred entries are, by status semantics, known or plain names.
+  * Pattern keys (H-NNN, DEC-NNN, N-id, score notation) are exempt from the gloss
+    id/score scans — they define those patterns — matching the committed lint.
+  * The coinage dictionary is the union of /usr/share/dict/words (when present),
+    scripts/grounding-wordlist.txt, registered vocabulary forms, model-glossary
+    headwords, and TECH_COMMON (the contract reader's assumed general-software
+    vocabulary, frozen below). Tokens containing digits are id grammar (H-NNN,
+    0.4.1, L12a, shas) and never fire. The land version ships a pinned wordlist
+    so findings are byte-identical across machines.
+  * A hyphen/slash compound fires only when a part is unresolvable or single-letter
+    (K-strikes) and the whole is unregistered: transparent compounds of known words
+    (write-once, byte-compare) are ISO-704-transparent and exempt.
+  * Coinage threshold: >= 2 uses in the artifact, or >= 1 use in its title.
 Stdlib only; read-only; never writes.
 """
 import json
 import os
 import re
+import subprocess
 import sys
 
-CARD_SECTIONS = ["HEADLINE", "CONTEXT", "ASK", "OPTIONS", "IF YOU DO NOTHING",
-                 "WHY ONLY YOU"]
-REPORT_SECTIONS = ["WHAT CHANGED", "DONE", "NEEDS YOU", "NEXT — NO ACTION NEEDED"]
-PATTERN_VOCAB_KEYS = {"H-NNN", "DEC-NNN", "N-id", "score notation"}
-
-PROCESS_OPENERS = ("during ", "while ", "following ", "as part of ", "per ",
-                   "in the course of ", "the lane", "the run ", "the sweep",
-                   "the wave ")
-RELATIVE_TIME = ("yesterday", "today", "tomorrow", "tonight", "this morning",
-                 "this afternoon", "this evening", "this week", "last week",
-                 "last night", "recently", "soon")
-VERB_LEXICON = {"accept", "add", "adopt", "answer", "approve", "call", "choose",
-                "close", "confirm", "convert", "decline", "defer", "deny", "deploy",
-                "drop", "enable", "file", "flip", "give", "hold", "ignore", "keep",
-                "land", "launch", "leave", "let", "merge", "name", "open", "park",
-                "pick", "publish", "redesign", "register", "reject", "retry",
-                "review", "run", "schedule", "send", "ship", "sign", "sit", "skip",
-                "start", "stay", "stop", "take", "type", "unlock", "veto", "wait"}
-STOPWORDS = {"the", "a", "an", "its", "it", "is", "are", "was", "one", "and", "or",
-             "of", "to", "in", "on", "by", "for", "with", "not", "no", "that",
-             "this", "those", "these", "as", "at", "be", "from", "has", "have",
-             "had", "can", "may", "like", "so", "do", "does", "did", "against",
-             "their", "them", "they", "you", "your", "before", "after", "into",
-             "over", "under", "out", "up", "down", "than", "then", "when", "where",
-             "who", "whom", "how", "what", "why", "will", "would", "should",
-             "could", "any", "all", "each", "every", "per", "via", "vs", "etc",
-             "toward", "whose", "say", "says", "which"}
-
+PATTERN_KEYS = {"H-NNN", "DEC-NNN", "N-id", "score notation"}
+SPEC_HEADINGS = ["## Status", "## Hypothesis", "## Variable under test", "## Baseline",
+                 "## Method", "## Binary assertions", "## Verdict rule", "## Runs"]
+STATUS_ENUM = {"preferred", "house-only"}
 ID_RE = re.compile(r"\b(?:H-\d{2,4}|DEC-\d{2,4}|N\d{1,2}|\d+\.\d+\.\d+"
                    r"|(?:fragment|row)\s+\d{1,4})\b")
 HASH_RE = re.compile(r"\b(?=[0-9a-f]{7,40}\b)\d*[a-f][0-9a-f]*\b")
-DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 SCORE_RE = re.compile(r"\b\d+\s*[x×]\s*\d+/\d+\b|\b\d{1,2}/\d{1,2}\b(?!\d)")
-PATHISH_RE = re.compile(r"(?:^|[\s(·])(?:~?/|\.{1,2}/)?(?:[\w.@-]+/)+[\w.@*-]+"
-                        r"|\b[\w-]+\.(?:py|md|json|jsonl|sh|html|yml|yaml|png|txt"
-                        r"|lock|log)\b|\bpython3\s|\bscripts/")
-SENT_SPLIT_RE = re.compile(r"[.!?]+(?:\s|$)")
+URL_RE = re.compile(r"https?://\S+")
+PATH_RE = re.compile(r"(?:~?/|\.{1,2}/)?(?:[\w.@-]+/)+[\w.@*-]+"
+                     r"|\b[\w-]+\.(?:py|md|json|jsonl|sh|html|yml|yaml|png|txt|tsv|log|patch)\b")
+CAMEL_RE = re.compile(r"[a-z][A-Z]")
+TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'’/-]*[A-Za-z]|[A-Za-z]")
+
+TECH_COMMON = frozenset("""
+admin ai api apis ascii auth bash bool boolean backlog byte bytes cert certs changelog
+cli config configs commit commits csv curl cwd dashboard dataset datasets dir dirs
+email emails filename filenames frontmatter git github glob grep html http https id ids
+iso json jsonl kanban llm markdown metadata regex readme repo repos rfc runbook runtime
+sandbox semver sha shas sop stderr stdin stdlib stdout timestamp timestamps toml
+tooltip tooltips tripwire tsv unicode url urls utf wiki wikipedia workflow workflows
+workspace workspaces worktree worktrees yaml zsh
+""".split())
+DRAFT_ID_RE = re.compile(r"\b[A-Z]+-DRAFT-[\w-]+")
+SUFFIXES = ("ings", "ing", "ers", "ors", "ies", "es", "ed", "er", "or", "ly", "s")
+PREFIXES = ("counter", "anti", "micro", "multi", "super", "inter", "over", "post",
+            "pre", "under", "non", "mis", "sub", "co", "re", "un", "de")
 
 
 def words(text):
     return [w for w in re.split(r"\s+", text) if re.search(r"[A-Za-z0-9]", w)]
 
 
-def sentences(text):
-    return [s.strip() for s in SENT_SPLIT_RE.split(text) if s.strip()]
+def sentence_count(text):
+    t = text.replace("...", " ").replace("…", " ")
+    return len(re.findall(r"[.!?](?:\s|$)", t))
 
 
-def strip_md(text):
-    return text.replace("**", "").replace("`", "")
+class Vocab:
+    """v2 loader with v1 defaults; matching machinery shared by all modes."""
 
-
-class Artifact:
-    """Parsed card or report: sections, options, bullets, machine lines."""
-
-    def __init__(self, raw, kind):
-        self.kind = kind
-        text = re.sub(r"<!--.*?-->", "", raw, flags=re.S)
-        self.section_names = CARD_SECTIONS if kind == "card" else REPORT_SECTIONS
-        self.sections = {}          # name -> text (labels stripped)
-        self.section_order = []     # names in appearance order
-        self.options = []           # dicts: label, tag, consequence, rawline
-        self.bullets = []           # (section, text)
-        self.machine = {}           # evidence/answer -> text
-        self.legacy_options = []    # old "[ ] label — desc" shapes
-        current = None
-        sec_re = re.compile(r"^\*{0,2}(" + "|".join(re.escape(s) for s in
-                            self.section_names) + r")\*{0,2}\s*(?:—|:)?\s*(.*)$")
-        for line in text.splitlines():
-            line = line.rstrip()
-            if not line.strip():
+    def __init__(self, path):
+        self.path = path
+        self.data = json.load(open(path, encoding="utf-8"))
+        self.terms = self.data.get("terms", {})
+        self.forms = {}            # lowercased form -> headword
+        self.house_only = []       # (headword, [forms])
+        self.deprecated = []       # (headword, [forms], canonical)
+        for head, e in self.terms.items():
+            status = e.get("status", "house-only")
+            fs = [head] + list(e.get("variants", []))
+            for f in fs:
+                self.forms.setdefault(f.lower(), head)
+            if head in PATTERN_KEYS:
                 continue
-            if line.lstrip().startswith("#"):
-                continue                      # title heading: excluded
-            m = re.match(r"^(evidence|answer):\s*(.*)$", line.strip(), re.I)
-            if m and not line.startswith(" " * 8):
-                self.machine.setdefault(m.group(1).lower(), m.group(2))
-                current = "machine:" + m.group(1).lower()
-                continue
-            if current and current.startswith("machine:"):
-                if re.match(r"^\s{4,}\S", line):   # wrapped machine line
-                    self.machine[current[8:]] += " " + line.strip()
-                    continue
-            m = sec_re.match(line.strip())
+            if status == "house-only":
+                self.house_only.append((head, fs))
+            elif status.startswith("deprecated-alias-of:"):
+                self.deprecated.append((head, fs, status.split(":", 1)[1]))
+        self.word_forms = {w.lower() for f in self.forms for w in re.split(r"[\s/-]+", f) if w}
+
+    @staticmethod
+    def _phrase_re(forms):
+        return re.compile(r"\b(?:" + "|".join(
+            re.escape(f).replace(r"\ ", r"[\s-]+").replace(r"\-", r"[\s-]+")
+            for f in sorted(forms, key=len, reverse=True)) + r")\b", re.I)
+
+    def house_only_hits(self, text):
+        hits = []
+        for head, fs in self.house_only:
+            if self._phrase_re(fs).search(text):
+                hits.append(head)
+        return hits
+
+    def deprecated_hits(self, text):
+        hits = []
+        for head, fs, canonical in self.deprecated:
+            m = self._phrase_re(fs).search(text)
             if m:
-                name = m.group(1)
-                self.section_order.append(name)
-                self.sections[name] = m.group(2).strip()
-                current = name
-                continue
-            m = re.match(r"^-\s+\*\*(.+?)\*\*\s*(\([^)]*\))?\s*(?:→|->)?\s*(.*)$",
-                         line.strip())
-            if m and current in ("OPTIONS", "OPTION-ITEM"):
-                self.options.append({"label": m.group(1).strip(),
-                                     "tag": (m.group(2) or "").strip(),
-                                     "consequence": m.group(3).strip(),
-                                     "rawline": line.strip()})
-                current = "OPTION-ITEM"
-                continue
-            m = re.match(r"^\[\s?\]\s+(\S+)\s+—\s+(.*)$", line.strip())
-            if m:
-                self.legacy_options.append({"label": m.group(1),
-                                            "consequence": m.group(2),
-                                            "rawline": line.strip()})
-                continue
-            m = re.match(r"^-\s+(.*)$", line.strip())
-            if m and current in self.section_names:
-                self.bullets.append((current, m.group(1).strip()))
-                continue
-            if current == "OPTION-ITEM" and self.options:
-                self.options[-1]["consequence"] += " " + line.strip()
-            elif current in self.section_names:
-                self.sections[current] = (self.sections.get(current, "") + " "
-                                          + line.strip()).strip()
-            elif current is None:
-                # preamble prose before any section (status-quo shapes)
-                self.sections.setdefault("_preamble", "")
-                self.sections["_preamble"] += " " + line.strip()
-        self.full_text = strip_md(text)
-
-    def body_text(self):
-        """Prose the ceilings and scans apply to: section text + option
-        consequences + bullets (+ any unstructured preamble). Labels, tags,
-        machine lines excluded."""
-        parts = [self.sections.get(s, "") for s in self.section_names]
-        parts.append(self.sections.get("_preamble", ""))
-        parts += [o["consequence"] for o in self.options]
-        parts += [o["consequence"] for o in self.legacy_options]
-        parts += [b for _s, b in self.bullets]
-        return strip_md(" ".join(p for p in parts if p))
-
-    def body_units(self):
-        """(unit-name, text) pairs for sentence/bullet ceiling checks."""
-        units = [(s, strip_md(self.sections.get(s, "")))
-                 for s in self.section_names if self.sections.get(s)]
-        units += [("option '%s'" % o["label"], strip_md(o["consequence"]))
-                  for o in self.options]
-        units += [("bullet (%s)" % s, strip_md(b)) for s, b in self.bullets]
-        if self.sections.get("_preamble"):
-            units.append(("preamble", strip_md(self.sections["_preamble"])))
-        return units
+                hits.append((m.group(0), canonical))
+        return hits
 
 
-def load_vocab(path):
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)
-    entries = []
-    for term, spec in data.get("terms", {}).items():
-        if term in PATTERN_VOCAB_KEYS:
-            continue
-        forms = [term] + list(spec.get("variants", []))
-        entries.append({"term": term, "forms": forms,
-                        "gloss": spec.get("gloss", ""),
-                        "own": {w.lower() for f in forms
-                                for w in re.split(r"[\s-]+", f)}})
-    return entries
+class Dictionary:
+    def __init__(self, repo, vocab, model_glossaries):
+        self.known = set(TECH_COMMON)
+        sysdict = "/usr/share/dict/words"
+        if os.path.isfile(sysdict):
+            self.known.update(w.strip().lower() for w in open(sysdict, errors="ignore"))
+        gw = os.path.join(repo, "scripts", "grounding-wordlist.txt")
+        if os.path.isfile(gw):
+            self.known.update(w.strip().lower() for w in open(gw, errors="ignore"))
+        self.known.update(vocab.word_forms)
+        for path in model_glossaries:
+            for line in open(path, errors="ignore"):
+                m = re.match(r"^\|\s*([^|]+?)\s*\|", line)
+                if m and m.group(1).lower() not in ("term", "---", ""):
+                    self.known.update(w.lower() for w in re.split(r"[\s/-]+", m.group(1)) if w)
 
-
-def stem_match(a, b):
-    a, b = a.lower().strip(".,;:!?\"'()"), b.lower()
-    if len(a) < 3 or len(b) < 3:
+    def _lookup(self, w):
+        if len(w) <= 1:
+            return False
+        if w in self.known:
+            return True
+        for suf in SUFFIXES:
+            if w.endswith(suf) and len(w) - len(suf) >= 3:
+                base = w[: -len(suf)]
+                if base in self.known or base + "e" in self.known:
+                    return True
+                if len(base) >= 3 and base[-1] == base[-2] and base[:-1] in self.known:
+                    return True
         return False
-    return a.startswith(b[:max(3, min(len(a), len(b)))]) or \
-        b.startswith(a[:max(3, min(len(a), len(b)))])
+
+    def resolves(self, w):
+        w = re.sub(r"['’]s$", "", w.strip("'’")).lower()
+        if not w or len(w) == 1 or any(c.isdigit() for c in w):
+            return True
+        if self._lookup(w):
+            return True
+        for p in PREFIXES:
+            if w.startswith(p) and len(w) - len(p) >= 3 and self._lookup(w[len(p):]):
+                return True
+        return False
 
 
-def lint(path, kind, vocab_path):
-    findings = []
+def strip_excluded(text, drop_comments=True):
+    """Remove spans the term scans never read: HTML comments, code fences, inline
+    code, double-quoted spans (straight and curly), URLs, paths."""
+    if drop_comments:
+        text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    text = re.sub(r"`[^`\n]*`", " ", text)
+    text = re.sub(r"“[^”\n]{0,300}”", " ", text)
+    text = re.sub(r'"[^"\n]{0,300}"', " ", text)
+    text = URL_RE.sub(" ", text)
+    text = PATH_RE.sub(" ", text)
+    return text
+
+
+def coinage_candidates(prose, vocab, dic):
+    """L12a: token -> count over excluded-stripped prose (id grammar pre-stripped)."""
+    prose = DRAFT_ID_RE.sub(" ", ID_RE.sub(" ", prose))
+    counts = {}
+    for tok in TOKEN_RE.findall(prose):
+        if len(tok) == 1 or any(c.isdigit() for c in tok):
+            continue
+        low = tok.lower()
+        if low in vocab.forms:
+            continue
+        parts = [p for p in re.split(r"[/-]", tok) if p]
+        fires = False
+        if len(parts) > 1:
+            fires = any(len(p) == 1 for p in parts) or \
+                not all(dic.resolves(p) or p.lower() in vocab.forms for p in parts)
+        elif CAMEL_RE.search(tok):
+            camel = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", tok)
+            fires = not all(dic.resolves(p) for p in camel)
+        else:
+            fires = not dic.resolves(tok)
+        if fires:
+            counts[low] = counts.get(low, 0) + 1
+    return counts
+
+
+def lint_gloss(head, entry, vocab, fail):
+    gloss = entry.get("gloss", "")
+    if not gloss:
+        fail("L12b", "%s: empty gloss" % head)
+        return
+    n = len(words(gloss))
+    if n > 25:
+        fail("L12b", "%s: gloss is %d words (max 25)" % (head, n))
+    sc = sentence_count(gloss)
+    if sc > 1 or (sc == 1 and not re.search(r"[.!?]\s*$", gloss)):
+        fail("L12b", "%s: gloss is not one clause" % head)
+    if head not in PATTERN_KEYS:
+        if ID_RE.search(gloss) or HASH_RE.search(gloss):
+            fail("L12b", "%s: gloss contains an id token" % head)
+        if SCORE_RE.search(gloss):
+            fail("L12b", "%s: gloss contains score shorthand" % head)
+    for other, fs in vocab.house_only:
+        if other == head:
+            continue
+        if Vocab._phrase_re(fs).search(gloss):
+            fail("L12b", "%s: gloss leans on house-only term %r" % (head, other))
+
+
+def mode_vocab(path, vocab, fail, report, gloss_only=False, only_term=None):
+    seen_forms = {}
+    heads = set(vocab.terms)
+    for head, e in vocab.terms.items():
+        if only_term and head != only_term:
+            continue
+        lint_gloss(head, e, vocab, fail)
+        if gloss_only:
+            continue
+        status = e.get("status")
+        if status is None:
+            fail("L12b", "%s: missing status (v2 entries declare one)" % head)
+        elif status not in STATUS_ENUM and not status.startswith("deprecated-alias-of:"):
+            fail("L12b", "%s: illegal status %r" % (head, status))
+        elif status.startswith("deprecated-alias-of:"):
+            target = status.split(":", 1)[1]
+            if target not in heads:
+                fail("L12b", "%s: deprecated target %r is not a headword" % (head, target))
+            elif str(vocab.terms[target].get("status", "")).startswith("deprecated"):
+                fail("L12b", "%s: deprecated target %r is itself deprecated" % (head, target))
+        anchor = e.get("anchor")
+        if status == "house-only":
+            if not e.get("known_equivalent"):
+                fail("L12b", "%s: house-only without known_equivalent" % head)
+            if not anchor and not e.get("anchor_waiver"):
+                fail("L12b", "%s: house-only without anchor or anchor_waiver" % head)
+        if anchor:
+            if not str(anchor).startswith("https://"):
+                fail("L12b", "%s: anchor is not a stable https URL" % head)
+            elif "?" in str(anchor):
+                report("L12b", "%s: anchor carries a query string (cool-URI: prefer a "
+                               "bare stable path)" % head)
+        for f in [head] + list(e.get("variants", [])):
+            fl = f.lower()
+            owner = seen_forms.get(fl)
+            if owner and owner != head:
+                fail("L12b", "form %r owned by both %r and %r" % (f, owner, head))
+            seen_forms[fl] = head
+            if fl in (h.lower() for h in heads if h != head):
+                fail("L12b", "variant %r of %r shadows another headword" % (f, head))
+
+
+def title_register(title_prose, vocab, dic, fail, where="title"):
+    n = len(words(title_prose))
+    if n > 25:
+        fail("L15", "%s prose is %d words (max 25)" % (where, n))
+    if SCORE_RE.search(title_prose):
+        fail("L15", "score shorthand in %s: %r"
+             % (where, SCORE_RE.search(title_prose).group(0)))
+    hits = vocab.house_only_hits(title_prose)
+    if len(hits) > 1:
+        fail("L15", "%d house-only terms in %s (max 1): %s"
+             % (len(hits), where, ", ".join(hits)))
+    for tok, cnt in sorted(coinage_candidates(strip_excluded(title_prose), vocab, dic).items()):
+        fail("L15", "unregistered coinage %r in %s (L12d: titles carry zero; register "
+                    "a glossary entry in this commit or reword)" % (tok, where))
+
+
+def scan_common(prose, title, vocab, dic, fail, report):
+    for alias, canonical in vocab.deprecated_hits(prose):
+        fail("L12c", "deprecated term %r: write %r (mechanically substitutable outside "
+                     "quoted spans)" % (alias, canonical))
+    counts = coinage_candidates(prose, vocab, dic)
+    title_counts = coinage_candidates(strip_excluded(title or ""), vocab, dic)
+    for tok in sorted(set(counts) | set(title_counts)):
+        n = counts.get(tok, 0) + title_counts.get(tok, 0)
+        if tok in title_counts or n >= 2:
+            report("L12a", "NEW-TERM %r (%dx%s): register a glossary entry in this "
+                           "commit or reword to a known term"
+                           % (tok, n, ", title" if tok in title_counts else ""))
+
+
+def mode_spec(path, raw, vocab, dic, fail, report):
+    m = re.search(r"^#\s+([^\n]+)$", raw, re.M)
+    title_line = m.group(1) if m else ""
+    title_prose = title_line.split(":", 1)[1].strip() if ":" in title_line else title_line
+    title_register(title_prose, vocab, dic, fail)
+
+    present = [h for h in SPEC_HEADINGS if re.search(r"^" + re.escape(h) + r"\s*$", raw, re.M)]
+    if present != SPEC_HEADINGS:
+        fail("FROZEN-GRAMMAR", "spec headings missing or reordered: "
+             + (", ".join(h for h in SPEC_HEADINGS if h not in present) or "order drift"))
+    order = {"status": raw.find("\n## Status"), "plain": raw.find("\n## In plain terms"),
+             "hyp": raw.find("\n## Hypothesis")}
+    if order["plain"] < 0:
+        fail("L13", "no '## In plain terms' section (place it after ## Status, "
+                    "before ## Hypothesis)")
+    elif not (order["status"] < order["plain"] < order["hyp"]):
+        fail("L13", "'## In plain terms' is not between ## Status and ## Hypothesis")
+    section = ""
+    if order["plain"] >= 0:
+        section = raw[order["plain"]:order["hyp"] if order["hyp"] > order["plain"] else None]
+        section = re.sub(r"<!--.*?-->", " ", section, flags=re.S)
+    bullets = dict(re.findall(r"^-\s+\*\*(What we're testing|What \"keep\" means|Terms):?\*\*:?\s*(.+)$",
+                              section, re.M))
+    for need in ("What we're testing", 'What "keep" means'):
+        if need not in bullets:
+            if order["plain"] >= 0:
+                fail("L13", "missing '- **%s:**' bullet" % need)
+    for label, text in bullets.items():
+        n = len(words(text))
+        if n > 25:
+            fail("L13", "'%s' line is %d words (max 25)" % (label, n))
+        if label != "Terms" and sentence_count(text) > 1:
+            fail("L13", "'%s' line is more than one sentence" % label)
+    hyp = ""
+    if order["hyp"] >= 0:
+        hyp = raw[order["hyp"]:]
+        nxt = hyp.find("\n## ", 4)
+        hyp = re.sub(r"<!--.*?-->", " ", hyp[:nxt if nxt > 0 else None], flags=re.S)
+    need_gloss = sorted(set(vocab.house_only_hits(title_prose) + vocab.house_only_hits(hyp)))
+    if need_gloss:
+        terms_line = bullets.get("Terms", "")
+        missing = [t for t in need_gloss if not Vocab._phrase_re(
+            [t] + list(vocab.terms[t].get("variants", []))).search(terms_line)]
+        if missing:
+            fail("L13", "house-only term(s) in title/hypothesis not glossed on the "
+                        "Terms line: " + ", ".join(missing))
+    scan_common(strip_excluded(raw), title_prose, vocab, dic, fail, report)
+
+
+def mode_scan(path, raw, kind, vocab, dic, fail, report):
+    body = raw
+    title = ""
+    if kind == "fragment":
+        parts = re.split(r"^---\s*$", raw, 2, re.M)
+        body = parts[2] if len(parts) >= 3 else raw
+        first = next((ln.strip() for ln in body.splitlines()
+                      if ln.strip() and not ln.strip().startswith("#")), "")
+        m = re.match(r"^\*\*In plain terms:\*\*\s*(.+)$", first)
+        if not m:
+            fail("L13", "fragment does not open '**In plain terms:** <one sentence>' "
+                        "(binds NEW fragments; write-once artifacts are never edited)")
+        elif len(words(m.group(1))) > 25:
+            fail("L13", "'In plain terms' sentence is %d words (max 25)"
+                 % len(words(m.group(1))))
+    elif kind == "ruling":
+        first = raw.splitlines()[0] if raw.splitlines() else ""
+        m = re.match(r"^#\s*RULING:\s*(.+)$", first)
+        if not m:
+            fail("L13", "ruling does not open '# RULING: <one plain sentence>'")
+        else:
+            title = m.group(1)
+            title_register(title, vocab, dic, fail, "RULING line")
+        fold = raw.split("\n---", 1)[0]
+        if not re.search(r"^BINDS:", fold, re.M):
+            fail("L13", "no 'BINDS:' line above the fold")
+        mm = re.search(r"^IN PLAIN TERMS:\s*(.+(?:\n(?!BINDS|---|#).+)*)", fold, re.M)
+        if not mm:
+            fail("L13", "no 'IN PLAIN TERMS:' block above the fold")
+        elif sentence_count(mm.group(1)) > 3:
+            fail("L13", "IN PLAIN TERMS is %d sentences (max 3)"
+                 % sentence_count(mm.group(1)))
+        body = fold  # ceilings and hard scans stop at the fold; below is exempt
+        scan_common(strip_excluded(raw), title, vocab, dic, lambda r, d: None, report)
+    elif kind == "coordination":
+        fold = raw.split("\n---", 1)[0]
+        for needed in ("STATE:", "NEXT ACTION", "IF THIS LANE BREAKS"):
+            if needed not in fold:
+                fail("L13", "no '%s' line above the fold" % needed)
+        for m in re.finditer(r"\bH-\d{2,4}\b", strip_excluded(fold)):
+            tail = strip_excluded(fold)[m.end():m.end() + 80]
+            if not re.match(r"^[\"'’)\]]*[\s,:—-]{0,3}\(", tail):
+                fail("L13", "bare id %s above the fold without a plain-noun gloss (L2)"
+                     % m.group(0))
+        body = fold
+    elif kind == "research":
+        first = raw.splitlines()[0] if raw.splitlines() else ""
+        m = re.match(r"^<!--\s*audience:\s*(reader|agent)\s*-->$", first.strip())
+        if not m:
+            fail("L14", "first line is not '<!-- audience: reader -->' or "
+                        "'<!-- audience: agent -->'")
+            return
+        if m.group(1) == "agent":
+            return  # register-exempt but tagged
+        if not re.search(r"^\*\*In one sentence:\*\*", raw, re.M):
+            fail("L14", "reader page lacks the '**In one sentence:** ...' opener")
+    elif kind == "waveplan":
+        trails = re.findall(r"\(was H-[^)]*\)", raw)
+        if len(trails) >= 2:
+            report("L12a", "%d inline rename trails; move them to one '## Lineage' "
+                           "table (old id, current id, date) and use current ids inline"
+                   % len(trails))
+    if kind != "ruling":
+        m = re.search(r"^#\s+([^\n]+)$", body, re.M)
+        title = m.group(1) if m else ""
+        scan_common(strip_excluded(body), title, vocab, dic, fail, report)
+
+
+def main(argv):
+    modes = ("vocab", "gloss", "spec", "scan", "card", "report")
+    if len(argv) < 2 or argv[0] not in modes:
+        print(__doc__.strip().splitlines()[0])
+        print("usage: clarity-lint-v2.py %s <file> [--vocab V] [--repo DIR] "
+              "[--kind K] [--enforce RULES] [--term T] [--v1 PATH]" % "|".join(modes))
+        return 2
+    mode, path = argv[0], argv[1]
+    opt = {a: argv[i + 1] for i, a in enumerate(argv)
+           if a.startswith("--") and i + 1 < len(argv)}
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo = opt.get("--repo", os.getcwd())
+    if mode in ("card", "report"):
+        v1 = opt.get("--v1", os.path.join(repo, "scripts", "clarity-lint.py"))
+        if not os.path.isfile(v1):
+            print("CLARITY-LINT\t%s\tERROR\tcommitted L1-L11 lint not found at %s "
+                  "(pass --v1)" % (path, v1))
+            return 2
+        args = [sys.executable, v1, mode, path]
+        if "--vocab" in opt:
+            args += ["--vocab", opt["--vocab"]]
+        return subprocess.call(args)
+    if not os.path.isfile(path):
+        print("CLARITY-LINT\t%s\tERROR\tno such file" % path)
+        return 2
+    vocab_path = opt.get("--vocab") or next(
+        (p for p in (os.path.join(here, "house-vocabulary-v2.json"),
+                     os.path.join(repo, "scripts", "house-vocabulary.json"))
+         if os.path.isfile(p)), None)
+    if not vocab_path:
+        print("CLARITY-LINT\t%s\tERROR\tno vocabulary found (pass --vocab)" % path)
+        return 2
+    enforce = {r.strip() for r in opt.get("--enforce", "").split(",") if r.strip()}
+    findings, reports = [], []
+    name = os.path.basename(path)
 
     def fail(rule, detail):
         findings.append((rule, detail))
 
-    raw = open(path, encoding="utf-8").read()
-    art = Artifact(raw, kind)
-    body = art.body_text()
-    body_words = words(body)
+    def report(rule, detail):
+        (findings if rule in enforce else reports).append((rule, detail))
 
-    # ---- L10 anatomy + pointer placement -------------------------------
-    missing = [s for s in art.section_names if s not in art.sections]
-    if missing:
-        fail("L10", "missing section(s): " + ", ".join(missing))
-    else:
-        order = [s for s in art.section_order if s in art.section_names]
-        if order != art.section_names:
-            fail("L10", "sections out of order: " + " > ".join(order))
-    if "evidence" not in art.machine:
-        fail("L10", "no trailing evidence: line")
-    if kind == "card" and "answer" not in art.machine:
-        fail("L10", "no trailing answer: line")
-    for hit in PATHISH_RE.finditer(body):
-        fail("L10", "path/command in body prose: %r" % hit.group(0).strip())
+    try:
+        vocab = Vocab(vocab_path)
+    except (ValueError, OSError) as e:
+        print("CLARITY-LINT\t%s\tL12b\tvocabulary unreadable: %s" % (name, e))
+        return 1
+    glossaries = []
+    om = os.path.join(repo, "operating-model")
+    if os.path.isdir(om):
+        glossaries = [os.path.join(om, d, "GLOSSARY.md") for d in os.listdir(om)
+                      if os.path.isfile(os.path.join(om, d, "GLOSSARY.md"))]
+    dic = Dictionary(repo, vocab, glossaries)
 
-    # ---- L1 impact first ------------------------------------------------
-    first_sec = "HEADLINE" if kind == "card" else "WHAT CHANGED"
-    first = strip_md(art.sections.get(first_sec, "") or
-                     art.sections.get("_preamble", "") or body)
-    first_sent = (sentences(first) or [first])[0]
-    n = len(words(first_sent))
-    if n > 25:
-        fail("L1", "first sentence is %d words (max 25)" % n)
-    low = first_sent.lower()
-    for opener in PROCESS_OPENERS:
-        if low.startswith(opener.strip() + " ") or low.startswith(opener):
-            fail("L1", "first sentence opens with process marker %r"
-                 % opener.strip())
-            break
-    ids_first = ID_RE.findall(first_sent)
-    if len(ids_first) > 1:
-        fail("L1", "first sentence carries %d id tokens (max 1): %s"
-             % (len(ids_first), ", ".join(ids_first)))
-
-    # ---- L2 id appositions ---------------------------------------------
-    seen = []
-    for m in ID_RE.finditer(body):
-        tok = re.sub(r"\s+", " ", m.group(0))
-        if tok in seen:
-            continue
-        seen.append(tok)
-        tail = body[m.end():m.end() + 80]
-        if not re.match(r"^[\"'’)\]]*[\s,:—-]{0,3}\(", tail):
-            fail("L2", "id %s lacks a plain-noun gloss on first use" % tok)
-    if len(seen) > 3:
-        fail("L2", "%d distinct ids in body (max 3): %s"
-             % (len(seen), ", ".join(seen)))
-    for m in HASH_RE.finditer(body):
-        fail("L2", "commit hash in body prose: %s (evidence lines only)"
-             % m.group(0))
-
-    # ---- L3 house vocabulary --------------------------------------------
-    for entry in load_vocab(vocab_path):
-        pat = re.compile(r"\b(?:" + "|".join(
-            re.escape(f).replace(r"\ ", r"[\s-]+").replace(r"\-", r"[\s-]+")
-            for f in sorted(entry["forms"], key=len, reverse=True)) + r")\b",
-            re.I)
-        m = pat.search(body)
-        if not m:
-            continue
-        tail = body[m.end():m.end() + 80]
-        if re.match(r"^[\"'’)\]]*[\s,:—-]{0,3}\(", tail):
-            continue
-        gloss_words = [w for w in words(entry["gloss"])
-                       if w.lower().strip(".,()") not in STOPWORDS
-                       and len(w) >= 3
-                       and not any(stem_match(w, own) for own in entry["own"])]
-        share = {g for g in gloss_words
-                 for w in words(art.full_text) if stem_match(w, g)}
-        if len(share) < 2:
-            fail("L3", "house term %r unglossed on first use (gloss: %s)"
-                 % (m.group(0), entry["gloss"][:60]))
-
-    # ---- L4/L5/L7: options ----------------------------------------------
-    if kind == "card":
-        opts = art.options + art.legacy_options
-        if not 2 <= len(opts) <= 3:
-            fail("L7", "%d options (need 2-3)" % len(opts))
-        rec = len(re.findall(r"\(recommended", art.full_text, re.I))
-        if rec != 1:
-            fail("L7", "%d '(recommended' tags (need exactly 1)" % rec)
-        qmarks = body.count("?")
-        if qmarks > 1:
-            fail("L7", "%d question marks in card (max 1)" % qmarks)
-        for o in opts:
-            label = o["label"]
-            lw = words(label)
-            if len(lw) > 4:
-                fail("L4", "option label %r is %d words (max 4)"
-                     % (label, len(lw)))
-            first_tok = re.sub(r"^re-", "", lw[0].lower()) if lw else ""
-            if lw and lw[0].lower() not in VERB_LEXICON \
-                    and first_tok not in VERB_LEXICON:
-                fail("L4", "option label %r does not open with a known "
-                     "imperative verb (ESCALATE to judge)" % label)
-            if "→" not in o["rawline"] and "->" not in o["rawline"]:
-                fail("L5", "option %r has no '→ consequence'" % label)
-            tags = len(re.findall(r"\b(?:Not\s+reversible|Reversible):",
-                                  o["consequence"]))
-            if tags != 1:
-                fail("L5", "option %r carries %d reversibility tags "
-                     "(need exactly 1)" % (label, tags))
-
-        # ---- L6 default on silence -------------------------------------
-        nothing = art.sections.get("IF YOU DO NOTHING", "")
-        if not nothing:
-            fail("L6", "no IF YOU DO NOTHING line")
-        elif not (DATE_RE.search(nothing)
-                  or "nothing changes" in nothing.lower()):
-            fail("L6", "IF YOU DO NOTHING names neither an absolute date "
-                 "(YYYY-MM-DD) nor 'nothing changes'")
-
-        # ---- L11 sidecar -------------------------------------------------
-        key_path = os.path.splitext(path)[0] + ".key.json"
-        if not os.path.isfile(key_path):
-            fail("L11", "answer-key sidecar missing: %s"
-                 % os.path.basename(key_path))
-        else:
-            try:
-                key = json.load(open(key_path, encoding="utf-8"))
-                for field in ("intended_ask", "option_consequences",
-                              "default_on_silence"):
-                    if not key.get(field):
-                        fail("L11", "sidecar field %r empty" % field)
-            except ValueError:
-                fail("L11", "sidecar is not valid JSON")
-
-    # ---- L8 ceilings ------------------------------------------------------
-    cap = 120 if kind == "card" else 200
-    if len(body_words) > cap:
-        fail("L8", "body is %d words (max %d)" % (len(body_words), cap))
-    if kind == "card":
-        h = strip_md(art.sections.get("HEADLINE", ""))
-        if h and len(sentences(h)) > 1:
-            fail("L8", "HEADLINE is %d sentences (max 1)" % len(sentences(h)))
-        if len(words(h)) > 25:
-            fail("L8", "HEADLINE is %d words (max 25)" % len(words(h)))
-        c = strip_md(art.sections.get("CONTEXT", ""))
-        if len(sentences(c)) > 2:
-            fail("L8", "CONTEXT is %d sentences (max 2)" % len(sentences(c)))
-        if len(words(c)) > 40:
-            fail("L8", "CONTEXT is %d words (max 40)" % len(words(c)))
-        for o in art.options + art.legacy_options:
-            n = len(words(o["consequence"]))
-            if n > 30:
-                fail("L8", "option %r consequence is %d words (max 30)"
-                     % (o["label"], n))
-    else:
-        done = [b for s, b in art.bullets if s == "DONE"]
-        nxt = [b for s, b in art.bullets if s.startswith("NEXT")]
-        if len(done) > 5:
-            fail("L8", "DONE has %d bullets (max 5)" % len(done))
-        if len(nxt) > 3:
-            fail("L8", "NEXT has %d bullets (max 3)" % len(nxt))
-    for name, text in art.body_units():
-        for b in ([text] if not text.startswith("-") else []):
-            pass
-        for sent in sentences(text):
-            n = len(words(sent))
-            if n > 25:
-                fail("L8", "sentence in %s is %d words (max 25): %r"
-                     % (name, n, sent[:60]))
-    for _s, b in art.bullets:
-        if len(words(b)) > 30:
-            fail("L8", "bullet is %d words (max 30): %r" % (len(words(b)), b[:60]))
-    ev = art.machine.get("evidence", "")
-    n_ptr = len([p for p in re.split(r"\s+[··]\s+|\s·\s", ev) if p.strip()])
-    if n_ptr > 3:
-        fail("L8", "%d evidence pointers (max 3)" % n_ptr)
-
-    # ---- L9 absolute time, expanded scores --------------------------------
-    lowbody = body.lower()
-    for tok in RELATIVE_TIME:
-        if re.search(r"\b" + re.escape(tok) + r"\b", lowbody):
-            fail("L9", "relative time %r in body (use an absolute date)" % tok)
-    for m in SCORE_RE.finditer(body):
-        fail("L9", "score shorthand %r in body prose without expansion"
-             % m.group(0))
-
-    return findings
-
-
-def main(argv):
-    if len(argv) < 2 or argv[0] not in ("card", "report"):
-        print(__doc__.strip().splitlines()[0])
-        print("usage: clarity-lint.py card|report <file.md> "
-              "[--vocab house-vocabulary.json]")
-        return 2
-    kind, path = argv[0], argv[1]
-    vocab = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "house-vocabulary.json")
-    if "--vocab" in argv:
-        vocab = argv[argv.index("--vocab") + 1]
-    if not os.path.isfile(path):
-        print("CLARITY-LINT\t%s\tERROR\tno such file" % path)
-        return 2
-    if not os.path.isfile(vocab):
-        print("CLARITY-LINT\t%s\tERROR\tno vocabulary at %s" % (path, vocab))
-        return 2
-    findings = lint(path, kind, vocab)
-    name = os.path.basename(path)
+    if mode in ("vocab", "gloss"):
+        mode_vocab(path, Vocab(path), fail, report,
+                   gloss_only=(mode == "gloss"), only_term=opt.get("--term"))
+    elif mode == "spec":
+        mode_spec(path, open(path, encoding="utf-8").read(), vocab, dic, fail, report)
+    elif mode == "scan":
+        mode_scan(path, open(path, encoding="utf-8").read(),
+                  opt.get("--kind", "generic"), vocab, dic, fail, report)
     for rule, detail in findings:
         print("CLARITY-LINT\t%s\t%s\t%s" % (name, rule, detail))
-    print("clarity-lint: %s %s — %d finding(s)"
-          % (kind, name, len(findings)))
+    for rule, detail in reports:
+        print("CLARITY-LINT-REPORT\t%s\t%s\t%s" % (name, rule, detail))
+    print("clarity-lint-v2: %s %s — %d hard, %d report-only"
+          % (mode, name, len(findings), len(reports)))
     return 1 if findings else 0
 
 

@@ -1,7 +1,7 @@
 {
   "name": "hyp",
-  "version": "0.1.0",
-  "description": "Hyp Machine — hypothesis-driven development for Claude Code. Write an idea as a hypothesis with pass-or-fail checks declared up front; the plugin runs the experiment and records keep, discard, or refine. Outcomes land in a shared, append-only corpus your team and its agents build on: write-once capture, an indexed wiki layer, a compiled dashboard, decision cards, and an explicit operating model — profile-gated so you adopt only what you need. Commands use the /hyp: prefix. Lineage: 0.1.0 is the crux plugin's 0.4.0 feature state, renamed 2026-08-29.",
+  "version": "0.2.0",
+  "description": "Hyp Machine — hypothesis-driven development for Claude Code. Write an idea as a hypothesis with pass-or-fail checks declared up front; the plugin runs the experiment and records keep, discard, or refine. Outcomes land in a shared, append-only corpus your team and its agents build on: write-once capture, an indexed wiki layer, a compiled dashboard, decision cards, and an explicit operating model — profile-gated so you adopt only what you need. Commands use the /hyp: prefix. Lineage: 0.1.0 is the crux plugin's 0.4.0 feature state, renamed 2026-08-29. 0.2.0 adds work-graph dispatch and session durability: ranked next-item dispatch at session boundaries, claim TTL takeover, K-strikes quarantine, reboot-surviving resume, compression-surviving re-hydration protocol.",
   "author": {
     "name": "Ian Anderson",
     "url": "https://github.com/getfatday"

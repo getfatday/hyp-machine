@@ -1,9 +1,24 @@
 # H-NNN-slug: <short title>
 <!-- Copy to {{HYPOTHESES_DIR}}/H-NNN-slug.md — next NNN = highest existing + 1, starting at 001. -->
+<!-- Title rule (contract L15): the prose after the colon is <= 25 words, carries at
+most ONE house-only term (scripts/house-vocabulary.json status field), zero unregistered
+coinages, zero score shorthand. Slugs and filenames never change after registration —
+only title prose is ever migrated. -->
 
 ## Status
 draft <!-- draft | active | kept | discarded | refined-into: H-NNN. draft → active when its first run starts. -->
 
+
+## In plain terms
+<!-- For a reader with general software knowledge and zero session context.
+     Three lines, each one sentence <= 25 words, house terms glossed per
+     scripts/house-vocabulary.json on first use (checked by clarity-lint spec mode).
+     Compatibility law: the eight ## headings in this template never rename or
+     reorder, and migration or lint never edits bytes from the Binary assertions
+     heading through the Runs table — that span is frozen assertion grammar. -->
+- **What we're testing:** <impact first: what changes in the world if this idea is true>
+- **What "keep" means:** <the concrete practice adopted as standard if the pre-declared checks pass>
+- **Terms:** <first-use glosses for every house term or id appearing in this spec's title and hypothesis; omit the line if none>
 ## Hypothesis
 <!-- One falsifiable sentence. -->
 <!-- e.g. "Requiring a written plan before any edit reduces reverted diffs on multi-file tasks." -->
@@ -16,6 +31,16 @@ draft <!-- draft | active | kept | discarded | refined-into: H-NNN. draft → ac
 
 ## Baseline
 <!-- The current practice this is compared against. e.g. "No planning rule; edit immediately." -->
+
+## Prior work
+<!-- What this spec builds on or knowingly retries: kept mechanisms, banked nulls
+     (failed experiments recorded so nobody retries them blindly), and refine lineage.
+     Start from scripts/prior-art-sweep.py (advisory) over the findings index
+     (research/findings-index.md), then verify every line by hand. One line per prior:
+     id (verdict, date): why it bears on this spec — evidence pointer.
+     A clean sweep is recorded, not omitted: "- none surfaced (sweep run <date>)". -->
+- <!-- e.g. "Builds on H-110 (kept, 2026-08-16): reuses its grade_wiring stdin pattern — experiments/runs/H-110/fixture/grade_wiring.py" -->
+- <!-- e.g. "Banked null H-155 (discarded, 2026-08-28): in-prompt surfaces do not suppress tool-reaching; this spec does not retry that class" -->
 
 ## Method
 <!-- Numbered steps; fixed budget per run so runs are comparable. -->
