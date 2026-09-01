@@ -28,6 +28,7 @@ Scaffolds are deterministic: fixed strings only, no timestamps. Run one suite wi
 | `verify` | A/B spec with fixture isolation + blind referent grading, no run | no A/B harness for a plain factual question |
 | `init` | `/hyp:init` scaffolds the capture profile (config, dirs, rules block) | (idempotence is exercised directly by the extraction harness) |
 | `run` | executes a compiled flow to its mechanical verdict | refuses with an adopt-first pointer when no model exists |
+| `durability-check` | a fresh session re-hydrates from a seeded work-graph: false-done flagged in the assert-back note before dispatch, re-run first, frontier drained | (the observe-phase mutation rule is graded by effect in the source lab's counted harness) |
 
 ## Grading notes
 

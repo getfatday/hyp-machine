@@ -14,7 +14,7 @@ Five mechanisms, each proven in the source lab before shipping:
 | Claim TTL + takeover | Two writers never collide: a lane claim is live while its heartbeat is fresh (ttl_s = 1800); taking over a stale lane requires an attributed record committed BEFORE any lane write | `scripts/lane-takeover.py` |
 | K-strikes quarantine | A lane that fails K=2 consecutive runs stops burning budget: it leaves dispatch behind a decision card only a human ruling can close | `scripts/dispatch-gate.py` |
 | Reboot-surviving resume | A launchd timer refires after any reboot, reads the dispatch, and adopts at most one orphaned item per capped firing | `scripts/hyp-resume.sh` + `scripts/install-resume-timer.sh` + `scripts/resume-prompt.md` |
-| Compression-surviving re-hydration | A per-effort work-graph file plus a resume protocol carries dependencies and completion across context loss | the protocol below |
+| Compression-surviving re-hydration | A per-effort work-graph file plus a resume protocol carries dependencies and completion across context loss | `scripts/graph-check.py` + the `/hyp:durability-check` skill + the protocol below |
 
 ## The dispatch surface
 
@@ -125,6 +125,21 @@ at every load, never trusted from a cached pointer. The graph is a living tracke
 — commit-amended, never write-once; steps are never deleted, only status-transitioned
 or superseded.
 
+The checker:
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/graph-check.py" [--json] [--claim-ttl-days 3]
+```
+
+Report-only (exit 0 always), read-only, stdlib. Sweeps `ledger/graphs/*.md` (or takes
+explicit paths) and derives, per graph, from disk alone: the recomputed frontier,
+false-dones (produces missing on disk or sha-mismatched), stale downstream re-run
+candidates, dangling refs and needs cycles, a stamped `next-dispatch` that disagrees
+with the recomputed frontier, and expired step claims (window `--claim-ttl-days`,
+default 3 days). The row grammar and frontier rule are the counted H-231 grader's,
+generalized past the fixture's step ids; because it writes nothing it is safe inside
+the protocol's observe phase.
+
 After ANY context loss (compaction, a fresh session picking up the effort), the
 re-hydration protocol, in this exact order:
 
@@ -143,6 +158,12 @@ re-hydration protocol, in this exact order:
    evidence sha committed after each step).
 5. **COMPLETION CONTRACT**: the session ends only when the graph frontier is empty or
    a FAILURE record exists. Never stop at a checkpoint or a next-dispatch marker.
+
+The operational walk — the counted observe-phase command allowlist, the exact
+resume-note shape (`## State` / `## Dependencies` / `## Mismatches` with `MISMATCH:`
+lines), and the effect-graded mutation rule — is the `/hyp:durability-check` skill
+(`skills/durability-check/SKILL.md`), which also runs the checker as its mechanical
+step 0.
 
 ## Evidence (source lab, counted keeps)
 
@@ -183,9 +204,11 @@ Ported with paths/config adaptation only — decision logic, joins, caps, consta
 Named adaptations: item enumeration in `dispatch-status.py` reads the consumer's own
 hypotheses corpus instead of the lab's release-train wave plan; the quarantine row type
 is `needs-maintainer` (lab: `needs-ian`); resume tooling drops the lab's plugin
-toggles and parameterizes the auth env file. Deliberately NOT shipped: the lab's
-release-train reader (wave plans are lab infrastructure), `graph-check.py` and the
-`/hyp:durability-check` command (H-231's On-keep routes them to a follow-on tranche;
-they ship when that lands), and SessionStart ranked injection (H-230's resolver half —
-the lab install lands with the same follow-on tranche; the Stop-boundary half shipped
-here is the half already live in the lab).
+toggles and parameterizes the auth env file. `graph-check.py` and the
+`/hyp:durability-check` skill, deferred at 0.2.0, ship as of H-231's On-keep landing
+(2026-09-01): the checker is byte-identical to the lab install (`scripts/graph-check.py`
+both sides), and the skill carries the counted fixture protocol text verbatim.
+Deliberately NOT shipped: the lab's release-train reader (wave plans are lab
+infrastructure), and SessionStart ranked injection (H-230's resolver half — lands with
+a follow-on tranche; the Stop-boundary half shipped here is the half already live in
+the lab).

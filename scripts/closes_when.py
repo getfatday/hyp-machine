@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """closes_when.py -- shared closes-when predicate parser + evaluator.
 
-PROVENANCE — port of the source lab's scripts/closes_when.py (H-100 kept lineage;
-the decision-resolved predicate joined it with the decision kit, directive
-2026-08-28). One predicate evaluator, shared by the session resolver
-(hooks/scripts/session_resolver.py) and any consumer sweep, so two readers of the
-same ledger can never disagree on open/closed (the split-brain guard). Differences
-from the lab copy: the maintainer-ruling directory and the decision-store ledger
-path resolve through .claude/hyp.json (raw_dir, default research/raw; ledger_file,
-default ledger/ledger.jsonl). Predicate semantics are identical.
+Design: experiments/runs/H-100/fixture/prevention-design.md (S2, "the closes-when
+convention"). Spec: hypotheses/H-100-commitment-detector.md. This module is shared by
+commitment_lint.py (the sweep) and, later, the H-101 ledger resolver: one predicate
+evaluator, two consumers, so the sweep and the ledger can never disagree on open/closed
+(the split-brain guard, design S4.2).
 
 Grammar (at most one bracket per line, appended to the committing line):
 
@@ -26,34 +23,15 @@ All five predicates are evaluated read-only, against committed (HEAD) state ONLY
 the working tree: "committed at HEAD" (path-exists), "some commit message" (commit-grep),
 "landed as kept ... at HEAD" (hypothesis-kept), "some committed filename" (maintainer-
 ruling), "an accepted|denied decision-resolution row in the ledger at HEAD"
-(decision-resolved, docs/decisions.md section 4) -- the Durability invariant
+(decision-resolved, decisions-schema.md section 4) -- the Durability invariant
 ("uncommitted work effectively does not exist").
 
 Stdlib + git only. No network. No writes.
 """
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
-
-
-def _hyp_config(repo_root):
-    """raw_dir + ledger_file from <repo_root>/.claude/hyp.json; hyp defaults
-    on any failure. Never raises."""
-    cfg = {"raw_dir": "research/raw", "ledger_file": "ledger/ledger.jsonl"}
-    try:
-        with open(os.path.join(str(repo_root), ".claude", "hyp.json"),
-                  encoding="utf-8") as fh:
-            data = json.load(fh)
-        if isinstance(data, dict):
-            for key in cfg:
-                val = data.get(key)
-                if isinstance(val, str) and val.strip():
-                    cfg[key] = val.strip().strip("/")
-    except (OSError, ValueError):
-        pass
-    return cfg
 
 # ---------- bracket grammar ----------
 
@@ -142,11 +120,24 @@ def _check_path_exists(arg, repo_root):
     return code == 0
 
 
+_LOG_BODY_CACHE = {}
+
+
+def _all_commit_bodies(repo_root):
+    """One full-history message pass per (process, repo) — the compile-dashboard
+    single-pass law, ported here after the per-row form scaled to ~57 s at 188
+    open rows and crossed the CLI's SessionStart hook timeout (2026-09-01)."""
+    text = _LOG_BODY_CACHE.get(repo_root)
+    if text is None:
+        code, out = _git(repo_root, ["log", "--format=%B%x00"])
+        text = out if code == 0 else ""
+        _LOG_BODY_CACHE[repo_root] = text
+    return text
+
+
 def _check_commit_grep(arg, repo_root):
     """commit-grep=<needle> -- some commit message contains the literal needle."""
-    code, out = _git(repo_root, ["log", "--fixed-strings", "--grep=" + arg,
-                                  "--format=%H", "-n1"])
-    return code == 0 and out.strip() != ""
+    return arg in _all_commit_bodies(repo_root)
 
 
 def _check_hypothesis_kept(arg, repo_root):
@@ -170,11 +161,10 @@ def _check_hypothesis_kept(arg, repo_root):
 
 
 def _check_maintainer_ruling(arg, repo_root):
-    """maintainer-ruling=<slug> -- some committed filename under the configured raw
-    dir (hyp.json raw_dir, default research/raw) contains both <slug> and 'ruling',
-    case-insensitive."""
-    raw_dir = _hyp_config(repo_root)["raw_dir"]
-    code, out = _git(repo_root, ["ls-tree", "-r", "--name-only", "HEAD", "--", raw_dir])
+    """maintainer-ruling=<slug> -- some committed filename under research/raw/ contains
+    both <slug> and 'ruling', case-insensitive (matches existing practice, e.g.
+    raw/2026-08-15-m7-extraction-bar-ruling.md)."""
+    code, out = _git(repo_root, ["ls-tree", "-r", "--name-only", "HEAD", "--", "research/raw"])
     if code != 0:
         return False
     needle = arg.lower()
@@ -187,11 +177,10 @@ def _check_maintainer_ruling(arg, repo_root):
 
 def _check_decision_resolved(arg, repo_root):
     """decision-resolved=<DEC-id> -- a kind:"decision-resolution" row for <id> with
-    disposition accepted|denied exists in the configured ledger AT HEAD
-    (docs/decisions.md section 4; committed state only, like every other predicate --
-    a staged, uncommitted resolution does not close anything)."""
-    ledger_rel = _hyp_config(repo_root)["ledger_file"]
-    code, out = _git(repo_root, ["show", "HEAD:" + ledger_rel])
+    disposition accepted|denied exists in ledger/work-ledger.jsonl AT HEAD (decisions-
+    schema.md section 4; committed state only, like every other predicate -- a staged,
+    uncommitted resolution does not close anything)."""
+    code, out = _git(repo_root, ["show", "HEAD:ledger/work-ledger.jsonl"])
     if code != 0:
         return False
     for line in out.splitlines():

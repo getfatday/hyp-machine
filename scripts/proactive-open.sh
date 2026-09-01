@@ -1,12 +1,6 @@
 #!/bin/sh
-# proactive-open.sh — open the decision surface front-and-center when NEW decisions land.
-#
-# PROVENANCE — port of the source lab's scripts/proactive-open.sh (decision kit,
-# consolidated decision-making directive 2026-08-28; selftest-proven once-per-id
-# guard). Differences from the lab copy: the ledger default resolves through
-# .claude/hyp.json ledger_file (default ledger/ledger.jsonl), and the compile
-# fallback finds compile-dashboard.py beside this script (plugin home) when the
-# consumer repo has no scripts/ copy. Behavior is otherwise identical.
+# proactive-open.sh — the directive's "Conversely, you open up the dashboard for me so
+# that it's front and center" (consolidated decision-making directive 2026-08-28).
 #
 # Called by decisions.py add and decisions.py surface — NEVER by the compiler
 # (compile-dashboard.py renders surfaces; it opens nothing). Behavior, once per NEW
@@ -23,30 +17,14 @@
 #
 # Env overrides (all optional; tests point these at recorders):
 #   DECISIONS_ROOT     repo root            (default: CLAUDE_PROJECT_DIR or cwd)
-#   DECISIONS_LEDGER   ledger path          (default: $ROOT/<hyp.json ledger_file>, ledger/ledger.jsonl)
+#   DECISIONS_LEDGER   ledger path          (default: $ROOT/ledger/work-ledger.jsonl)
 #   DECISIONS_STATE    state file           (default: $ROOT/.claude/decision-surface-state.json)
-#   COMPILE_CMD        recompile command    (default: compile-dashboard.py from $ROOT/scripts/, else beside this script)
+#   COMPILE_CMD        recompile command    (default: python3 $ROOT/scripts/compile-dashboard.py $ROOT --quiet)
 #   OPEN_CMD           opener               (default: open on darwin, xdg-open elsewhere)
 #   NOTIFY_CMD         notifier             (default: osascript display notification; no-op without it)
 
 ROOT="${DECISIONS_ROOT:-${CLAUDE_PROJECT_DIR:-$(pwd)}}"
-HERE=$(dirname "$0")
-if [ -z "${DECISIONS_LEDGER:-}" ]; then
-  DECISIONS_LEDGER="$ROOT/$(python3 - "$ROOT" <<'PYEOF2'
-import json, os, sys
-rel = "ledger/ledger.jsonl"
-try:
-    data = json.load(open(os.path.join(sys.argv[1], ".claude", "hyp.json"), encoding="utf-8"))
-    val = data.get("ledger_file") if isinstance(data, dict) else None
-    if isinstance(val, str) and val.strip():
-        rel = val.strip().strip("/")
-except (OSError, ValueError):
-    pass
-print(rel)
-PYEOF2
-)"
-fi
-LEDGER="$DECISIONS_LEDGER"
+LEDGER="${DECISIONS_LEDGER:-$ROOT/ledger/work-ledger.jsonl}"
 STATE="${DECISIONS_STATE:-$ROOT/.claude/decision-surface-state.json}"
 
 [ -f "$LEDGER" ] || exit 0
@@ -89,29 +67,27 @@ n=$(echo "$new_ids" | wc -w | tr -d ' ')
 # 1. Recompile FIRST so the opened surface already carries the new card(s).
 if [ -n "${COMPILE_CMD:-}" ]; then
   $COMPILE_CMD >/dev/null 2>&1
-elif [ -f "$ROOT/scripts/compile-dashboard.py" ]; then
-  python3 "$ROOT/scripts/compile-dashboard.py" "$ROOT" --quiet >/dev/null 2>&1
-elif [ -f "$HERE/compile-dashboard.py" ]; then
-  python3 "$HERE/compile-dashboard.py" "$ROOT" --quiet >/dev/null 2>&1
+else
+  timeout 10 python3 "$ROOT/scripts/compile-dashboard.py" "$ROOT" --quiet >/dev/null 2>&1 || true
 fi
 
 # 2. Open front-and-center (once per fire, however many new ids landed together).
 if [ -f "$ROOT/decisions.html" ]; then
   if [ -n "${OPEN_CMD:-}" ]; then
-    $OPEN_CMD "$ROOT/decisions.html" 2>/dev/null
+    timeout 3 $OPEN_CMD "$ROOT/decisions.html" 2>/dev/null || true
   elif command -v open >/dev/null 2>&1; then
-    open "$ROOT/decisions.html" 2>/dev/null
+    timeout 3 open "$ROOT/decisions.html" 2>/dev/null || true
   elif command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "$ROOT/decisions.html" 2>/dev/null
+    timeout 3 xdg-open "$ROOT/decisions.html" 2>/dev/null || true
   fi
 fi
 
 # 3. Push the notification.
 msg="$n new decision(s) waiting: $new_ids — decisions.html is open"
 if [ -n "${NOTIFY_CMD:-}" ]; then
-  $NOTIFY_CMD "$msg" 2>/dev/null
+  timeout 3 $NOTIFY_CMD "$msg" 2>/dev/null || true
 elif command -v osascript >/dev/null 2>&1; then
-  osascript -e "display notification \"$msg\" with title \"Hyp Machine — decisions waiting\"" 2>/dev/null
+  timeout 3 osascript -e "display notification \"$msg\" with title \"Crux — decisions waiting\"" 2>/dev/null || true
 fi
 
 # 4. Mark seen LAST (atomic tmp+rename; a crash above re-fires safely next surface).

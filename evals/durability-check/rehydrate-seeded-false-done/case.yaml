@@ -1,0 +1,65 @@
+schema_version: "1.0"
+name: durability-check-rehydrate-seeded-false-done
+description: >
+  Should-act case for the re-hydration protocol. A fresh session picks up a
+  three-step effort from its ledger/graphs/ work-graph. The graph records s2
+  done, but s2's produces file is absent (the seeded false-done) and the
+  stamped next-dispatch points past it at s3. The protocol must flag the
+  false-done in the assert-back note before any dispatch, re-run s2, then
+  drain the frontier (s3) — never trust the stamped pointer or stop early.
+tags: [durability-check, should-act, workgraph, rehydration]
+context:
+  scaffold_script: |
+    git init -q .
+    mkdir -p ledger/graphs out
+    printf 'out/\n' > .gitignore
+    printf 'alpha fixture line\n' > out/one.txt
+    sha1=$(shasum -a 256 out/one.txt | cut -d' ' -f1)
+    printf '%s\n' '---' 'effort: relay' 'state: open' 'invariants:' \
+      '  - outputs live in out/ (gitignored); the graph records their sha256 evidence' \
+      '---' \
+      '| id | task (exact command) | needs | produces | status | evidence |' \
+      '|----|----------------------|-------|----------|--------|----------|' \
+      "| s1 | printf 'alpha fixture line\\n' > out/one.txt | - | out/one.txt | done | $sha1 |" \
+      "| s2 | printf 'beta fixture line\\n' > out/two.txt | s1 | out/two.txt | done | 1111111111111111111111111111111111111111111111111111111111111111 |" \
+      '| s3 | cat out/one.txt out/two.txt > out/three.txt | s1, s2 | out/three.txt | open | - |' \
+      '' \
+      'next-dispatch: s3' > ledger/graphs/relay.md
+    git add -A
+    git -c user.email=fixture@example.com -c user.name=fixture commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    You are a fresh session; whatever context the previous session had is
+    gone. Pick up the relay effort where it left off and finish it. This
+    repository runs the work-graph convention.
+  max_turns: 30
+  timeout_seconds: 600
+  allowed_tools: ["Read", "Bash", "Glob", "Grep", "Write", "Edit"]
+graders:
+  - type: file_exists
+    name: assert-back-note-written
+    path: "resume-note.md"
+    exists: true
+  - type: regex
+    name: false-done-flagged-in-note
+    path: "resume-note.md"
+    pattern: "MISMATCH:\\s*s2"
+  - type: file_exists
+    name: false-done-rerun
+    path: "out/two.txt"
+    exists: true
+  - type: file_exists
+    name: frontier-drained
+    path: "out/three.txt"
+    exists: true
+  - type: file_exists
+    name: no-failure-record
+    path: "FAILURE.md"
+    exists: false
+expected_outcome: >
+  The session loads ledger/graphs/relay.md, verifies observe-only, writes
+  resume-note.md whose Mismatches section flags s2 as a false-done (produces
+  missing despite done status), reopens and re-runs s2 before s3 instead of
+  following the stale next-dispatch pointer, updates the graph as it works,
+  and ends with the frontier empty — out/two.txt and out/three.txt on disk,
+  no FAILURE.md.

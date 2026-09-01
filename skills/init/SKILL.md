@@ -22,7 +22,10 @@ the installed scripts) are the durable layer that survives a plugin disable.
 
 ## Steps
 
-1. **Choose the profile and paths.** Default profile `capture`; default paths: raw
+1. **Choose the profile and paths.** Default profile `capture` — except when the
+   repository has a `.claude/crux.json` (from crux, this plugin's prior name) and no
+   `--profile` flag is given: then its profile and path overrides are adopted, so the
+   rename never silently downgrades an experiments or modeling repository. Default paths: raw
    `research/raw/`, notes `research/notes/`, index `research/index.md`, journal fragments
    `experiments/journal-fragments/`; experiments adds specs `hypotheses/`, template
    `hypotheses/TEMPLATE.md`, runs `experiments/runs/`, preflight `experiments/preflight.py`;
@@ -48,8 +51,12 @@ the installed scripts) are the durable layer that survives a plugin disable.
 3. **Migration** (automatic, only when legacy state exists): a repository initialized by the
    retired predecessor plugins is adopted in the same pass — the legacy config files are
    merged into `.claude/hyp.json`, the legacy CLAUDE.md rules blocks are replaced by the
-   hyp block, and the installed guard rules are re-pointed. Nothing consumer-owned is
-   rewritten; the scaffold prints one line per migrated artifact.
+   hyp block, and the installed guard rules are re-pointed. A repository configured by crux
+   is seeded the same way: when `.claude/hyp.json` is absent, the profile and path
+   overrides come from `.claude/crux.json` (the output says
+   `migrated settings from .claude/crux.json`); an explicit `--profile` flag still wins,
+   and the crux file is left in place so an installed crux keeps working. Nothing
+   consumer-owned is rewritten; the scaffold prints one line per migrated artifact.
 4. **Review what changed** (`git status`, `git diff`) and explain the three layers:
    - hooks (from the plugin, active while enabled): write-once guard, capture-intent nudge,
      session drift check, unjournaled-work backstop, dashboard refresh; at the experiments

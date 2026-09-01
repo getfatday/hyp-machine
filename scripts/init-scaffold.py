@@ -23,7 +23,10 @@ unchanged / kept / migrated.
 
 Migration: a repository initialized by the retired predecessor plugins is
 adopted in the same pass — legacy config keys merge into `.claude/hyp.json`
-and legacy CLAUDE.md rules blocks are replaced by the hyp block.
+and legacy CLAUDE.md rules blocks are replaced by the hyp block. A
+`.claude/crux.json` written by crux (this plugin's prior name) seeds the
+profile and path overrides the same way when `.claude/hyp.json` is absent;
+an explicit --profile flag still wins, and the crux file is left in place.
 
 Everything written is rendered from the plugin's templates with the chosen
 paths. Output contains no timestamps or randomness, so re-running with the
@@ -37,7 +40,8 @@ import sys
 
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "hooks", "scripts"))
-from hyp_config import CONFIG_RELPATH, DEFAULTS, PROFILES, render  # noqa: E402
+from hyp_config import (CONFIG_RELPATH, DEFAULTS, LEGACY_CONFIG_RELPATH,  # noqa: E402
+                        PROFILES, render)
 
 PATH_KEYS = [k for k in DEFAULTS if k not in ("profile", "context", "model_dir")]
 
@@ -133,6 +137,37 @@ def migrate_legacy_config(root, cfg):
     return migrated
 
 
+def migrate_crux_config(root, cfg, explicit_profile):
+    """Seed cfg from `.claude/crux.json` (crux is this plugin's prior name) so
+    the rename never drops the consumer's profile or path overrides. Called
+    only when `.claude/hyp.json` is absent; the crux file is left in place so
+    an installed crux keeps working. Explicit path flags are re-applied by the
+    caller; the profile is adopted only when no --profile flag was given."""
+    text = read(os.path.join(root, LEGACY_CONFIG_RELPATH))
+    if text is None:
+        return
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return
+    if not isinstance(data, dict):
+        return
+    seeded = []
+    for key in PATH_KEYS + ["model_dir", "context"]:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            cfg[key] = value.strip().strip("/") if key != "context" else value.strip()
+            seeded.append(key)
+    profile = data.get("profile")
+    if explicit_profile is None and profile in PROFILES and profile != cfg["profile"]:
+        cfg["profile"] = profile
+        seeded.insert(0, "profile")
+    if seeded:
+        print("migrated settings from %s  (%s seed %s; the crux file is left "
+              "in place — crux keeps working)"
+              % (LEGACY_CONFIG_RELPATH, ", ".join(seeded), CONFIG_RELPATH))
+
+
 def strip_legacy_blocks(current):
     """Remove retired-plugin rules blocks from CLAUDE.md text; count removals."""
     removed = 0
@@ -222,7 +257,7 @@ def slugify(name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("root", nargs="?", default=".")
-    parser.add_argument("--profile", choices=PROFILES, default="capture")
+    parser.add_argument("--profile", choices=PROFILES, default=None)
     parser.add_argument("--context", dest="context")
     for key in PATH_KEYS:
         parser.add_argument("--" + key.replace("_", "-"), dest=key)
@@ -230,17 +265,21 @@ def main():
 
     root = os.path.abspath(args.root)
     cfg = dict(DEFAULTS)
-    cfg["profile"] = args.profile
+    cfg["profile"] = args.profile or "capture"
     for key in PATH_KEYS:
         value = getattr(args, key)
         if value:
             cfg[key] = value.strip().strip("/")
 
     # 0. Legacy adoption: fold retired-plugin configs in BEFORE choosing paths,
-    #    so an already-initialized repository keeps its layout. Explicit flags
-    #    still win (re-applied after the merge).
+    #    so an already-initialized repository keeps its layout. A crux config
+    #    (the prior name's `.claude/crux.json`) seeds profile + paths when
+    #    `.claude/hyp.json` is absent. Explicit flags still win (re-applied
+    #    after the merge).
     existing = read(os.path.join(root, CONFIG_RELPATH))
     migrate_legacy_config(root, cfg)
+    if existing is None:
+        migrate_crux_config(root, cfg, args.profile)
     for key in PATH_KEYS:
         value = getattr(args, key)
         if value:
@@ -253,7 +292,7 @@ def main():
         if isinstance(prior, dict):
             # never silently DOWNGRADE the profile on a repair re-run
             prior_profile = prior.get("profile")
-            if (prior_profile in PROFILES and args.profile == "capture"
+            if (prior_profile in PROFILES and args.profile in (None, "capture")
                     and PROFILES.index(prior_profile) > 0):
                 cfg["profile"] = prior_profile
             for key in PATH_KEYS + ["context"]:

@@ -43,9 +43,16 @@ for the fuller loops). Capture triggers on "note this".
 Hyp Machine 0.1.0 is the crux plugin's 0.4.0 feature state under a new name (renamed
 2026-08-29 after a blind naming study; the evidence lives in the source lab's decision
 ledger). If you installed `crux` from the getfatday-skills marketplace, it keeps working
-and stays installable; a guided migration lands after the migration-safety experiment
-passes. Early movers can install `hyp` now — an existing `.claude/crux.json` config and
-`CRUX_GH_ACCOUNT` setting are still honored.
+and stays installable — an existing `.claude/crux.json` config and `CRUX_GH_ACCOUNT`
+setting are still honored, and `/hyp:init` seeds `.claude/hyp.json` from
+`.claude/crux.json` (profile and path overrides; the crux file is left in place). The
+guided migration is `scripts/migrate-from-crux.sh`: it runs the marketplace-add /
+install-hyp / uninstall-crux steps tolerantly (every step's exit code is recorded, none
+is fatal mid-way) and accepts on the end-state artifacts alone — hyp enabled at project
+scope, crux absent from project settings, `.claude/hyp.json` present — so a step that
+finds its work already done never fails a correct migration, which a bare `&&`-chained
+one-liner does. Migrating never deletes `.claude/crux.json` and leaves the crux
+marketplace entry known, so rollback stays a two-way door.
 
 **Scope.** Hyp Machine is a way-of-working discipline — append-only capture, evidence-grade
 experiments, an explicit process model — not a typed CRUD document lifecycle, a task
@@ -93,12 +100,13 @@ config files and CLAUDE.md rules blocks in place.
 | `compile` | modeling | Regenerate executable artifacts (workflows, runners, skills, rule blocks) deterministically from model nodes |
 | `run` | modeling | Execute a compiled flow to a mechanical verdict (adopt-first refusal routing) |
 | `verify` | modeling | Controlled A/B experiments over way-of-working interventions |
+| `durability-check` | — | Walk the work-graph re-hydration protocol after any context loss: verify from the graph observe-only, assert back in writing, dispatch by the recomputed frontier, end only at an empty frontier or a FAILURE record — counted H-231 (see `docs/workgraph.md`) |
 
 ## What ships
 
 | Component | Purpose |
 |---|---|
-| `skills/` | The nine skills above |
+| `skills/` | The ten skills above |
 | `hooks/hooks.json` + `hooks/scripts/` | Deterministic guards (see table below) |
 | `scripts/compile-journal.py` | Renders the compiled journal view from write-once fragments (copied into your repo by init) |
 | `scripts/compile-dashboard.py` | Compiles a DASHBOARD.md status projection from your repo's own ledger and journal fragments (every source is optional) — v3 renders DECISIONS WAITING first as AskUserQuestion-grammar cards, normalizes three ledger row shapes, and regenerates `decisions.html` from the template at every compile (see `docs/decisions.md`) |
@@ -126,9 +134,11 @@ config files and CLAUDE.md rules blocks in place.
 | `scripts/lane-takeover.py` | The claim door: TTL-gated takeover of another executor's lane — typed exit-3 refusal while the heartbeat is fresh, attributed record committed BEFORE any lane write on grant — counted H-216 |
 | `scripts/dispatch-gate.py` | The shared relaunch governor: permit/deny consults + K-strikes quarantine (K=2) behind one committed decision card only a human ruling closes — counted H-218 |
 | `scripts/hyp-resume.sh` + `scripts/install-resume-timer.sh` + `scripts/resume-prompt.md` | The reboot-surviving scheduled resume: emitted (never auto-loaded) launchd plist, one dispatch read + at most one capped adoption per firing — counted H-217 |
+| `scripts/graph-check.py` | The work-graph checker: report-only (exit 0 always) lint + derived dispatch state over `ledger/graphs/*.md` — recomputed frontier, false-dones against the disk, stale downstream re-run candidates, dangling refs/cycles, stale `next-dispatch` pointers, expired claims — counted H-231; step 0 of `/hyp:durability-check` (see `docs/workgraph.md`) |
 | `scripts/compile-findings-index.py` | The corpus layer, index half: one plain-language line per resolved hypothesis (id, verdict, date, finding, evidence pointer) plus lineage edges — counted H-226/H-228 |
 | `scripts/prior-art-sweep.py` | The corpus layer, consult half: typed OVERLAP/LINEAGE flags plus a ready-to-paste Prior-work section for any draft spec, so registration mechanically consults everything already proven or disproven — counted H-227/H-228 |
 | `scripts/parity-check.py` | Byte-parity checker between an installed hyp copy and a published manifest or pinned reference tree (see “Install parity” below) |
+| `scripts/migrate-from-crux.sh` | The guided crux-to-hyp migration: runs the marketplace-add / install-hyp / uninstall-crux steps tolerantly (every step rc recorded, never fatal), then exits 0 iff the end-state artifacts verify — hyp enabled at project scope, crux absent from project settings, `.claude/hyp.json` present (seeded from `.claude/crux.json` when init has not run) — one plain verdict line per check (see “Lineage” above) |
 | `scripts/issueops-fetch.py`, `scripts/issueops-reply.py`, `scripts/issueops-teardown.py`, `scripts/issueops_gh.py` | The audited GitHub-issues intake: CRLF-normalizing transport adapter, deterministic reply templater, manifest-scoped teardown, and the account-pinned audited gh helper they share — outward writes confined to a frozen allowlist (see `docs/issueops.md`) |
 | `scripts/preflight-rigor.py` | The ethics extension to preflight, REPORT-ONLY: six calibrated rows over each spec's `## Ethical assumptions` section; the enforcement flip is maintainer-gated (see `docs/preflight-rigor.md`) |
 | `scripts/directive-lint.py` + `scripts/directive_emitter.py` | The directive-intake closure join: level-triggered lint over `directives/D-*.md` (five finding classes) + the On-close commitment emitter into the work ledger (see `docs/directive-intake.md`) |
