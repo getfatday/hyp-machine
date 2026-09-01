@@ -174,21 +174,36 @@ def strip_flags(name, path):
 
 
 def seed_hyp(plugin_root, repo_root):
-    sys.path.insert(0, os.path.join(plugin_root, "hooks", "scripts"))
-    from hyp_config import CONFIG_RELPATH, LEGACY_CONFIG_RELPATH, load_config
-    hyp_path = os.path.join(repo_root, CONFIG_RELPATH)
+    # Self-contained on purpose: importing hooks/scripts/hyp_config.py assumed
+    # this script always runs from inside an installed plugin tree (sibling
+    # hooks/ directory). It doesn't when the fixture (or any other harness)
+    # invokes a standalone copy — found live, 2026-09-01, H-221 smoke run.
+    # These two relpaths are copied from hyp_config.py's own constants;
+    # load_config's only load-bearing behavior for a migration is "read
+    # hyp.json if present, else crux.json, else defaults" -- reproduced here
+    # directly rather than re-importing a module that may not be a sibling.
+    config_relpath = os.path.join(".claude", "hyp.json")
+    legacy_relpath = os.path.join(".claude", "crux.json")
+    hyp_path = os.path.join(repo_root, config_relpath)
+    legacy_path = os.path.join(repo_root, legacy_relpath)
     if os.path.exists(hyp_path):
         print("already present")
         return 0
-    if not os.path.exists(os.path.join(repo_root, LEGACY_CONFIG_RELPATH)):
-        print("absent, and no %s to seed from — run /hyp:init"
-              % LEGACY_CONFIG_RELPATH)
+    if not os.path.exists(legacy_path):
+        print("absent, and no %s to seed from — run /hyp:init" % legacy_relpath)
         return 1
-    cfg = load_config(repo_root)  # reads crux.json when hyp.json is absent
+    try:
+        with open(legacy_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError("crux.json is not a JSON object")
+    except Exception as e:
+        print("crux.json unreadable (%s) — run /hyp:init" % e)
+        return 1
     os.makedirs(os.path.dirname(hyp_path), exist_ok=True)
     with open(hyp_path, "w", encoding="utf-8") as f:
         f.write(json.dumps(cfg, indent=2, sort_keys=True) + "\n")
-    print("seeded from %s (profile: %s)" % (LEGACY_CONFIG_RELPATH, cfg["profile"]))
+    print("seeded from %s (profile: %s)" % (legacy_relpath, cfg.get("profile", "capture")))
     return 0
 
 
