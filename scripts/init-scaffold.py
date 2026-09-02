@@ -244,9 +244,22 @@ def merge_settings(root, deny_rules):
 
 
 def install_script(root, relpath, src_relparts, label):
+    # Keep-if-customized (2026-09-01, H-221's migration lane): an unconditional
+    # overwrite destroyed a consumer's amended preflight during migration
+    # rehearsal — the same silent-data-loss class as the profile drop. Install
+    # when absent; overwrite only a byte-identical-to-shipped copy (a no-op);
+    # a customized copy is KEPT with a printed notice so nothing is lost
+    # silently and the consumer can diff at leisure.
     src = read(os.path.join(PLUGIN_ROOT, *src_relparts))
-    if src is not None:
-        ensure_file(root, relpath, src, label, overwrite=True)
+    if src is None:
+        return
+    existing = read(os.path.join(root, relpath))
+    if existing is not None and existing != src:
+        print("kept your customized %s (%s differs from the shipped copy; "
+              "compare against the plugin's %s)" % (relpath, label,
+                                                    os.path.join(*src_relparts)))
+        return
+    ensure_file(root, relpath, src, label, overwrite=True)
 
 
 def slugify(name):

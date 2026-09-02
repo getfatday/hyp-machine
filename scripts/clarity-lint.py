@@ -457,7 +457,14 @@ def main(argv):
     here = os.path.dirname(os.path.abspath(__file__))
     repo = opt.get("--repo", os.getcwd())
     if mode in ("card", "report"):
-        v1 = opt.get("--v1", os.path.join(repo, "scripts", "clarity-lint.py"))
+        # Self-delegation guard (2026-09-01, found live by H-242's builder as an
+        # infinite recursion): v2 was installed AT the v1 path during the S0
+        # landing, so the old default delegated card/report mode to itself.
+        # v1 now lives beside it as clarity-lint-v1.py.
+        v1 = opt.get("--v1", os.path.join(repo, "scripts", "clarity-lint-v1.py"))
+        if os.path.abspath(v1) == os.path.abspath(__file__):
+            print("CLARITY-LINT\tERROR\tself-delegation refused: --v1 points at this file")
+            return 2
         if not os.path.isfile(v1):
             print("CLARITY-LINT\t%s\tERROR\tcommitted L1-L11 lint not found at %s "
                   "(pass --v1)" % (path, v1))
