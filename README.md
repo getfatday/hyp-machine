@@ -130,7 +130,13 @@ config files and CLAUDE.md rules blocks in place.
 | `scripts/doctor-remediate.py` | Environment-health doctor, remediation half: the frozen four-state ladder — exactly one next step per typed state, fail-closed heal verification |
 | `scripts/review-cadence.py` | The verdict-forcing review cadence: ranked REVIEW DEBT surface + append-only verdict appender (multi-evidence) — see `docs/review-cadence.md` |
 | `scripts/waste-status.py` | Advisory flow instrument: idle-runnable, terminal-pickup, and void-meter waste metrics from committed timestamps alone (exit 0 always, never a gate) |
-| `scripts/dispatch-status.py` | The ranked next-item dispatch surface: open items from COMMITTED spec statuses only (no promise string closes an item), claim-joined (fresh-heartbeat filter) and orphan-joined (dead-pid recovery verbs) — counted H-213/H-215/H-217; the Stop dispatcher hook joins to it (see `docs/workgraph.md`) |
+| `scripts/dispatch-status.py` | The ranked next-item dispatch surface: open items from COMMITTED spec statuses only (no promise string closes an item), claim-joined (fresh-heartbeat filter) and orphan-joined (dead-pid recovery verbs) — counted H-213/H-215/H-217; the Stop dispatcher hook joins to it. 0.3.0 adds REFILL: when the actionable frontier (PARKED/BLOCKED/COUNTING masked) drops below 2, licensed follow-up lanes from your FOLLOWUPS surface are dispatched uncounted (see `docs/workgraph.md`) |
+| `scripts/leak-meter.py` + `scripts/leak-meter-constants.json` + `scripts/leak-status.sh` | The flow-leak meter: a stateless read of committed chain-terminal times against sealed constants, one `FLOW <STATE>` line out; surfaced as harden ADVISORY-30 — counted H-246 (alarmed 227.8/1259.9/936.3 min before the human catch on three held-out episodes, 0 false alarms on 47 healthy ticks — see `docs/flow-governance.md`) |
+| `scripts/reflex-check` + `scripts/reflex-collect` + `scripts/reflex-surface` + `scripts/reflex-consume.py` + `scripts/reflex-selftest` + `scripts/install-reflex-timer.sh` | The reflex chain, breach → autopsy → decision → consumption: edge-triggered cold sensor (H-251), bounded zero-LLM forensics collector with zero silent deaths (H-252), decision surfacing with N=3 escalation (H-253), the 30-minute consumption advisory + `--record` loop-closer (ADVISORY-31), and the install-time end-to-end drill init runs report-only (H-254). Timer plist emitted, never auto-loaded (see `docs/flow-governance.md`) |
+| `scripts/compile-laws.py` | The rules registry compiler: typed rule rows → fenced LAWS blocks in their carrier files, with round-trip comparison and drift reporting — counted H-247 (see `docs/flow-governance.md`) |
+| `scripts/rule-lint.py` | The four-class rule-currency lint: RULE-EXPIRED, unlicensed rules, scope creep, carrier drift — counted H-248; an expiry files a `rule-retest` decision (H-249) through the decision kit |
+| `scripts/incident-anchors-lint.py` | Autopsy honesty lint: every claim line in a collected incident must end with one checkable `[anchor: ...]` that actually verifies (path+mtime or cmd+output) — H-252 kit |
+| `scripts/fidelity-manifest.py` | Declare-then-verify move manifests: source sha256s + destinations recorded BEFORE a move/merge/consolidate executes, `--verify` re-checks after — H-104 port |
 | `scripts/lane-takeover.py` | The claim door: TTL-gated takeover of another executor's lane — typed exit-3 refusal while the heartbeat is fresh, attributed record committed BEFORE any lane write on grant — counted H-216 |
 | `scripts/dispatch-gate.py` | The shared relaunch governor: permit/deny consults + K-strikes quarantine (K=2) behind one committed decision card only a human ruling closes — counted H-218 |
 | `scripts/hyp-resume.sh` + `scripts/install-resume-timer.sh` + `scripts/resume-prompt.md` | The reboot-surviving scheduled resume: emitted (never auto-loaded) launchd plist, one dispatch read + at most one capped adoption per firing — counted H-217 |
@@ -172,6 +178,7 @@ every mechanism ships three ways:
 | PreToolUse (same matcher) | Generic policy interpreter: reads `operating-model/*/policies/*.md` as data. `enforcement: hook` nodes with a `mechanism:` block deny; `enforcement: advisory` nodes print one advisory line and never affect the exit code. No model, no effect. |
 | PreToolUse (`Bash`, run-shaped) | Preflight gate (experiments profile): headless agent invocations tied to an experiment are denied when the spec is missing or fails the shipped preflight. |
 | PreToolUse (`Bash`, `git commit`) | Advisory backstop (experiments profile): a tinker-shaped commit with no hypothesis spec staged prints a one-line nudge. Never blocks. |
+| PreToolUse (`Edit\|Write\|MultiEdit`) | License-join advisory on rule-carrier writes (H-250): adding a standing rule without a resolvable license citation prints one `RULE-LICENSE` line and logs the fire. Advisory only — never blocks. |
 | UserPromptSubmit | Capture-intent nudge on phrases like "note this" / "save that". Precision-first; silent otherwise. |
 | SessionStart | Standing rules pointer + drift check against the plugin's canonical templates; uncommitted-capture warning; stale-dashboard check and refresh; ledger resolver (`hooks/scripts/session_resolver.py`): open decisions surface first (`DECISION-LEDGER` lines + summary), then unresolved intent/amendment/commitment/directive rows, capped at 20 lines. |
 | Stop | Verdict-gated dispatch (experiments profile): non-empty dispatch with cap headroom re-presents the TOP open item by name — ending a cycle is permitted only by the committed artifact check, never a promise string; frozen caps (12 cycles / 1800 s per lineage) then it stands down; `touch .claude/stop-snooze` silences it 24 h (see `docs/workgraph.md`). Unjournaled-work backstop (blocks once with instructions when new knowledge files have no journal fragment); dashboard refresh. |
@@ -197,6 +204,7 @@ read it. All paths are repo-relative.
 | `runs_dir` | `experiments/runs` |
 | `ledger_file` | `ledger/ledger.jsonl` (the work ledger the dashboard, decision kit, and session resolver share; the optional `DECIDERS` routing file lives beside it) |
 | `template_file` | `hypotheses/TEMPLATE.md` |
+| `followups_file` | `hypotheses/FOLLOWUPS.md` (the licensed follow-up lanes the dispatch REFILL reads; grammar in `docs/workgraph.md`) |
 | `preflight_file` | `experiments/preflight.py` |
 | `model_dir` | `operating-model` |
 | `context` | the repository directory name (slugified) |
@@ -254,6 +262,31 @@ One suite per skill under `evals/<skill>/<case>/case.yaml`; see `evals/README.md
 
 ## Changelog
 
+- 0.3.0 (hyp) — the flow-governance layer, plus the ratified work-graph part 2. The
+  flow-leak meter (`scripts/leak-meter.py` + sealed constants + `scripts/leak-status.sh`
+  — H-246 kept 2x5/5 2026-09-02: alarmed 227.8/1259.9/936.3 minutes before the recorded
+  human catch on three held-out episodes, 0 false alarms on 47 healthy ticks; harden
+  ADVISORY-30). The reflex chain, breach → autopsy → decision → consumption
+  (`scripts/reflex-check` H-251 kept 2x5/5, `reflex-collect` H-252 kept 2x5/5,
+  `reflex-surface` H-253 kept 2x4/4, `reflex-selftest` H-254 kept 2x4/4 — all
+  2026-09-02 — plus `reflex-consume.py` + ADVISORY-31, the lab's throughput-floor
+  consumption patch: an alarm unconsumed for 30 minutes surfaces until an action citing
+  it is recorded; timer plist emitted-never-loaded). The rules registry
+  (`scripts/compile-laws.py` H-247 kept 2x5/5, `scripts/rule-lint.py` H-248 kept 2x5/5,
+  the `rule-retest` decision class in `scripts/decisions.py` H-249 kept 2x5/5, and the
+  license-join PreToolUse advisory `hooks/scripts/license-join-check.py` H-250 kept
+  2x5/5 — all 2026-09-02; see `docs/flow-governance.md` for the whole layer). Direction
+  hygiene (`scripts/direction-lint.py`, H-243 kept 2x5/5 2026-09-01) and move fidelity
+  (`scripts/fidelity-manifest.py`, H-104 port). Dispatch REFILL: the actionable
+  frontier masks PARKED/BLOCKED-*/COUNTING status markers, and when it drops below 2
+  the dispatch names the licensed follow-up lanes of your `followups_file` (grammar:
+  `docs/workgraph.md`) — uncounted, never reordering counted runs. The 0.2.0
+  model-compiled orchestration (`scripts/compile-model-workflow.py`) is now ratified by
+  its lab keep (H-177, kept 2x5/5 2026-09-02 — frontier-exact dispatch, halt-for-ruling
+  discipline, 100% lineage rows on the amended fixture). This release also formalizes
+  the migration patches already live on 0.2.0: end-state-verified
+  `migrate-from-crux.sh`, standalone-safe `hyp.json` seeding, and init preserving a
+  consumer's customized preflight.
 - 0.2.0 (hyp — the first release under the new name; entries below this one are the
   crux-era versions that 0.1.0 consolidated) — work-graph dispatch and session
   durability: ranked next-item dispatch at session boundaries, claim TTL takeover,

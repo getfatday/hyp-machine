@@ -1,0 +1,686 @@
+#!/usr/bin/env python3
+"""reflex-collect -- bounded, zero-LLM breach-forensics collector (H-252).
+
+Supervisor+worker, fail-open by construction:
+
+  reflex-collect --root <estate> --now <ISO Z> --breach <class> --out <dir>
+      [--pause-after-class N --pause-seconds S]   # pinned kill-window (kill protocol)
+
+The SUPERVISOR spawns the WORKER (this same file, --worker) and waits. If the
+worker dies for any reason (crash, SIGKILL, timeout), the supervisor lands
+failure-row.json + PARTIAL.md in the incident dir -- zero silent deaths. The
+supervisor never analyses anything itself.
+
+The WORKER gathers the six evidence classes from the estate snapshot, writing
+one section file per class as it completes (partial evidence survives a kill),
+then declares an H-104 manifest for its raw-evidence copies, commits the
+declaration, executes the copies, verifies (fidelity-manifest.py, pinned copy
+beside this script), assembles COLLECTED.md, and writes incident.json.
+
+Anchor grammar (frozen): every claim bullet ends with exactly one of
+  [anchor: path=<estate-rel> mtime=<YYYY-MM-DDTHH:MM:SSZ>]
+  [anchor: cmd="<what ran>" ts=<YYYY-MM-DDTHH:MM:SSZ> out=<incident-rel>]
+
+Anti-clog bound C2: this tool NEVER appends to any work ledger. The failure
+row and all samples land in the incident record only.
+
+Estate contract v1 (frozen in the H-252 fixture.lock):
+  repo/gitlog-window.txt            git log slice '%h %ad(iso-strict) %s'
+  repo/ledger/work-ledger.jsonl     ledger tail
+  repo/.claude/stop-snooze          mute file (presence+mtime is the state)
+  repo/harden-cache-snapshot.txt    harden-last output
+  repo/hooks-log/stop-driver-hook-log.jsonl
+  repo/experiments/runs/<lane>/chain-terminal.* [+ ORCHESTRATOR-RULING.md]
+  repo/experiments/runs/DESIGN-post-010-train/wave-plan.json
+  repo/spec-status.tsv              hypothesis id<TAB>status slice
+  jobs/queue-*.log                  driver/queue logs
+  jobs/children/<uuid>.jsonl        child transcript strips
+  launchagents/                     plist dir (crux-* presence check)
+
+Deterministic: all analysis timestamps derive from file content, file mtimes,
+and --now. Naive log timestamps are read as UTC-0500 (frozen constant, the
+estate's recorded offset). Events after --now are excluded (counted).
+Zero LLM calls; zero network; stdlib only.
+
+Landed from the KEPT reference implementation (H-252 reflex-collector-fidelity,
+2x5/5 2026-09-02) experiments/runs/H-252/fixture/bin/reflex-collect — collection,
+anchor, manifest, and fail-open logic unchanged; only this provenance note added.
+Incident records land under experiments/incidents/INC-* (pass
+--out experiments/incidents; convention in experiments/incidents/README.md).
+Claims are checked by scripts/incident-anchors-lint.py; fidelity-manifest.py is
+resolved beside this script (scripts/ in both the lab and the deploy tree).
+"""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+GAP_MIN = 30                # minutes; dead-air threshold
+TOP_GAPS = 10               # gap bullets reported
+SLA_MIN = 30                # terminal pickup SLA (minutes)
+NAIVE_OFFSET = "-0500"      # frozen: naive log lines read at this offset
+MAX_QUEUE_BULLETS = 20
+UTC = datetime.timezone.utc
+ISO_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?")
+
+
+def iso_z(epoch):
+    return datetime.datetime.fromtimestamp(
+        int(epoch), UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_ts(text):
+    """ISO string (with or without offset) -> aware UTC datetime, or None."""
+    m = ISO_RE.match(text.strip())
+    if not m:
+        return None
+    body, off = m.group(1), m.group(2)
+    if not off:
+        off = NAIVE_OFFSET
+    if off == "Z":
+        off = "+00:00"
+    if ":" not in off:
+        off = off[:3] + ":" + off[3:]
+    try:
+        return datetime.datetime.fromisoformat(body + off).astimezone(UTC)
+    except ValueError:
+        return None
+
+
+def dt_z(dt):
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def anchor_path(root, rel):
+    return "[anchor: path=%s mtime=%s]" % (
+        rel, iso_z(os.stat(os.path.join(root, rel)).st_mtime))
+
+
+def anchor_cmd(what, now_dt, out_rel):
+    return '[anchor: cmd="%s" ts=%s out=%s]' % (what, dt_z(now_dt), out_rel)
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# ---------------------------------------------------------------- estate scan
+
+def estate_files(root):
+    out = []
+    for dirpath, dirs, files in os.walk(root):
+        if os.path.basename(dirpath) in ("incidents", "manifests", ".git"):
+            dirs[:] = []
+            continue
+        for f in files:
+            p = os.path.join(dirpath, f)
+            out.append(os.path.relpath(p, root))
+    return sorted(out)
+
+
+def lane_dirs(root):
+    base = os.path.join(root, "repo", "experiments", "runs")
+    lanes = []
+    if os.path.isdir(base):
+        for d in sorted(os.listdir(base)):
+            full = os.path.join(base, d)
+            if os.path.isdir(full) and re.match(r"^H-\d+$", d):
+                lanes.append(d)
+    return lanes
+
+
+def gather_events(root, now_dt):
+    """The frozen event universe: (utc_dt, source_rel, label). Events after
+    --now are dropped and counted."""
+    events, future = [], 0
+
+    def add(dt, src, label):
+        nonlocal future
+        if dt is None:
+            return
+        if dt > now_dt:
+            future += 1
+            return
+        events.append((dt, src, label))
+
+    # 1. git log slice
+    rel = "repo/gitlog-window.txt"
+    p = os.path.join(root, rel)
+    if os.path.isfile(p):
+        for line in open(p, encoding="utf-8", errors="replace"):
+            parts = line.split(" ", 2)
+            if len(parts) >= 2:
+                add(parse_ts(parts[1]), rel, "commit " + parts[0])
+
+    # 2. queue/driver logs
+    jobs = os.path.join(root, "jobs")
+    if os.path.isdir(jobs):
+        for f in sorted(os.listdir(jobs)):
+            if not (f.startswith("queue-") and f.endswith(".log")):
+                continue
+            rel = "jobs/" + f
+            for line in open(os.path.join(jobs, f),
+                             encoding="utf-8", errors="replace"):
+                dt = parse_ts(line)
+                if dt:
+                    add(dt, rel, line.strip()[:120])
+
+    # 3. children transcript strips
+    ch = os.path.join(root, "jobs", "children")
+    if os.path.isdir(ch):
+        for f in sorted(os.listdir(ch)):
+            if not f.endswith(".jsonl"):
+                continue
+            rel = "jobs/children/" + f
+            for line in open(os.path.join(ch, f),
+                             encoding="utf-8", errors="replace"):
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                ts = d.get("timestamp")
+                if ts:
+                    add(parse_ts(ts), rel, "child-event " + f[:8])
+
+    # 4. stop-driver hook log (epoch ts fields)
+    rel = "repo/hooks-log/stop-driver-hook-log.jsonl"
+    p = os.path.join(root, rel)
+    if os.path.isfile(p):
+        for line in open(p, encoding="utf-8", errors="replace"):
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(d.get("ts"), (int, float)):
+                add(datetime.datetime.fromtimestamp(int(d["ts"]), UTC),
+                    rel, "hook-decision " + str(d.get("decision")))
+
+    # 5. terminal-file + mute-file mtimes
+    for lane in lane_dirs(root):
+        ldir = os.path.join(root, "repo", "experiments", "runs", lane)
+        for f in sorted(os.listdir(ldir)):
+            if f.startswith("chain-terminal."):
+                rel = "repo/experiments/runs/%s/%s" % (lane, f)
+                add(datetime.datetime.fromtimestamp(
+                    int(os.stat(os.path.join(root, rel)).st_mtime), UTC),
+                    rel, "terminal " + lane)
+    rel = "repo/.claude/stop-snooze"
+    p = os.path.join(root, rel)
+    if os.path.isfile(p):
+        add(datetime.datetime.fromtimestamp(int(os.stat(p).st_mtime), UTC),
+            rel, "mute stop-snooze")
+
+    events.sort(key=lambda e: (e[0], e[1], e[2]))
+    return events, future
+
+
+# ---------------------------------------------------------------- six classes
+
+def class1_deadair(root, now_dt, inc, raw_written):
+    events, future = gather_events(root, now_dt)
+    merged_rel = "raw/events-merged.txt"
+    with open(os.path.join(inc, merged_rel), "w", encoding="utf-8") as fh:
+        for dt, src, label in events:
+            fh.write("%s %s %s\n" % (dt_z(dt), src, label))
+        fh.write("# dropped %d event(s) after --now\n" % future)
+    raw_written.append(merged_rel)
+
+    gaps = []
+    for i in range(1, len(events)):
+        delta = (events[i][0] - events[i - 1][0]).total_seconds() / 60.0
+        if delta >= GAP_MIN:
+            gaps.append((int(delta), events[i - 1][0], events[i][0]))
+    if events and (now_dt - events[-1][0]).total_seconds() / 60.0 >= GAP_MIN:
+        gaps.append((int((now_dt - events[-1][0]).total_seconds() / 60.0),
+                     events[-1][0], now_dt))
+    gaps.sort(key=lambda g: (-g[0], g[1]))
+
+    b = []
+    ac = anchor_cmd("reflex-collect gap-scan (threshold %dmin)" % GAP_MIN,
+                    now_dt, merged_rel)
+    b.append("- events merged: %d (dropped %d after now) %s"
+             % (len(events), future, ac))
+    for dur, s, e in gaps[:TOP_GAPS]:
+        b.append("- gap %dmin %s -> %s %s" % (dur, dt_z(s), dt_z(e), ac))
+
+    shown = 0
+    for f in ("queue-runner7.log", "queue-runner8.log",
+              "queue-night8.log", "queue-eve9.log"):
+        rel = "jobs/" + f
+        p = os.path.join(root, rel)
+        if not os.path.isfile(p):
+            continue
+        for line in open(p, encoding="utf-8", errors="replace"):
+            line = line.strip()
+            if not line or shown >= MAX_QUEUE_BULLETS:
+                continue
+            dt = parse_ts(line)
+            if dt is None or dt > now_dt:
+                continue
+            if re.search(r"(LAUNCH|launching|exited|COMPLETE|START)", line):
+                b.append("- queue %s %s" % (line[:110], anchor_path(root, rel)))
+                shown += 1
+    top = gaps[0] if gaps else None
+    return b, {"n_events": len(events), "n_future": future,
+               "top_gap": None if not top else
+               {"minutes": top[0], "start": dt_z(top[1]), "end": dt_z(top[2])}}
+
+
+def class2_children(root, now_dt, inc, raw_written):
+    ch = os.path.join(root, "jobs", "children")
+    b, table = [], []
+    files = sorted(f for f in os.listdir(ch)) if os.path.isdir(ch) else []
+    for f in files:
+        if not f.endswith(".jsonl"):
+            continue
+        rel = "jobs/children/" + f
+        first = last = None
+        for line in open(os.path.join(ch, f),
+                         encoding="utf-8", errors="replace"):
+            try:
+                ts = json.loads(line).get("timestamp")
+            except ValueError:
+                continue
+            dt = parse_ts(ts) if ts else None
+            if dt is None:
+                continue
+            if first is None:
+                first = dt
+            last = dt
+        if first is None:
+            continue
+        span = int((last - first).total_seconds())
+        table.append((f, first, last, span))
+        b.append("- child %s %s -> %s span=%ds %s"
+                 % (f.split(".")[0][:8], dt_z(first), dt_z(last), span,
+                    anchor_path(root, rel)))
+    b.insert(0, "- child interval table: %d file(s); pid join: n/a "
+                "(snapshot replay, no live process table) %s"
+             % (len(table),
+                anchor_cmd("reflex-collect child-scan", now_dt,
+                           "raw/events-merged.txt")))
+    return b, {"n_children": len(table)}
+
+
+def class3_locks(root, now_dt, inc, raw_written):
+    b = []
+    rel = "repo/.claude/stop-snooze"
+    p = os.path.join(root, rel)
+    if os.path.isfile(p):
+        b.append("- mute stop-snooze PRESENT mtime=%s %s"
+                 % (iso_z(os.stat(p).st_mtime), anchor_path(root, rel)))
+    else:
+        b.append("- mute stop-snooze ABSENT %s"
+                 % anchor_cmd("stat repo/.claude/stop-snooze", now_dt,
+                              "raw/launchagents-ls.txt"))
+    la = os.path.join(root, "launchagents")
+    listing = sorted(os.listdir(la)) if os.path.isdir(la) else []
+    out_rel = "raw/launchagents-ls.txt"
+    with open(os.path.join(inc, out_rel), "w", encoding="utf-8") as fh:
+        fh.write("\n".join(listing) + "\n")
+    raw_written.append(out_rel)
+    crux = [f for f in listing if "crux" in f.lower()]
+    b.append("- launchd crux-resume: %s %s"
+             % ("INSTALLED " + ",".join(crux) if crux
+                else "NOT INSTALLED (no crux-* plist)",
+                anchor_cmd("ls launchagents/", now_dt, out_rel)))
+    for lane in ("H-220", "H-221"):
+        rel = "repo/experiments/runs/%s/chain-terminal.gate" % lane
+        p = os.path.join(root, rel)
+        if os.path.isfile(p):
+            b.append("- terminal receipt %s gate mtime=%s %s"
+                     % (lane, iso_z(os.stat(p).st_mtime),
+                        anchor_path(root, rel)))
+    return b, {}
+
+
+def ruled_join(root, lane, ledger_text):
+    ldir = os.path.join(root, "repo", "experiments", "runs", lane)
+    if os.path.isfile(os.path.join(ldir, "ORCHESTRATOR-RULING.md")):
+        return "ruled(ruling-file)"
+    for line in ledger_text:
+        if lane in line and ("keep" in line.lower() or "KEPT" in line):
+            return "ruled(ledger)"
+    return "unruled"
+
+
+def class4_census(root, now_dt, inc, raw_written):
+    ledger_rel = "repo/ledger/work-ledger.jsonl"
+    lp = os.path.join(root, ledger_rel)
+    ledger_text = (open(lp, encoding="utf-8", errors="replace")
+                   .read().splitlines() if os.path.isfile(lp) else [])
+    b, unruled = [], []
+    for lane in lane_dirs(root):
+        ldir = os.path.join(root, "repo", "experiments", "runs", lane)
+        terms = sorted(f for f in os.listdir(ldir)
+                       if f.startswith("chain-terminal."))
+        if not terms:
+            continue
+        newest = max(terms, key=lambda f:
+                     (os.stat(os.path.join(ldir, f)).st_mtime, f))
+        rel = "repo/experiments/runs/%s/%s" % (lane, newest)
+        mt = int(os.stat(os.path.join(root, rel)).st_mtime)
+        age_m = int((now_dt - datetime.datetime.fromtimestamp(mt, UTC))
+                    .total_seconds() // 60)
+        status = ruled_join(root, lane, ledger_text)
+        if status == "unruled":
+            unruled.append(lane)
+        flag = ""
+        if status == "unruled" and age_m > SLA_MIN:
+            flag = " OVER-SLA"
+        age_txt = ("future(+%dm)" % -age_m) if age_m < 0 else "%dm" % age_m
+        b.append("- lane %s newest=%s age=%s %s%s (%d terminal file(s)) %s"
+                 % (lane, newest, age_txt, status, flag, len(terms),
+                    anchor_path(root, rel)))
+    b.insert(0, "- terminal census: %d lane(s), %d unruled (SLA=%dm) %s"
+             % (len(lane_dirs(root)), len(unruled), SLA_MIN,
+                anchor_cmd("reflex-collect terminal-census", now_dt,
+                           "raw/events-merged.txt")))
+    return b, {"unruled": sorted(unruled)}
+
+
+RESOLVED_STATUSES = {"kept", "discarded", "refined", "superseded", "retired"}
+
+
+def class5_frontier(root, now_dt, inc, raw_written):
+    rel = "repo/experiments/runs/DESIGN-post-010-train/wave-plan.json"
+    plan = json.load(open(os.path.join(root, rel), encoding="utf-8"))
+    st_rel = "repo/spec-status.tsv"
+    statuses = {}
+    sp = os.path.join(root, st_rel)
+    if os.path.isfile(sp):
+        for line in open(sp, encoding="utf-8"):
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) == 2:
+                statuses[parts[0]] = parts[1]
+    waves = plan.get("plan", {}).get("waves", [])
+    current, open_lanes = None, []
+    join_rel = "raw/frontier-join.txt"
+    join_lines = []
+    for w in waves:
+        version = str(w.get("version"))
+        h_items = [i for i in w.get("items", [])
+                   if re.match(r"^H-\d+$", str(i))]
+        pend = [i for i in h_items
+                if statuses.get(i, "unknown") not in RESOLVED_STATUSES]
+        join_lines.append("%s h_items=%d resolved=%d pending=%s"
+                          % (version, len(h_items),
+                             len(h_items) - len(pend), ",".join(pend)))
+        if pend and current is None:
+            current, open_lanes = version, pend
+    with open(os.path.join(inc, join_rel), "w", encoding="utf-8") as fh:
+        fh.write("\n".join(join_lines) + "\n")
+    raw_written.append(join_rel)
+    b = ["- frontier wave %s: %d open lane(s); orphan pid join: n/a "
+         "(snapshot replay) %s"
+         % (current, len(open_lanes), anchor_path(root, rel))]
+    for lane in open_lanes:
+        here = os.path.isdir(os.path.join(root, "repo", "experiments",
+                                          "runs", lane))
+        b.append("- open lane %s status=%s (%s) %s"
+                 % (lane, statuses.get(lane, "unknown"),
+                    "lane dir present" if here else "not started",
+                    anchor_cmd("reflex-collect frontier-join", now_dt,
+                               join_rel)))
+    return b, {"wave": current, "open_lanes": sorted(open_lanes)}
+
+
+def class6_health(root, now_dt, inc, raw_written):
+    b = []
+    rel = "repo/harden-cache-snapshot.txt"
+    p = os.path.join(root, rel)
+    warn = sum(1 for line in open(p, encoding="utf-8", errors="replace")
+               if line.startswith("HARDEN-WARNING"))
+    age_h = (now_dt - datetime.datetime.fromtimestamp(
+        int(os.stat(p).st_mtime), UTC)).total_seconds() / 3600.0
+    age_txt = ("future(+%.1fh)" % -age_h) if age_h < 0 else "%.1fh" % age_h
+    b.append("- harden-last snapshot age=%s warnings=%d %s"
+             % (age_txt, warn, anchor_path(root, rel)))
+    rel = "repo/hooks-log/stop-driver-hook-log.jsonl"
+    p = os.path.join(root, rel)
+    rows = [json.loads(x) for x in
+            open(p, encoding="utf-8", errors="replace") if x.strip()]
+    tail = rows[-3:]
+    for r in tail:
+        b.append("- stop-driver decision=%s reason=%s ts=%s %s"
+                 % (r.get("decision"), r.get("reason"),
+                    iso_z(r.get("ts", 0)), anchor_path(root, rel)))
+    rel = "repo/ledger/work-ledger.jsonl"
+    p = os.path.join(root, rel)
+    lrows = [x for x in open(p, encoding="utf-8", errors="replace")
+             if x.strip()]
+    newest_date = ""
+    try:
+        newest_date = str(json.loads(lrows[-1]).get("date", ""))
+    except (ValueError, IndexError):
+        pass
+    b.append("- ledger tail rows=%d newest_date=%s %s"
+             % (len(lrows), newest_date, anchor_path(root, rel)))
+    return b, {"harden_warnings": warn, "hook_rows": len(rows),
+               "ledger_rows": len(lrows), "ledger_newest": newest_date}
+
+
+CLASSES = [
+    (1, "dead-air-reconstruction", class1_deadair),
+    (2, "child-process-intervals", class2_children),
+    (3, "lock-mute-states", class3_locks),
+    (4, "terminal-census", class4_census),
+    (5, "dispatch-frontier", class5_frontier),
+    (6, "hook-estate-health", class6_health),
+]
+
+# raw-evidence copy set (estate-rel sources copied under raw/, H-104-manifested)
+COPY_SET = [
+    "repo/gitlog-window.txt",
+    "repo/ledger/work-ledger.jsonl",
+    "repo/harden-cache-snapshot.txt",
+    "repo/hooks-log/stop-driver-hook-log.jsonl",
+    "repo/experiments/runs/DESIGN-post-010-train/wave-plan.json",
+    "repo/.claude/stop-snooze",
+    "jobs/queue-runner7.log", "jobs/queue-runner8.log",
+    "jobs/queue-night8.log", "jobs/queue-eve9.log",
+]
+
+
+def worker(args):
+    root = os.path.abspath(args.root)
+    now_dt = parse_ts(args.now)
+    assert now_dt is not None, "unparseable --now"
+    inc_name = "INC-%s-%s" % (
+        now_dt.strftime("%Y%m%dT%H%MZ"), args.breach.replace("/", "-"))
+    out_base = os.path.abspath(args.out)
+    inc = os.path.join(out_base, inc_name)
+    os.makedirs(os.path.join(inc, "raw"), exist_ok=True)
+    os.makedirs(os.path.join(inc, "sections"), exist_ok=True)
+    with open(os.path.join(inc, "STARTED.json"), "w", encoding="utf-8") as fh:
+        json.dump({"schema": "incident-started/v1", "incident": inc_name,
+                   "breach": args.breach, "now": args.now,
+                   "worker_pid": os.getpid(),
+                   "started_at": datetime.datetime.now(UTC).isoformat()},
+                  fh, indent=1, sort_keys=True)
+
+    raw_written, summaries, landed = [], {}, []
+    for num, name, fn in CLASSES:
+        bullets, summary = fn(root, now_dt, inc, raw_written)
+        sec = os.path.join(inc, "sections", "%02d-%s.md" % (num, name))
+        with open(sec, "w", encoding="utf-8") as fh:
+            fh.write("## %d. %s\n" % (num, name.replace("-", " ")) +
+                     "\n".join(bullets) + "\n")
+        summaries[str(num)] = summary
+        landed.append(num)
+        if num == args.pause_after_class:
+            open(os.path.join(inc, ".pinned"), "w").write(
+                "pinned after class %d\n" % num)
+            time.sleep(args.pause_seconds)
+
+    # children strips join the copy set dynamically
+    copy_set = list(COPY_SET)
+    ch = os.path.join(root, "jobs", "children")
+    if os.path.isdir(ch):
+        copy_set += ["jobs/children/" + f for f in sorted(os.listdir(ch))
+                     if f.endswith(".jsonl")]
+    for lane in summaries.get("4", {}).get("unruled", []):
+        ldir = os.path.join(root, "repo", "experiments", "runs", lane)
+        copy_set += ["repo/experiments/runs/%s/%s" % (lane, f)
+                     for f in sorted(os.listdir(ldir))
+                     if f.startswith("chain-terminal.")]
+    copy_set = [c for c in copy_set
+                if os.path.isfile(os.path.join(root, c))]
+
+    # H-104: declare -> commit -> execute -> verify (all inside the estate repo)
+    inc_rel = os.path.relpath(inc, root)
+    plan_path = os.path.join(inc, "copy-plan.tsv")
+    with open(plan_path, "w", encoding="utf-8") as fh:
+        for src in copy_set:
+            dest = "%s/raw/%s" % (inc_rel, src.replace("/", "__"))
+            fh.write("%s\t%s\tkeep\n" % (src, dest))
+    fm = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "fidelity-manifest.py")
+    slug = "inc-%s" % now_dt.strftime("%Y%m%dt%H%Mz")
+    os.makedirs(os.path.join(root, "manifests"), exist_ok=True)
+    r = subprocess.run([sys.executable, fm, root, "--declare", plan_path,
+                        "--slug", slug, "--note",
+                        "reflex-collect raw-evidence copies (H-252)"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.stderr.write("declare failed: %s%s\n" % (r.stdout, r.stderr))
+        return 21
+    manifest_rel = r.stdout.split("\t")[1].strip()
+    r = subprocess.run(["git", "-C", root, "add", manifest_rel],
+                       capture_output=True, text=True)
+    r2 = subprocess.run(["git", "-C", root,
+                         "-c", "user.name=reflex-collect",
+                         "-c", "user.email=reflex@local",
+                         "-c", "commit.gpgsign=false",
+                         "commit", "-q", "-m",
+                         "declare %s (H-104 protocol)" % manifest_rel],
+                        capture_output=True, text=True)
+    if r.returncode != 0 or r2.returncode != 0:
+        sys.stderr.write("manifest commit failed: %s%s\n"
+                         % (r2.stdout, r2.stderr))
+        return 22
+    for src in copy_set:
+        dest = os.path.join(inc, "raw", src.replace("/", "__"))
+        shutil.copy2(os.path.join(root, src), dest)
+    r = subprocess.run([sys.executable, fm, root, "--verify", manifest_rel],
+                       capture_output=True, text=True)
+    with open(os.path.join(inc, "manifest-verify.out"), "w",
+              encoding="utf-8") as fh:
+        fh.write(r.stdout + r.stderr)
+    with open(os.path.join(inc, "manifest-verify.rc"), "w",
+              encoding="utf-8") as fh:
+        fh.write("%d\n" % r.returncode)
+    if r.returncode != 0:
+        sys.stderr.write("manifest verify failed rc=%d\n" % r.returncode)
+        return 23
+
+    # bucket signature (dedupe): breach + top gap + unruled lane set
+    tg = summaries.get("1", {}).get("top_gap") or {}
+    bucket_src = "v1|%s|%s|%s|%s" % (
+        args.breach, tg.get("start"), tg.get("end"),
+        ",".join(summaries.get("4", {}).get("unruled", [])))
+    bucket = hashlib.sha256(bucket_src.encode()).hexdigest()[:16]
+
+    parts = ["# %s -- breach: %s" % (inc_name, args.breach),
+             "collected-by: reflex-collect v1 (H-252) | now=%s | bucket=%s"
+             % (dt_z(now_dt), bucket), ""]
+    for num, name, _ in CLASSES:
+        sec = os.path.join(inc, "sections", "%02d-%s.md" % (num, name))
+        parts.append(open(sec, encoding="utf-8").read().rstrip())
+        parts.append("")
+    with open(os.path.join(inc, "COLLECTED.md"), "w",
+              encoding="utf-8") as fh:
+        fh.write("\n".join(parts))
+
+    with open(os.path.join(inc, "incident.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump({"schema": "incident/v1", "incident": inc_name,
+                   "breach": args.breach, "now": args.now,
+                   "bucket": bucket, "bucket_src": bucket_src,
+                   "classes_landed": landed, "summaries": summaries,
+                   "manifest": manifest_rel,
+                   "ledger_policy": "anti-clog C2: no open work-ledger row; "
+                                    "incident record only"},
+                  fh, indent=1, sort_keys=True)
+    return 0
+
+
+def supervise(args):
+    """Spawn the worker; on ANY worker death land failure-row.json + PARTIAL.md."""
+    now_dt = parse_ts(args.now)
+    inc_name = "INC-%s-%s" % (
+        now_dt.strftime("%Y%m%dT%H%MZ"), args.breach.replace("/", "-"))
+    inc = os.path.join(os.path.abspath(args.out), inc_name)
+    cmd = [sys.executable, os.path.abspath(__file__), "--worker",
+           "--root", args.root, "--now", args.now, "--breach", args.breach,
+           "--out", args.out,
+           "--pause-after-class", str(args.pause_after_class),
+           "--pause-seconds", str(args.pause_seconds)]
+    proc = subprocess.Popen(cmd)
+    timed_out = False
+    try:
+        rc = proc.wait(timeout=args.worker_timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.kill()
+        proc.wait()
+        rc = -signal.SIGKILL
+    if rc == 0 and os.path.isfile(os.path.join(inc, "COLLECTED.md")):
+        return 0
+    # fail-open: land the record no matter what the worker managed
+    os.makedirs(inc, exist_ok=True)
+    sections = sorted(os.listdir(os.path.join(inc, "sections"))) \
+        if os.path.isdir(os.path.join(inc, "sections")) else []
+    classes_landed = sorted(int(s.split("-")[0]) for s in sections
+                            if re.match(r"^\d\d-", s))
+    row = {"schema": "incident-failure/v1", "type": "incident-failure",
+           "incident": inc_name, "breach": args.breach,
+           "reason": "worker-timeout" if timed_out else "worker-died",
+           "worker_rc": rc, "now": args.now,
+           "classes_landed": classes_landed,
+           "recorded_at": datetime.datetime.now(UTC).isoformat(),
+           "action_required": "partial evidence retained; re-run "
+                              "reflex-collect against the same window",
+           "ledger_policy": "anti-clog C2: no open work-ledger row; "
+                            "incident record only"}
+    with open(os.path.join(inc, "failure-row.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump(row, fh, indent=1, sort_keys=True)
+    with open(os.path.join(inc, "PARTIAL.md"), "w", encoding="utf-8") as fh:
+        fh.write("# PARTIAL incident record\nworker rc=%s; classes landed: "
+                 "%s\nSee failure-row.json.\n"
+                 % (rc, classes_landed or "none"))
+    return 70
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="reflex-collect")
+    ap.add_argument("--root", required=True)
+    ap.add_argument("--now", required=True)
+    ap.add_argument("--breach", default="dead-air")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--pause-after-class", type=int, default=0)
+    ap.add_argument("--pause-seconds", type=float, default=0.0)
+    ap.add_argument("--worker-timeout", type=float, default=90.0)
+    ap.add_argument("--worker", action="store_true")
+    args = ap.parse_args()
+    if args.worker:
+        sys.exit(worker(args))
+    sys.exit(supervise(args))
+
+
+if __name__ == "__main__":
+    main()

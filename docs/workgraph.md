@@ -47,6 +47,37 @@ The open list is then joined against two live surfaces:
   recovery never waits out the TTL. A running lane whose pid is alive with a fresh
   heartbeat prints as `LIVE` and is never dispatched.
 
+### REFILL and the FOLLOWUPS surface (0.3.0)
+
+"N open" can still be a starved frontier: an open item whose committed `## Status`
+block carries a `PARKED`, `BLOCKED-*`, or `COUNTING` marker is open but not
+actionable — the markers live in the status comment, invisible to the line-initial
+status word, so the dispatch masks them out of the actionable count (never out of the
+open list). When fewer than 2 open items are actionable (orphans always count — they
+carry recovery verbs), the dispatch appends a REFILL section naming the licensed
+follow-up lanes of your FOLLOWUPS surface, so the dispatch never reads empty while
+licensed work exists. Ported from the source lab's throughput-floor patch (2026-09-02,
+live case: a 2-open dispatch whose entire frontier was PARKED/BLOCKED by construction).
+
+The FOLLOWUPS surface is one file (`followups_file` in `.claude/hyp.json`, default
+`hypotheses/FOLLOWUPS.md`), read from the live working tree — advisory refill surface,
+never an exit artifact. Grammar, machine-read by `dispatch-status.py`:
+
+```
+## FOLLOWUPS (licensed follow-up lanes)
+
+- <lane-id> — <license citation + what it is>
+```
+
+One bullet per lane under a line-initial `## FOLLOWUPS` heading (anything after the
+heading word on that line is ignored). The separator between the lane id and the note
+is ` — ` (em-dash; an ASCII ` -- ` is accepted). A license citation is a committed
+artifact that authorizes the lane — a directive, a keep's On-keep obligation, a banked
+discard's successor note. Remove a bullet when its lane registers: the spec supersedes
+the row. Bounded to 10 rows per dispatch. REFILL is uncounted build/register dispatch
+only — it never reorders counted runs and never closes an item, and claiming a
+followup lane goes through the same claim door as everything else.
+
 ## The Stop-boundary dispatcher (hook)
 
 At every Stop, `hooks/scripts/stop-dispatch.py` (experiments profile only) runs the
@@ -204,7 +235,12 @@ Ported with paths/config adaptation only — decision logic, joins, caps, consta
 Named adaptations: item enumeration in `dispatch-status.py` reads the consumer's own
 hypotheses corpus instead of the lab's release-train wave plan; the quarantine row type
 is `needs-maintainer` (lab: `needs-ian`); resume tooling drops the lab's plugin
-toggles and parameterizes the auth env file. `graph-check.py` and the
+toggles and parameterizes the auth env file. REFILL (0.3.0) adaptations: the lab
+refills from its next queued wave AND its wave plan's FOLLOWUPS block — a consumer
+corpus is flat, so the FOLLOWUPS surface (`followups_file`) is the whole refill
+source and the `refill` JSON object carries no `next_wave` key; the bullet separator
+additionally accepts ASCII ` -- ` (lab grammar: em-dash only); an empty refill prints
+a one-line pointer at the grammar instead of nothing. `graph-check.py` and the
 `/hyp:durability-check` skill, deferred at 0.2.0, ship as of H-231's On-keep landing
 (2026-09-01): the checker is byte-identical to the lab install (`scripts/graph-check.py`
 both sides), and the skill carries the counted fixture protocol text verbatim.

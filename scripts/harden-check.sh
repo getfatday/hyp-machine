@@ -246,6 +246,30 @@ PYEOF
   fi
 fi
 
+# ADVISORY-30 flow leak (H-246 keep, closes: flow-leak-meter-ships): the counted
+# answer to "minutes-work taking days" — alarmed 4-21h before the maintainer's catch
+# on all three held-out episodes. Read-only, bounded, count-only line.
+if [ -x scripts/leak-status.sh ]; then
+  fl=$(timeout 50 bash scripts/leak-status.sh 2>/dev/null | grep "^FLOW" | tail -1)
+  case "$fl" in
+    *ALARM*|*BURN*) echo "ADVISORY-30 flow-leak: $fl (bash scripts/leak-status.sh for the full reading; the reflex chain escalates unconsumed alarms)"; W=1 ;;
+  esac
+fi
+
+# ADVISORY-31 meter-consumption (throughput-floor directive 2026-09-02,
+# research/raw/2026-09-02-throughput-floor-directive.md): the meter MEASURED stalls
+# but nothing CONSUMED the alarm — 5 BURN-SLOW fires on 2026-09-02, all "acted": null,
+# one action total. A BURN/ALARM fire >30m old with no consumption record surfaces
+# here; the script also lands ONE H-253 fixture-side incident row per fire
+# (ledger/incident-records.jsonl, DEC-013 pending — never the work ledger).
+# Count-only, bounded, exit-0.
+if [ -f scripts/reflex-consume.py ]; then
+  mc=$(timeout 45 python3 scripts/reflex-consume.py . 2>/dev/null | grep -c "^CONSUMPTION-DUE" || true)
+  if [ -n "$mc" ] && [ "$mc" != "0" ]; then
+    echo "ADVISORY-31 meter-consumption: $mc unconsumed meter fire(s) >30m old (python3 scripts/reflex-consume.py . for detail; consume: scripts/reflex-consume.py . --record <fire-ts> --action \"<commit/lane>\")"; W=1
+  fi
+fi
+
 # ADVISORY-27 direction currency (H-243 keep, closes: direction-currency-lint): direction
 # prose (program.md, wave plans, vision text) cites moving targets; the lint catches
 # stale references and rename drift deterministically — report-only, bounded.
@@ -263,6 +287,60 @@ if [ -f scripts/clarity-lint.py ] && [ -f scripts/house-vocabulary.json ]; then
   vline=$(python3 scripts/clarity-lint.py vocab scripts/house-vocabulary.json 2>/dev/null | grep -c "FINDING" || true)
   if [ -n "$vline" ] && [ "$vline" != "0" ]; then
     echo "ADVISORY-26 vocabulary-integrity: $vline finding(s) in scripts/house-vocabulary.json (python3 scripts/clarity-lint.py vocab scripts/house-vocabulary.json for detail)"; W=1
+  fi
+fi
+
+# ADVISORY-28 rule-currency (H-248 keep, closes: rule-lint-ships): the four-class
+# currency lint over ledger/rules-registry.jsonl — RULE-EXPIRED / RULE-UNLICENSED /
+# RULE-ORPHAN / SCOPE-EXCESS. The lint reads a corpus root (frozen contract), so this
+# block assembles one under .claude/ from live surfaces: pinned as-of date, the live
+# registry, intent/re-earn stores when present, pinned-tree -> the repo. Report-only,
+# never blocks. RULE-EXPIRED findings are the mechanical trigger for the rule-retest
+# flow (H-249): file the retest via decisions.py add --class rule-retest.
+if [ -f scripts/rule-lint.py ] && [ -f ledger/rules-registry.jsonl ]; then
+  rlc=.claude/rule-lint-corpus
+  mkdir -p "$rlc" 2>/dev/null || true
+  printf '%s\n' "${RULE_LINT_TODAY:-$(date +%F)}" > "$rlc/as-of-date.txt" 2>/dev/null || true
+  ln -sfn ../../ledger/rules-registry.jsonl "$rlc/rules-registry.jsonl" 2>/dev/null || true
+  [ -f ledger/retest-intents.jsonl ] && ln -sfn ../../ledger/retest-intents.jsonl "$rlc/retest-intents.jsonl" 2>/dev/null
+  [ -f ledger/re-earn-evidence.jsonl ] && ln -sfn ../../ledger/re-earn-evidence.jsonl "$rlc/re-earn-evidence.jsonl" 2>/dev/null
+  ln -sfn ../.. "$rlc/pinned-tree" 2>/dev/null || true
+  rl=$(timeout 45 python3 scripts/rule-lint.py "$rlc" 2>/dev/null | grep -cE '^(RULE-[A-Z]+|SCOPE-EXCESS)' || true)
+  if [ -n "$rl" ] && [ "$rl" != "0" ]; then
+    echo "ADVISORY-28 rule-currency: $rl finding(s) over ledger/rules-registry.jsonl (python3 scripts/rule-lint.py $rlc for detail; RULE-EXPIRED feeds the H-249 retest flow: decisions.py add --class rule-retest)"; W=1
+  fi
+fi
+
+# ADVISORY-29 laws-drift (H-247 keep, closes: laws-drift-advisory): compiled-carrier
+# drift on the same channel as the parity advisories — registry field/license health
+# always (lint-registry at the meta pin), plus LAWS-DRIFT checks on every templated
+# carrier whose source file exists in this tree. Report-only, never blocks.
+if [ -f scripts/compile-laws.py ] && [ -f ledger/rules-registry.jsonl ]; then
+  rdef=$(timeout 45 python3 scripts/compile-laws.py lint-registry --registry ledger/rules-registry.jsonl --repo . 2>/dev/null | grep -c "	DEFECT	" || true)
+  drift=0
+  pairs=$(python3 -c "
+import json,sys
+meta=None
+for ln in open('ledger/rules-registry.jsonl',encoding='utf-8'):
+    ln=ln.strip()
+    if not ln: continue
+    d=json.loads(ln)
+    if d.get('kind')=='meta': meta=d; break
+for cid,t in sorted((meta or {}).get('carrier_templates',{}).items()):
+    src=t.get('source')
+    if src: print('%s\t%s'%(cid,src))
+" 2>/dev/null || true)
+  if [ -n "$pairs" ]; then
+    while IFS="$(printf '\t')" read -r cid src; do
+      [ -f "$src" ] || continue
+      d=$(timeout 45 python3 scripts/compile-laws.py check --registry ledger/rules-registry.jsonl --carrier "$src" --carrier-id "$cid" 2>/dev/null | grep -c "^LAWS-DRIFT" || true)
+      drift=$((drift + ${d:-0}))
+    done <<RLEOF
+$pairs
+RLEOF
+  fi
+  if [ "${rdef:-0}" != "0" ] || [ "$drift" != "0" ]; then
+    echo "ADVISORY-29 laws-drift: ${rdef:-0} registry defect(s), $drift carrier drift finding(s) (scripts/compile-laws.py lint-registry / check for detail; carriers compile from the registry — never hand-retype a LAWS block)"; W=1
   fi
 fi
 

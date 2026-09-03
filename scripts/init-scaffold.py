@@ -343,6 +343,17 @@ def main():
                     render(template("HYPOTHESIS-TEMPLATE.md"), cfg), "spec template")
         install_script(root, cfg["preflight_file"], ("scripts", "preflight.py"),
                        "deterministic spec pre-flight")
+        # H-254 keep: the reflex install self-test runs as a required install/update
+        # step — a seeded synthetic slowdown must fire the detector and land an
+        # autopsy record, end to end, before the install reports healthy. Report-only
+        # at init time (a failed drill prints loudly but never blocks scaffolding).
+        selftest = os.path.join(PLUGIN_ROOT, "scripts", "reflex-selftest")
+        if os.path.exists(selftest):
+            import subprocess
+            r = subprocess.run([sys.executable, selftest, "--root", root],
+                               capture_output=True, text=True, timeout=120)
+            tail = (r.stdout or r.stderr or "").strip().splitlines()
+            print("reflex-selftest: %s" % (tail[-1] if tail else "rc=%d" % r.returncode))
 
     # 4. Modeling layer.
     if at_least("modeling"):

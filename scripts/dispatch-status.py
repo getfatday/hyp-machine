@@ -42,6 +42,21 @@ whose pid is ALIVE with a fresh heartbeat is LIVE and is never dispatched. Detec
 here is pid-based and immediate, but ADOPTION still goes through the claim door
 (scripts/lane-takeover.py), which grants only on heartbeat expiry.
 
+REFILL (0.3.0; ported from the source lab's throughput-floor patch to wave-status.py,
+2026-09-02): "N open" can be a starved frontier -- an open item whose committed
+`## Status` BLOCK carries a PARKED / BLOCKED-* / COUNTING marker (the markers live in
+the status comment, invisible to the line-initial status word) is open but not
+actionable. When fewer than 2 open items are actionable (orphans always count
+actionable -- they carry recovery verbs), the dispatch appends a REFILL section
+listing the licensed follow-up lanes of the consumer's FOLLOWUPS surface
+(`followups_file` in .claude/hyp.json, default hypotheses/FOLLOWUPS.md; grammar in
+docs/workgraph.md). Followups are read from the LIVE working tree like the claim join:
+they are advisory refill surface, never exit artifacts. REFILL is uncounted
+build/register dispatch only -- it never reorders counted runs and never closes an
+item. Consumer adaptation from the lab patch: the lab also refills from its release
+train's next queued wave; a consumer corpus is flat, so the FOLLOWUPS surface is the
+whole refill source.
+
 Usage (repo root: --root, then CLAUDE_PROJECT_DIR, then cwd):
     python3 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch-status.py" [--json] [--at <sha>]
 
@@ -62,8 +77,14 @@ CONFIG_RELPATH = os.path.join(".claude", "hyp.json")
 DEFAULTS = {
     "hypotheses_dir": "hypotheses",
     "runs_dir": "experiments/runs",
+    "followups_file": "hypotheses/FOLLOWUPS.md",
 }
 TERMINAL = ("kept", "discarded")   # committed exit-artifact statuses; refine reruns
+# REFILL masking (lab throughput-floor patch, 2026-09-02): open items whose committed
+# status BLOCK carries one of these markers are excluded from the actionable frontier
+# count (never from the open list itself) -- the markers live in the status comment,
+# invisible to the line-initial \w+ status word.
+NON_ACTIONABLE_RE = re.compile(r"\b(PARKED|BLOCKED[A-Z-]*|COUNTING)\b")
 # heartbeat TTL pin (H-215/H-216 shared constant, ratified by their own counted
 # lanes in the source lab, 2026-08-29)
 TTL_S = 1800
@@ -104,6 +125,7 @@ class Ctx(object):
         cfg = load_config(root)
         self.hyp_rel = cfg["hypotheses_dir"]
         self.runs_rel = cfg["runs_dir"]
+        self.followups_rel = cfg["followups_file"]
 
 
 # --- claim join (H-215 kept; logic unchanged from the lab install) -------------------
@@ -284,8 +306,18 @@ def git(ctx, args, ok_missing=False):
     return p.stdout
 
 
+_SHOW_CACHE = {}
+
+
 def show(ctx, sha, path):
-    return git(ctx, ["show", "%s:%s" % (sha, path)], ok_missing=True)
+    """git show, memoized per (root, sha, path): the REFILL status_block join
+    re-reads exactly the spec bytes committed_spec_status already fetched, so
+    the cache keeps the corpus scan at one subprocess per spec."""
+    key = (ctx.root, sha, path)
+    if key not in _SHOW_CACHE:
+        _SHOW_CACHE[key] = git(ctx, ["show", "%s:%s" % (sha, path)],
+                               ok_missing=True)
+    return _SHOW_CACHE[key]
 
 
 def committed_spec_status(ctx, sha, hid, spec_paths):
@@ -297,6 +329,61 @@ def committed_spec_status(ctx, sha, hid, spec_paths):
             m = re.search(r"^## Status\s*\n(\w+)", show(ctx, sha, p) or "", re.M)
             return (m.group(1) if m else "unparsed"), p
     return None, None
+
+
+# --- REFILL (lab throughput-floor patch, 2026-09-02; consumer adaptation named in
+# the module docstring) ----------------------------------------------------------------
+
+def status_block(ctx, sha, hid, spec_paths):
+    """The committed spec's full '## Status' block (status word + its HTML
+    comment, bounded) -- the PARKED/BLOCKED-*/COUNTING markers live in the
+    comment, invisible to the \\w+ status word."""
+    for p in spec_paths:
+        base = os.path.basename(p)
+        if base.startswith(hid + "-") and base.endswith(".md"):
+            m = re.search(r"^## Status\s*\n(.*?)(?=^## |\Z)",
+                          show(ctx, sha, p) or "", re.M | re.S)
+            return m.group(1)[:4000] if m else ""
+    return ""
+
+
+def read_followups(ctx):
+    """Bullets of the live FOLLOWUPS surface's '## FOLLOWUPS' block:
+    [{id, note, source}]. One bullet per licensed lane, `- <lane-id> — <license
+    citation + what it is>` (an ASCII ` -- ` separator is accepted). Missing
+    file or block reads as no followups. Read from the WORKING TREE (advisory
+    refill surface, never an exit artifact)."""
+    try:
+        text = open(os.path.join(ctx.root, ctx.followups_rel),
+                    encoding="utf-8").read()
+    except OSError:
+        return []
+    m = re.search(r"^## FOLLOWUPS[^\n]*\n(.*?)(?=^## |\Z)", text,
+                  re.M | re.S)
+    if not m:
+        return []
+    out = []
+    for line in m.group(1).splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        body = line[2:].strip()
+        fid, sep, note = body.partition(" — ")
+        if not sep:
+            fid, sep, note = body.partition(" -- ")
+        out.append({"id": fid.strip(), "note": note.strip(),
+                    "source": ctx.followups_rel})
+    return out[:10]
+
+
+def build_refill(ctx, n_actionable, n_open):
+    """The refill payload: the reason line plus the licensed FOLLOWUPS lanes.
+    Consumer adaptation: no next-queued-wave list (a consumer corpus is flat --
+    the open list already enumerates every registered spec)."""
+    return {"reason": "%d actionable of %d open in %s "
+                      "(PARKED/BLOCKED/COUNTING excluded) -- frontier below 2"
+                      % (n_actionable, n_open, ctx.hyp_rel),
+            "followups": read_followups(ctx)}
 
 
 def compute(ctx, sha):
@@ -320,10 +407,20 @@ def compute(ctx, sha):
                        kind=status[i][0] or "unregistered")
                   for i in hyp_items if i not in landed]
     open_items, claimed_fresh, live = claim_join(ctx, open_items)
-    return {"corpus": ctx.hyp_rel, "at": sha, "open": open_items,
-            "claimed_fresh": claimed_fresh, "live": live,
-            "orphans": [i["id"] for i in open_items if i.get("orphan")],
-            "landed": landed}
+    result = {"corpus": ctx.hyp_rel, "at": sha, "open": open_items,
+              "claimed_fresh": claimed_fresh, "live": live,
+              "orphans": [i["id"] for i in open_items if i.get("orphan")],
+              "landed": landed}
+    # REFILL (throughput floor): orphans count actionable (recovery verbs);
+    # marker-carrying open items do not
+    actionable = [it for it in open_items
+                  if it.get("orphan")
+                  or not NON_ACTIONABLE_RE.search(
+                      status_block(ctx, sha, it["id"], spec_paths))]
+    if len(actionable) < 2:
+        result["refill"] = build_refill(ctx, len(actionable),
+                                        len(open_items))
+    return result
 
 
 def dispatch_main(ctx, o):
@@ -367,6 +464,22 @@ def dispatch_main(ctx, o):
         print("rule: a typed claim refusal (scripts/lane-takeover.py exit 3) "
               "obligates re-dispatch -- re-run %s and claim the NEW top item "
               "instead." % REDISPATCH)
+    rf = st.get("refill")
+    if rf:
+        print("REFILL (throughput floor): %s -- licensed follow-up work is "
+              "dispatchable NOW (uncounted; release order gates counted runs "
+              "only)" % rf["reason"])
+        if rf.get("followups"):
+            for f in rf["followups"]:
+                print("  FOLLOWUP %s -- %s [%s]"
+                      % (f["id"], f["note"], f["source"]))
+            print("  rule: claim via %s --lane <id> --executor <you> before "
+                  "building; REFILL never reorders counted runs and never "
+                  "closes an item." % TAKEOVER)
+        else:
+            print("  no FOLLOWUPS surface: license lanes under a "
+                  "'## FOLLOWUPS' heading in %s (grammar: docs/workgraph.md)"
+                  % ctx.followups_rel)
     return 0
 
 

@@ -1,0 +1,71 @@
+{
+ "CLOSED_SET": [
+  "kept",
+  "discarded"
+ ],
+ "CLUSTER_S": 1800,
+ "CUSUM": {
+  "gate-run1": {
+   "enabled": true,
+   "fit_n": 39,
+   "h": 70.05285,
+   "k": 9.34038,
+   "mu0": 7.316667,
+   "sigma": 9.34038,
+   "wins": 44.678187
+  },
+  "grade1-run2": {
+   "enabled": true,
+   "fit_n": 25,
+   "h": 41.958333,
+   "k": 3.85476,
+   "mu0": 2.6,
+   "sigma": 3.85476,
+   "wins": 18.01904
+  },
+  "run1-grade1": {
+   "enabled": true,
+   "fit_n": 41,
+   "h": 5.0,
+   "k": 1.0,
+   "mu0": 0.016667,
+   "sigma": 1.0,
+   "wins": 4.016667
+  },
+  "run2-grade2": {
+   "enabled": true,
+   "fit_n": 24,
+   "h": 5.0,
+   "k": 1.0,
+   "mu0": 0.008333,
+   "sigma": 1.0,
+   "wins": 4.008333
+  }
+ },
+ "FLOOR_FAST_30M": 0.0,
+ "FLOOR_FAST_6H": 0.013889,
+ "FLOOR_FRACTION": 0.5,
+ "GRAIN_S": 300,
+ "H_SAFETY": 1.25,
+ "MEDIAN_FRACTION": 0.5,
+ "MIN_FIT_N": 8,
+ "PINNED_SHA": "162149bedf38ea2a2066b47dd7f61f57b284f83f",
+ "SAFETY": 1.25,
+ "SLO_EFF": 0.12125,
+ "SUSTAIN": 0.494792,
+ "TERMINALS_SHA256": "0bc6992ed66cdb67466ec00d7b4eac5271572de4944685d1bc6fae5d6bec7629",
+ "TICK_S": 1800,
+ "WINDOW_END": "2026-09-02T04:00:00Z",
+ "WINDOW_LONG": 21600,
+ "WINDOW_SHORT": 1800,
+ "WINDOW_SLOW": 259200,
+ "WINDOW_START": "2026-08-20T00:00:00Z",
+ "WINS_MULT": 4,
+ "fit_inputs": {
+  "eff_fit_ticks": 39,
+  "events_in_window": 584,
+  "max_burnshare": 0.395833,
+  "median_eff6h": 0.2425,
+  "min_eff6h": 0.027778
+ }
+}

@@ -1,0 +1,450 @@
+#!/usr/bin/env python3
+"""reflex-surface — breach-autopsy decision surfacing (H-253 keep).
+
+Landed from the KEPT reference implementation (H-253 reflex-decision-surfacing,
+2x4/4 2026-09-02) experiments/runs/H-253/fixture/impl/surfacing_on.py — the ON-arm
+Engine's proven policy ported to a live CLI, method bodies preserved: the decision
+row grammar, the H-104 verify-before-cite rule, the consumption predicate, the
+new-vs-standing partition, the N=3 escalation edge, and the annunciation grammar
+are verbatim; the trial scaffolding (seed driver, calibration variants, dashboard
+recompiles, artifact collection) is not part of the deliverable and is dropped.
+
+The surfacing policy (spec "Variable under test", ON side):
+  - Every breach lands ONCE through the existing decision door: a
+    decisions.py-validated needs-ian row (kind:"decision", type:"needs-ian",
+    reason:"breach-autopsy", context_pointers=[incident dir, manifest]) appended
+    via decisions.py's own primitives (validate_decision + append_line — the
+    H-218 dispatch-gate precedent). A row may cite an incident dir only after
+    fidelity-manifest.py --verify exits 0 on that dir's manifest (H-104).
+    Dedup is exactly-once per bucket (H-204 semantics).
+  - Sessions partition new-vs-standing: a bucket is itemized once (REFLEX-NEW);
+    standing debt collapses to ONE delta line per session (REFLEX-STANDING).
+  - Escalation is edge-triggered at exactly N=3 unconsumed surfacings
+    (REFLEX-ESCALATE, T1->T2 + an incident-escalation record). Consumption
+    predicate (frozen): a work-ledger row of a non-decision kind referencing the
+    bucket id, OR a git commit message referencing the bucket id. Consumed
+    buckets keep surfacing while their decision row is open but NEVER escalate.
+  - Suppression is never silent: the only mute path this layer owns (`mute`)
+    prints one REFLEX-MUTE-ANNUNCIATION line AND appends one expiring
+    suppression record; `audit` reports any reflex mute lacking either as
+    AUDIT-SILENT-MUTE. H-213's stop-snooze surface is NOT touched here (that
+    mute is read by reflex-check P5; annunciating it is a proposed amendment
+    through H-213's owner door, maintainer-ruling bracket).
+
+DEC-013 GATE (open at land time): the kind:"incident" T0 row type is NOT yet a
+ratified work-ledger schema kind (wave-plan queued item 6, decision row DEC-013).
+Until that ruling, T0 samples — kind:"incident" / "incident-escalation" /
+"suppression" records — go to the FIXTURE-SIDE store this keep proved,
+ledger/incident-records.jsonl, and NEVER to ledger/work-ledger.jsonl (also the
+anti-clog bound C2: the single work-ledger write per bucket is the maintainer
+decision row itself). If DEC-013 ratifies, pointing incident_record() at the
+work ledger is the one-line adoption; if it holds, this store stays canonical.
+
+Live adaptations beyond the gate (each proven piece unchanged):
+  - per-bucket counters persist in .claude/reflex/surfacing-state.json (the
+    fixture drove 5 simulated sessions in-process; live boundaries are separate
+    invocations);
+  - a bucket leaves the surfacing set when its decision row resolves
+    (kind:"decision-resolution", disposition accepted|denied — the fixture's
+    rows stayed open for all trials by design);
+  - reflex-owned mutes live in .claude/reflex/mutes/*.json;
+  - `audit`'s annunciation proof is the durable suppression record
+    (annunciated:true + truthy expires_at); an optional --transcript adds the
+    fixture's printed-line check when a transcript exists.
+
+Usage:
+  reflex-surface file    --root R --incident <INC-dir> [--bucket B]
+                         [--predicate P] [--subject S] [--failure-class C]
+                         [--title T]
+  reflex-surface session --root R [--trigger session-start]
+  reflex-surface mute    --root R --bucket B --expires-at ISO-Z --reason TEXT
+  reflex-surface audit   --root R [--transcript FILE]
+
+Exit 0 (file/session/mute; acceptance is artifact-based); audit exits 1 when a
+silent mute is found (a finding, not a crash). Stdlib only; zero LLM.
+"""
+import argparse
+import datetime
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+
+PY = sys.executable
+N_ESCALATE = 3  # frozen (H-253 Method); escalate exactly at the third surfacing
+STATE_REL = os.path.join(".claude", "reflex", "surfacing-state.json")
+MUTES_REL = os.path.join(".claude", "reflex", "mutes")
+INCIDENT_STORE_REL = os.path.join("ledger", "incident-records.jsonl")
+
+
+def load_decisions(root):
+    spec = importlib.util.spec_from_file_location(
+        "reflex_surface_decisions", os.path.join(root, "scripts", "decisions.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def git_log_subjects(root):
+    r = subprocess.run(["git", "-C", root, "log", "--format=%s"],
+                       capture_output=True, text=True, timeout=60)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def now_z():
+    return datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+def today():
+    return os.environ.get("DECISIONS_TODAY") or now_z()[:10]
+
+
+def incident_record(root, rec):
+    """T0/escalation/suppression samples — DEC-013 gate: fixture-side store,
+    never a work-ledger row (anti-clog C2)."""
+    path = os.path.join(root, INCIDENT_STORE_REL)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def load_state(root):
+    p = os.path.join(root, STATE_REL)
+    if os.path.isfile(p):
+        try:
+            return json.load(open(p, encoding="utf-8"))
+        except (ValueError, OSError):
+            pass
+    return {}
+
+
+def save_state(root, state):
+    p = os.path.join(root, STATE_REL)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=1, sort_keys=True)
+
+
+def breach_rows(root, D):
+    """Open + resolved breach-autopsy decision rows, joined on resolutions
+    (parse_ledger_v3 entries carry the parsed row under "rec")."""
+    parsed = D.parse_ledger_v3(D.read_ledger(root))
+    resolved = set(res["id"] for res in parsed["resolutions"]
+                   if res.get("disposition") in ("accepted", "denied"))
+    rows = []
+    for dec in parsed["decisions"]:
+        rec = dec["rec"]
+        if rec.get("reason") == "breach-autopsy" and rec.get("bucket"):
+            rows.append((rec, rec.get("id") in resolved))
+    return rows
+
+
+# ---- the consumption predicate (frozen; ported verbatim from the ON arm) ----
+
+def consumed(root, bucket):
+    log = git_log_subjects(root)
+    if bucket in log:
+        return True
+    try:
+        with open(os.path.join(root, "ledger", "work-ledger.jsonl"),
+                  encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or bucket not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("kind") not in ("decision", "decision-resolution"):
+                    return True   # a non-decision ledger row cites the bucket
+    except OSError:
+        pass
+    return False
+
+
+def bucket_slug(bucket):
+    return bucket.replace(":", "_").replace("/", "_")
+
+
+def verify_manifest(root, incident_dir):
+    """H-104: a row may cite an incident dir only after --verify exits 0."""
+    inc_json = os.path.join(root, incident_dir, "incident.json")
+    manifest_rel = None
+    if os.path.isfile(inc_json):
+        try:
+            manifest_rel = json.load(open(inc_json, encoding="utf-8")).get(
+                "manifest")
+        except (ValueError, OSError):
+            manifest_rel = None
+    if not manifest_rel:
+        raise SystemExit("FATAL: %s carries no incident.json manifest pointer "
+                         "(H-104: unverifiable incident dirs are uncitable)"
+                         % incident_dir)
+    r = subprocess.run([PY, os.path.join(root, "scripts",
+                                         "fidelity-manifest.py"),
+                        root, "--verify", manifest_rel],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise SystemExit("FATAL: manifest verify failed for %s (a row may not "
+                         "cite an unverified incident dir, H-104): %s"
+                         % (incident_dir, (r.stdout + r.stderr)[:300]))
+    return manifest_rel
+
+
+# ---- file: manifest-verified incident dir -> T0 record -> the decision door ----
+
+def cmd_file(args):
+    root = os.path.abspath(args.root)
+    D = load_decisions(root)
+    incident_rel = args.incident.rstrip("/")
+    inc_json_p = os.path.join(root, incident_rel, "incident.json")
+    inc_meta = {}
+    if os.path.isfile(inc_json_p):
+        try:
+            inc_meta = json.load(open(inc_json_p, encoding="utf-8"))
+        except (ValueError, OSError):
+            inc_meta = {}
+    bucket = args.bucket or inc_meta.get("bucket")
+    if not bucket:
+        raise SystemExit("FATAL: no --bucket and no bucket in incident.json")
+    failure_class = args.failure_class or inc_meta.get("breach") or "breach"
+    for rec, _resolved in breach_rows(root, D):
+        if rec.get("bucket") == bucket:
+            print("DEDUP skip %s (breach-autopsy row %s already filed)"
+                  % (bucket, rec.get("id")))
+            return 0
+    manifest_rel = verify_manifest(root, incident_rel)
+    first_seen = now_z()
+    incident_record(root, {
+        "kind": "incident", "bucket": bucket,
+        "signature": {"predicate": args.predicate,
+                      "subject": args.subject,
+                      "failure_class": failure_class},
+        "incident_dir": incident_rel + "/", "manifest": manifest_rel,
+        "first_seen": first_seen, "times_surfaced": 0, "consumed_by": None,
+        "tier": "T0",
+    })
+    parsed = D.parse_ledger_v3(D.read_ledger(root))
+    rid = D.next_free_id(parsed)
+    title = args.title or ("Breach %s (%s)" % (bucket, failure_class))
+    row = {
+        "kind": "decision", "id": rid,
+        "date": today(), "requested_at": today(),
+        "requested_by": "reflex H-253 (breach-autopsy surfacing)",
+        "title": title,
+        "ask": {
+            "question": ("Breach %s: the autopsy is attached; choose the "
+                         "disposition." % bucket),
+            "header": "Breach", "multiSelect": False,
+            "options": [
+                {"label": "fix-now",
+                 "description": "land the remediation this wave"},
+                {"label": "accept-risk",
+                 "description": "close as tolerated; the bucket stops surfacing"},
+            ],
+        },
+        "context_pointers": [incident_rel + "/", manifest_rel],
+        "blocks": [],
+        "urgency": "normal", "class": "live-surface",
+        "why_only_you": ("a breach disposition (fix vs tolerate) is a "
+                         "maintainer ruling, not the machinery's call"),
+        "type": "needs-ian", "reason": "breach-autopsy",
+        "bucket": bucket, "first_seen": first_seen,
+    }
+    errs = D.validate_decision(row)
+    if errs:
+        raise SystemExit("FATAL: decision row failed validation: %s" % errs)
+    D.append_line(root, row)
+    state = load_state(root)
+    state[bucket] = {"times_surfaced": 0, "decision_id": rid,
+                     "escalated_at": None, "first_seen": first_seen}
+    save_state(root, state)
+    print("REFLEX-DETECT\t%s\t%s\t%s/" % (bucket, rid, incident_rel))
+    return 0
+
+
+# ---- session: the render-path partition + escalation (one live boundary) ----
+
+def muted(root, bucket):
+    mdir = os.path.join(root, MUTES_REL)
+    if not os.path.isdir(mdir):
+        return False
+    for name in os.listdir(mdir):
+        if name.startswith("."):
+            continue
+        path = os.path.join(mdir, name)
+        try:
+            rec = json.load(open(path))
+            if rec.get("bucket") == bucket:
+                return True
+        except (ValueError, OSError):
+            if bucket_slug(bucket) in name:
+                return True
+    return False
+
+
+def cmd_session(args):
+    root = os.path.abspath(args.root)
+    D = load_decisions(root)
+    state = load_state(root)
+    open_rows = [rec for rec, resolved in breach_rows(root, D) if not resolved]
+    active = [r for r in open_rows if not muted(root, r["bucket"])]
+    for rec in active:
+        state.setdefault(rec["bucket"],
+                         {"times_surfaced": 0, "decision_id": rec["id"],
+                          "escalated_at": None,
+                          "first_seen": rec.get("first_seen")})
+    new = [r for r in active
+           if state[r["bucket"]]["times_surfaced"] == 0]
+    standing = [r for r in active
+                if state[r["bucket"]]["times_surfaced"] >= 1]
+    for rec in new:
+        st = state[rec["bucket"]]
+        print("REFLEX-NEW\t%s\t%s\t%s"
+              % (rec["bucket"], st["decision_id"], rec.get("title", "")))
+    if standing:
+        parts = ";".join("%s:surfaced=%d"
+                         % (rec["bucket"],
+                            state[rec["bucket"]]["times_surfaced"] + 1)
+                         for rec in standing)
+        print("REFLEX-STANDING\t%d standing\t%s" % (len(standing), parts))
+    for rec in active:
+        st = state[rec["bucket"]]
+        st["times_surfaced"] += 1
+        is_consumed = consumed(root, rec["bucket"])
+        if st["times_surfaced"] == N_ESCALATE and st["escalated_at"] is None \
+                and not is_consumed:
+            st["escalated_at"] = st["times_surfaced"]
+            print("REFLEX-ESCALATE\t%s\tsurfacing=%d\tT1->T2\tdecision=%s"
+                  % (rec["bucket"], st["times_surfaced"], st["decision_id"]))
+            incident_record(root, {"kind": "incident-escalation",
+                                   "bucket": rec["bucket"],
+                                   "at_surfacing": st["times_surfaced"],
+                                   "from_tier": "T1", "to_tier": "T2",
+                                   "decision_id": st["decision_id"],
+                                   "at": now_z()})
+    save_state(root, state)
+    return 0
+
+
+# ---- mute: suppression is never silent (annunciation by construction) ----
+
+def cmd_mute(args):
+    root = os.path.abspath(args.root)
+    mdir = os.path.join(root, MUTES_REL)
+    os.makedirs(mdir, exist_ok=True)
+    applied = now_z()
+    with open(os.path.join(mdir, bucket_slug(args.bucket) + ".json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"bucket": args.bucket, "applied_at": applied,
+                   "expires_at": args.expires_at, "reason": args.reason}, f)
+    print("REFLEX-MUTE-ANNUNCIATION\t%s\texpires=%s\treason=%s"
+          % (args.bucket, args.expires_at, args.reason))
+    incident_record(root, {"kind": "suppression", "bucket": args.bucket,
+                           "applied_at": applied,
+                           "expires_at": args.expires_at,
+                           "reason": args.reason, "annunciated": True})
+    return 0
+
+
+# ---- audit: no suppression is ever silent (ported from audit_mutes.py) ----
+
+def cmd_audit(args):
+    root = os.path.abspath(args.root)
+    transcript = ""
+    if args.transcript and os.path.exists(args.transcript):
+        transcript = open(args.transcript, encoding="utf-8").read()
+
+    suppression_rows = []
+    inc_path = os.path.join(root, INCIDENT_STORE_REL)
+    if os.path.exists(inc_path):
+        with open(inc_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("kind") == "suppression":
+                    suppression_rows.append(rec)
+
+    mutes = []
+    mdir = os.path.join(root, MUTES_REL)
+    names = sorted(os.listdir(mdir)) if os.path.isdir(mdir) else []
+    for name in names:
+        if name.startswith("."):
+            continue
+        path = os.path.join(mdir, name)
+        bucket = None
+        file_expires = None
+        try:
+            rec = json.load(open(path))
+            bucket = rec.get("bucket")
+            file_expires = rec.get("expires_at")
+        except (ValueError, OSError):
+            try:
+                bucket = open(path).read().strip().splitlines()[0]
+            except (OSError, IndexError):
+                bucket = name
+        expiring_row = any(r.get("bucket") == bucket and r.get("expires_at")
+                           for r in suppression_rows)
+        annunciated_row = any(r.get("bucket") == bucket and r.get("annunciated")
+                              for r in suppression_rows)
+        if transcript:
+            annunciated_row = annunciated_row and \
+                ("REFLEX-MUTE-ANNUNCIATION\t%s\t" % bucket) in transcript
+        silent = not (annunciated_row and expiring_row)
+        mutes.append({"file": name, "bucket": bucket,
+                      "file_expires_at": file_expires,
+                      "annunciated": annunciated_row,
+                      "expiring_ledger_row": expiring_row,
+                      "silent": silent})
+        print("%s\t%s" % ("AUDIT-SILENT-MUTE" if silent else "AUDIT-OK",
+                          bucket))
+
+    silent_count = sum(1 for m in mutes if m["silent"])
+    print("AUDIT-SUMMARY\tmutes=%d\tsilent=%d" % (len(mutes), silent_count))
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump({"mutes": mutes, "silent_count": silent_count,
+                       "mute_count": len(mutes)}, f, indent=1, sort_keys=True)
+    return 1 if silent_count else 0
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="reflex-surface")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("file")
+    p.add_argument("--root", required=True)
+    p.add_argument("--incident", required=True)
+    p.add_argument("--bucket")
+    p.add_argument("--predicate")
+    p.add_argument("--subject")
+    p.add_argument("--failure-class", dest="failure_class")
+    p.add_argument("--title")
+    p = sub.add_parser("session")
+    p.add_argument("--root", required=True)
+    p.add_argument("--trigger", default="session-start",
+                   choices=["session-start", "precompact", "manual"])
+    p = sub.add_parser("mute")
+    p.add_argument("--root", required=True)
+    p.add_argument("--bucket", required=True)
+    p.add_argument("--expires-at", dest="expires_at", required=True)
+    p.add_argument("--reason", required=True)
+    p = sub.add_parser("audit")
+    p.add_argument("--root", required=True)
+    p.add_argument("--transcript")
+    p.add_argument("--out")
+    args = ap.parse_args()
+    fn = {"file": cmd_file, "session": cmd_session,
+          "mute": cmd_mute, "audit": cmd_audit}[args.cmd]
+    return fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

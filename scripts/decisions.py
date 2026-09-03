@@ -89,7 +89,12 @@ def raw_dir_for(root):
     return _hyp_config(root)["raw_dir"].replace("/", os.sep)
 LEGACY_KINDS = ("intent", "amendment", "commitment", "directive")
 URGENCY = ("high", "normal", "low")
-CLASSES = ("publish", "spend", "schema", "live-surface", "plan", "hygiene")
+# rule-retest (H-249 keep): filed when rule-lint.py reports RULE-EXPIRED on a
+# ledger/rules-registry.jsonl row — the retest runs as a counted lane and its
+# verdict flips the registry by appended row (KEEP-RULE new retest_by / RETIRE-RULE
+# status:retired); dedup on rule id, one open row per expired rule.
+CLASSES = ("publish", "spend", "schema", "live-surface", "plan", "hygiene",
+           "rule-retest")
 DISPOSITIONS = ("accepted", "denied", "commented")
 FORBIDDEN_RESOLUTION_FIELDS = ("decided_by", "decided_at", "resolution_commit")
 ID_RE = re.compile(r"^DEC-(\d{3,})$")

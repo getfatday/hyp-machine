@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""reflex-check — the cold breach sensor (H-251 keep).
+
+Landed from the KEPT reference implementation (H-251 reflex-timer-cold-detection,
+2x5/5 2026-09-02) experiments/runs/H-251/fixture/impl/reflex_check.py — predicate
+evaluation, edge-triggered firing, invocation ledger, and meta-watchdog unchanged;
+only this provenance note added. The timer plist that delivers it is EMITTED by
+scripts/install-reflex-timer.sh and NEVER auto-loaded (H-217 law); loading it on
+the lab host is the maintainer's NEEDS-IAN adoption step.
+
+Layer-1 trigger of the breach-to-autopsy reflex design
+(experiments/runs/DESIGN-leak-monitoring/design.md §Layer 1). Deterministic,
+stdlib-only, evaluates breach predicates ONLY from the mini-lab clone's on-disk
+artifacts (git log timestamps, file mtimes, ledger rows, snooze-file mtimes) so
+it runs cold with no session. Predicates are EVALUATED here but DEFINED by
+their owners (H-251 spec, Method: frozen at registration):
+
+  P1 unruled-terminal > SLA      waste-status M2 (SLA = 1 tick = 30m): a
+                                 chain-terminal.* file on a line-initial-ACTIVE
+                                 lane with mtime > the lane's last
+                                 ORCHESTRATOR-RULING.md commit ts and <= now;
+                                 breach when age > SLA.
+  P2 lane-quiet > 3d             H-154 stall-signals S1 (S1_DAYS = 3.0): active
+                                 spec with a run dir whose last touch
+                                 (max of git last-commit %at on the run dir and
+                                 run-dir file mtimes <= now) is > 3d old.
+  P3 idle-runnable dead-air      waste-status M1: idle = now - max(last commit
+                                 %at, newest lane liveness mtime <= now);
+                                 breach when idle > 30m AND frontier non-empty
+                                 (frontier here = active specs with NO run dir;
+                                 the clone carries no wave-plan.json).
+  P4 open-decision age           decisions.py store contract: kind:"decision"
+                                 row with no kind:"decision-resolution" join on
+                                 id; breach when age > 7 days (pinned).
+  P5 active-mute inventory       THIS spec's new predicate: .claude/stop-snooze
+                                 present with mtime <= now and silently covering
+                                 more than 2 tick boundaries (age > 2*TICK).
+  WD invocation-silence          meta-watchdog (spec Method): at a session
+                                 trigger, when the wiring includes the timer and
+                                 the last timer invocation line is > 2 periods
+                                 old (or absent), the watchdog's own death is a
+                                 breach.
+
+Firing rule (frozen): edge-triggered — one fire per (predicate, subject) breach
+onset; re-fire only on tier worsening or a new subject. v1 tier is constant 1
+(worsening reserved), so a persisting breach fires exactly once while standing;
+a key that clears re-arms (next onset fires again). State: .claude/reflex/state.json.
+
+Anti-clog bound C2: this sensor writes ZERO work-ledger rows. Breach records are
+incident records appended to .claude/reflex/breaches.jsonl; every invocation
+appends exactly one line to .claude/reflex/invocations.jsonl
+(ts, trigger, predicates, outcome, duration_ms). The sensor never dispatches.
+
+Usage: reflex-check --root CLONE [--now EPOCH] --trigger {timer,session-start,precompact}
+Exit 0 on any evaluated pass (sensor is advisory; acceptance is artifact-based).
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+TICK_S = 1800                # frozen tick period (30m)
+P1_SLA_S = TICK_S            # waste-status M2: SLA = 1 tick
+P2_QUIET_S = 3 * 86400       # H-154 S1_DAYS = 3.0
+P3_IDLE_S = TICK_S           # waste-status M1 IDLE_ALARM_S (TICK_MIN * 60)
+P4_AGE_DAYS = 7              # open-decision age threshold (pinned for this fixture)
+P5_BOUNDARIES = 2            # mute covering > 2 tick boundaries
+WD_SILENCE_S = 2 * TICK_S    # invocation-log silence > 2 periods is itself a breach
+PREDICATES = ["P1", "P2", "P3", "P4", "P5"]
+LIVENESS = ("chain-log.txt", "RUN-CLAIM.json")   # + chain-terminal.* by prefix
+
+
+def git(root, *args):
+    cp = subprocess.run(["git", "-C", root] + list(args),
+                        capture_output=True, text=True, timeout=120)
+    return cp.stdout
+
+
+def spec_statuses(root):
+    out = {}
+    hyp = os.path.join(root, "hypotheses")
+    if not os.path.isdir(hyp):
+        return out
+    for fn in sorted(os.listdir(hyp)):
+        m = re.match(r"(H-\d+)-.*\.md$", fn)
+        if not m:
+            continue
+        try:
+            text = open(os.path.join(hyp, fn), encoding="utf-8",
+                        errors="replace").read()
+        except OSError:
+            continue
+        s = re.search(r"^## Status\s*\n(\w+)", text, re.M)
+        out[m.group(1)] = s.group(1) if s else "unparsed"
+    return out
+
+
+def ruling_times(root):
+    out = {}
+    log = git(root, "log", "--format=%x01%at", "--name-only", "--",
+              "experiments/runs/*/ORCHESTRATOR-RULING.md")
+    ts = None
+    for line in log.splitlines():
+        if line.startswith("\x01"):
+            ts = int(line[1:])
+            continue
+        m = re.match(r"experiments/runs/(H-\d+)/ORCHESTRATOR-RULING\.md",
+                     line.strip())
+        if m and ts is not None and m.group(1) not in out:
+            out[m.group(1)] = ts
+    return out
+
+
+def lane_dirs(root):
+    runs = os.path.join(root, "experiments", "runs")
+    if not os.path.isdir(runs):
+        return []
+    return sorted(d for d in os.listdir(runs)
+                  if re.match(r"H-\d+$", d)
+                  and os.path.isdir(os.path.join(runs, d)))
+
+
+def eval_p1(root, now, statuses, rulings):
+    """waste-status M2: unruled terminal age > SLA on active lanes."""
+    hits = []
+    for lane in lane_dirs(root):
+        if statuses.get(lane) != "active":
+            continue
+        d = os.path.join(root, "experiments", "runs", lane)
+        ruled_at = rulings.get(lane, 0)
+        for fn in sorted(os.listdir(d)):
+            if not fn.startswith("chain-terminal."):
+                continue
+            t = os.path.getmtime(os.path.join(d, fn))
+            if t > ruled_at and t <= now and (now - t) > P1_SLA_S:
+                hits.append(("P1", "%s/%s" % (lane, fn),
+                             "unruled terminal age %ds > SLA %ds"
+                             % (int(now - t), P1_SLA_S)))
+    return hits
+
+
+def eval_p2(root, now, statuses):
+    """H-154 S1: active spec + run dir quiet > 3d."""
+    hits = []
+    for lane in lane_dirs(root):
+        if statuses.get(lane) != "active":
+            continue
+        d = os.path.join(root, "experiments", "runs", lane)
+        rel = "experiments/runs/%s" % lane
+        anchors = []
+        out = git(root, "log", "-1", "--format=%at", "--", rel)
+        if out.strip():
+            anchors.append(int(out.strip()))
+        for fn in os.listdir(d):
+            t = os.path.getmtime(os.path.join(d, fn))
+            if t <= now:
+                anchors.append(t)
+        if not anchors:
+            continue
+        quiet = now - max(anchors)
+        if quiet > P2_QUIET_S:
+            hits.append(("P2", lane,
+                         "active lane quiet %.1fd > 3d" % (quiet / 86400)))
+    return hits
+
+
+def eval_p3(root, now, statuses):
+    """waste-status M1: idle-runnable > 30m with a non-empty frontier."""
+    commit_ts = [int(t) for t in git(root, "log", "--format=%at").split()]
+    anchors = [max(commit_ts)] if commit_ts else []
+    for lane in lane_dirs(root):
+        d = os.path.join(root, "experiments", "runs", lane)
+        for fn in os.listdir(d):
+            if fn in LIVENESS or fn.startswith("chain-terminal."):
+                t = os.path.getmtime(os.path.join(d, fn))
+                if t <= now:
+                    anchors.append(t)
+    have_run = set(lane_dirs(root))
+    frontier = sorted(h for h, s in statuses.items()
+                      if s == "active" and h not in have_run)
+    if not anchors or not frontier:
+        return []
+    idle = now - max(anchors)
+    if idle > P3_IDLE_S:
+        return [("P3", "estate",
+                 "idle-runnable %dm > 30m with frontier %s"
+                 % (int(idle / 60), ",".join(frontier)))]
+    return []
+
+
+def eval_p4(root, now):
+    """decisions.py join: open kind:decision rows older than 7 days."""
+    path = os.path.join(root, "ledger", "work-ledger.jsonl")
+    if not os.path.isfile(path):
+        return []
+    decisions, resolved = {}, set()
+    try:
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("kind") == "decision":
+                decisions[rec.get("id")] = rec
+            elif rec.get("kind") == "decision-resolution":
+                resolved.add(rec.get("id"))
+    except OSError:
+        return []
+    hits = []
+    now_date = datetime.datetime.fromtimestamp(
+        now, datetime.timezone.utc).date()
+    for did, rec in sorted(decisions.items()):
+        if did in resolved:
+            continue
+        try:
+            d = datetime.datetime.strptime(rec.get("date", ""),
+                                           "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        age = (now_date - d).days
+        if age > P4_AGE_DAYS:
+            hits.append(("P4", str(did),
+                         "open decision age %dd > %dd" % (age, P4_AGE_DAYS)))
+    return hits
+
+
+def eval_p5(root, now):
+    """This spec's new predicate: active mute covering > 2 tick boundaries."""
+    path = os.path.join(root, ".claude", "stop-snooze")
+    if not os.path.isfile(path):
+        return []
+    t = os.path.getmtime(path)
+    if t > now:
+        return []
+    boundaries = int((now - t) // TICK_S)
+    if boundaries > P5_BOUNDARIES:
+        return [("P5", ".claude/stop-snooze",
+                 "active mute covering %d tick boundaries > %d"
+                 % (boundaries, P5_BOUNDARIES))]
+    return []
+
+
+def eval_wd(root, now, trigger, wiring):
+    """Meta-watchdog: timer wired but its invocation log silent > 2 periods."""
+    if trigger == "timer" or "timer" not in wiring:
+        return []
+    inv = os.path.join(root, ".claude", "reflex", "invocations.jsonl")
+    last = None
+    if os.path.isfile(inv):
+        for line in open(inv, encoding="utf-8"):
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("trigger") == "timer":
+                last = rec.get("ts")
+    silence = (now - last) if last is not None else None
+    if silence is None or silence > WD_SILENCE_S:
+        return [("WD", "timer",
+                 "invocation-log silence %s > %ds (timer wired, not firing)"
+                 % ("%ds" % int(silence) if silence is not None else "forever",
+                    WD_SILENCE_S))]
+    return []
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", required=True)
+    ap.add_argument("--now", type=float, default=None)
+    ap.add_argument("--trigger", required=True,
+                    choices=["timer", "session-start", "precompact"])
+    args = ap.parse_args()
+    t0 = time.monotonic()
+    root = os.path.abspath(args.root)
+    now = args.now if args.now is not None else time.time()
+
+    rdir = os.path.join(root, ".claude", "reflex")
+    os.makedirs(rdir, exist_ok=True)
+    wiring = ["timer", "session-start", "precompact"]
+    wpath = os.path.join(rdir, "wiring.json")
+    if os.path.isfile(wpath):
+        try:
+            wiring = json.load(open(wpath, encoding="utf-8"))["triggers"]
+        except (ValueError, KeyError, OSError):
+            pass
+
+    statuses = spec_statuses(root)
+    rulings = ruling_times(root)
+    breaches = []
+    breaches += eval_p1(root, now, statuses, rulings)
+    breaches += eval_p2(root, now, statuses)
+    breaches += eval_p3(root, now, statuses)
+    breaches += eval_p4(root, now)
+    breaches += eval_p5(root, now)
+    evaluated = list(PREDICATES)
+    wd = eval_wd(root, now, args.trigger, wiring)
+    if args.trigger != "timer" and "timer" in wiring:
+        evaluated.append("WD")
+    breaches += wd
+
+    # edge-triggered firing against persisted state
+    spath = os.path.join(rdir, "state.json")
+    state = {}
+    if os.path.isfile(spath):
+        try:
+            state = json.load(open(spath, encoding="utf-8"))
+        except (ValueError, OSError):
+            state = {}
+    fires, new_state = [], {}
+    for pred, subject, evidence in breaches:
+        key = "%s|%s" % (pred, subject)
+        tier = 1   # v1: constant tier; worsening reserved
+        prev = state.get(key)
+        if prev is None or tier > prev.get("tier", 1):
+            fires.append({"ts": int(now), "predicate": pred,
+                          "subject": subject, "tier": tier,
+                          "evidence": evidence, "trigger": args.trigger})
+        new_state[key] = {"first_ts": (prev or {}).get("first_ts", int(now)),
+                          "tier": tier}
+    with open(spath, "w", encoding="utf-8") as f:
+        json.dump(new_state, f, indent=1, sort_keys=True)
+    if fires:
+        with open(os.path.join(rdir, "breaches.jsonl"), "a",
+                  encoding="utf-8") as f:
+            for rec in fires:
+                f.write(json.dumps(rec, sort_keys=True) + "\n")
+
+    # the invocation ledger line — every invocation, exactly one line
+    line = {"ts": int(now), "trigger": args.trigger,
+            "predicates": evaluated,
+            "outcome": "breach" if fires else "no-breach",
+            "duration_ms": round((time.monotonic() - t0) * 1000, 1)}
+    with open(os.path.join(rdir, "invocations.jsonl"), "a",
+              encoding="utf-8") as f:
+        f.write(json.dumps(line, sort_keys=True) + "\n")
+
+    print("reflex-check trigger=%s now=%d fires=%d standing=%d"
+          % (args.trigger, int(now), len(fires), len(breaches)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,5 +1,5 @@
 {
-  "description": "hyp guards: write-once raw + journal fragments incl. a Bash mistake-net branch (PreToolUse), generic policy interpreter over operating-model policy nodes (PreToolUse), capture-intent context (UserPromptSubmit), standing rules + drift check + uncommitted-capture warning + stale-dashboard check + ledger resolver with open-decision surfacing (SessionStart), verdict-gated dispatch of the top open item + unjournaled-work backstop (Stop, dispatch at experiments profile), dashboard refresh (SessionStart + Stop), preflight gate on run-shaped commands + advisory commit backstop (PreToolUse, experiments profile).",
+  "description": "hyp guards: write-once raw + journal fragments incl. a Bash mistake-net branch (PreToolUse), generic policy interpreter over operating-model policy nodes (PreToolUse), capture-intent context (UserPromptSubmit), standing rules + drift check + uncommitted-capture warning + stale-dashboard check + ledger resolver with open-decision surfacing (SessionStart), verdict-gated dispatch of the top open item + unjournaled-work backstop (Stop, dispatch at experiments profile), dashboard refresh (SessionStart + Stop), preflight gate on run-shaped commands + advisory commit backstop (PreToolUse, experiments profile), license-join advisory on rule-carrier writes — a rule write must cite a resolvable directive/incident license (PreToolUse, H-250 keep).",
   "hooks": {
     "PreToolUse": [
       {
@@ -40,6 +40,16 @@
           {
             "type": "command",
             "command": "out=$(python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/commit-backstop.py\" \"${CLAUDE_PROJECT_DIR:-.}\" 2>/dev/null) || true; [ -n \"$out\" ] && echo \"$out\"; exit 0",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "c=\"${CLAUDE_PROJECT_DIR:-.}/.claude/license-join-corpus\"; f=\"$c/../license-join-fires.log\"; mkdir -p \"$c\" 2>/dev/null || true; ln -sfn \"${CLAUDE_PROJECT_DIR:-$(pwd)}\" \"$c/artifacts\" 2>/dev/null || true; out=$(python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/license-join-check.py\" --corpus \"$c\" 2>/dev/null) || true; if [ -n \"$out\" ]; then echo \"$out\"; touch \"$f\" 2>/dev/null || true; printf '%s\n' \"$out\" | grep '^RULE-LICENSE' | sed \"s|^|$(date -u +%FT%TZ) |\" >> \"$f\" 2>/dev/null || true; fi; exit 0",
             "timeout": 10
           }
         ]
