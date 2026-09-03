@@ -262,6 +262,15 @@ One suite per skill under `evals/<skill>/<case>/case.yaml`; see `evals/README.md
 
 ## Changelog
 
+### 0.3.1 — consumer-hardening patch (issues #3, #2)
+- **Fixture-freshness gate** (H-262, kept 5/5): preflight now re-hashes every `Fixture-SHA256:` pin
+  and fails closed on drift, printing the blast radius (every co-pinning spec). Pin-less specs get
+  one advisory line; pins become first-class in a later corpus migration.
+- **Claim-type gate** (H-258, kept 5/5): specs declare `Claim type: descriptive | normative`; a
+  descriptive spec carrying decision-class On-keep rows fails with the bridging route (register a
+  normative successor). Missing line = advisory only — the existing corpus predates the field.
+- Both checks ride `scripts/preflight.py` + the template; zero flips on a 264-spec live corpus.
+
 - 0.3.0 (hyp) — the flow-governance layer, plus the ratified work-graph part 2. The
   flow-leak meter (`scripts/leak-meter.py` + sealed constants + `scripts/leak-status.sh`
   — H-246 kept 2x5/5 2026-09-02: alarmed 227.8/1259.9/936.3 minutes before the recorded

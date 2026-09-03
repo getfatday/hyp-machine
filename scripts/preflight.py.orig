@@ -20,57 +20,6 @@ ONE_WAY_SIGNALS = [
 ]
 SANDBOX_SIGNALS = [r'\bsandbox', r'\bworktree\b', r'\bclone\b', r'\btransplant', r'\bisolated\b', r'\bscratch', r'\bfixture\b']
 
-# --- H-262 fixture-fresh check (byte-identical region: lab & shipped preflight) ---
-FIXTURE_PIN_RE = re.compile(r'^\s*(?:[-*]\s+)?Fixture-SHA256:\s*([0-9a-fA-F]{64})\s+(\S+)\s*$', re.M)
-
-def fixture_fresh_check(spec_path, text, check):
-    """Fail-closed fixture freshness (H-262): re-hash every declared Fixture-SHA256
-    pin (repo-root-relative path, root = grandparent of the spec file), FAIL on byte
-    drift or missing file, and print the blast radius: every co-pinning spec in the
-    same hypotheses directory. Specs with no pin lines get an advisory only (pins
-    stay optional in v1)."""
-    import hashlib, glob
-    spec_abs = os.path.abspath(spec_path)
-    specs_dir = os.path.dirname(spec_abs)
-    root = os.path.dirname(specs_dir)
-    pins = FIXTURE_PIN_RE.findall(text)
-    if not pins:
-        print("ADVISORY(fixture-fresh): no Fixture-SHA256 pins declared — fixture bytes unverified (pins optional in v1)")
-        return
-    bad = []
-    for declared, rel in pins:
-        target = os.path.join(root, rel)
-        if not os.path.isfile(target):
-            bad.append((rel, declared.lower(), "MISSING"))
-            continue
-        with open(target, 'rb') as fh:
-            actual = hashlib.sha256(fh.read()).hexdigest()
-        if actual != declared.lower():
-            bad.append((rel, declared.lower(), actual))
-    if not bad:
-        check("fixture-fresh", True, "%d pin(s) verified fresh" % len(pins))
-        return
-    drifted = set(rel for rel, _d, _a in bad)
-    co = {}
-    for other in sorted(glob.glob(os.path.join(specs_dir, "*.md"))):
-        if os.path.abspath(other) == spec_abs:
-            continue
-        try:
-            otext = open(other).read()
-        except Exception:
-            continue
-        for _od, orel in FIXTURE_PIN_RE.findall(otext):
-            if orel in drifted:
-                co.setdefault(orel, []).append(os.path.basename(other))
-    for rel, declared, actual in bad:
-        print("FIXTURE-DRIFT %s: declared %s actual %s" % (rel, declared, actual))
-        print("BLAST-RADIUS %s: %s" % (rel, ", ".join(co[rel]) if co.get(rel) else "none (no co-pinning specs)"))
-    blast = sorted(set(s for lst in co.values() for s in lst))
-    check("fixture-fresh", False,
-          "%d of %d pin(s) stale or missing — fail closed; blast radius (co-pinning specs): %s"
-          % (len(bad), len(pins), ", ".join(blast) if blast else "none"))
-# --- end H-262 fixture-fresh check ---
-
 def main(path):
     text = open(path).read()
     ok = True
@@ -141,8 +90,6 @@ def main(path):
     else:
         print("ADVISORY(claim-type): no 'Claim type: descriptive | normative' line (corpus predates the field; declare it — v1 enforces declared specs only)")
     # --- end claim-type-gate contract v1 ---
-
-    fixture_fresh_check(path, text, check)
 
     print("RESULT: " + ("PASS — auto-activate and run" if ok else "ESCALATE — human review required"))
     return 0 if ok else 1

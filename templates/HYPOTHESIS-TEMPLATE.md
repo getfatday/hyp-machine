@@ -7,6 +7,7 @@ only title prose is ever migrated. -->
 
 ## Status
 draft <!-- draft | active | kept | discarded | refined-into: H-NNN. draft → active when its first run starts. -->
+Claim type: <!-- REQUIRED — fill exactly one: descriptive (measures what is) | normative (proposes what should be). A descriptive keep may not bind a maintainer decision: decision-class On-keep rows (maintainer-ruling=) FAIL preflight on descriptive specs; route them through a bridging normative spec. -->
 
 
 ## In plain terms
