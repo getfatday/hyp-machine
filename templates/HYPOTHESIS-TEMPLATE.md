@@ -43,6 +43,10 @@ draft <!-- draft | active | kept | discarded | refined-into: H-NNN. draft → ac
 - <!-- e.g. "Banked null H-155 (discarded, 2026-08-28): in-prompt surfaces do not suppress tool-reaching; this spec does not retry that class" -->
 
 ## Method
+<!-- The preflight gate requires two statements this template does not carry for you
+     (write them in your own words; the gate's FAIL messages show accepted examples):
+     1. that graders and answer keys stay harness-side, invisible to the arms
+     2. that the protocol/corpus/rubric were pinned before any run began -->
 <!-- Numbered steps; fixed budget per run so runs are comparable. -->
 1. <!-- e.g. Give the same 3-task set to a fresh session with the variable ON. -->
 2. <!-- e.g. Repeat with the variable OFF (baseline). -->
