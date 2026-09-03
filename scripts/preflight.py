@@ -43,7 +43,7 @@ def main(path):
     check("sandboxing", sandboxed, "Method references an isolated execution surface" if sandboxed else "no sandbox/isolation reference found")
 
     gt = bool(re.search(r'(never|not).{0,60}(arm[- ]visible|copied into|shown to arms|see[s]? the manifest)|directive 8|(arm|arms) never sees?', text, re.I))
-    check("ground-truth-isolation", gt, "spec states arm-invisible ground truth" if gt else "no arm-invisible ground-truth statement found — add a sentence like: \"the answer key and grader live harness-side and are never shown to the arms\" (accepted words: never/not ... arm-visible / shown to arms / arm never sees)")
+    check("ground-truth-isolation", gt, "spec states arm-invisible ground truth" if gt else "no arm-invisible ground-truth statement found — add a sentence like: \"the answer key and grader live harness-side and are never shown to arms\" (accepted words: never/not ... arm-visible / shown to arms / arm never sees)")
 
     frozen = bool(re.search(r'[Ff]rozen at registration|[Ff]rozen \(', text)) or 'FROZEN' in text
     check("frozen-protocol/rubric", frozen, "freeze language present" if frozen else "no freeze statement — add a sentence like: \"Frozen at registration: the corpus, keys, prompts, and grading rubric\" (accepted words: \"frozen at registration\", \"Frozen (\", or FROZEN)")
