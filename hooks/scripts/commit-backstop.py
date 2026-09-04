@@ -21,13 +21,14 @@ Advisory only — the hook wrapper always exits 0, and any parse failure or
 unexpected error here fails OPEN (silent, exit 0): this is a nudge toward
 registering a hypothesis spec, never an enforcement gate.
 """
+import json
 import os
 import re
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hyp_config import load_config, profile_at_least
+from hyp_config import load_config, profile_at_least, worktree_root
 
 # Tinker-verb tokens for the commit message, checked in this fixed order so a
 # message matching more than one token still reports deterministically.
@@ -109,10 +110,25 @@ def _filename_signal(added_paths):
     return None, None
 
 
+def _session_repo(repo):
+    """hooks.json passes CLAUDE_PROJECT_DIR as argv[1]; in a worktree-isolated session
+    the staged files live in the worktree the hook payload's cwd names. Prefer that
+    toplevel when it is a linked worktree of the same repository (hyp_config.worktree_root);
+    otherwise keep argv[1]. Reads the payload from stdin only when stdin is not a tty."""
+    try:
+        if sys.stdin.isatty():
+            return repo
+        payload = json.loads(sys.stdin.read() or "{}")
+        cwd = payload.get("cwd") if isinstance(payload, dict) else None
+        return worktree_root(cwd, repo) or repo
+    except Exception:
+        return repo
+
+
 def main(argv):
     if len(argv) < 2 or not argv[1]:
         return 0
-    repo = argv[1]
+    repo = _session_repo(argv[1])
     message_file = argv[2] if len(argv) > 2 else None
 
     try:

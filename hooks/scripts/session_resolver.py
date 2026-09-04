@@ -439,10 +439,26 @@ def _auto_args(repo_root):
             repo_root)
 
 
+def _session_repo(repo):
+    """hooks.json passes CLAUDE_PROJECT_DIR; a session resumed inside a linked worktree
+    of that repository resolves against the worktree (hyp_config.worktree_root). Any
+    failure keeps argv[1]; stdin is read only when it is not a tty."""
+    try:
+        if sys.stdin.isatty():
+            return repo
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from hyp_config import worktree_root
+        payload = json.loads(sys.stdin.read() or "{}")
+        cwd = payload.get("cwd") if isinstance(payload, dict) else None
+        return worktree_root(cwd, repo) or repo
+    except Exception:
+        return repo
+
+
 def main(argv):
     if len(argv) == 2 and os.path.isdir(argv[1]):
         # AUTO mode: session_resolver.py <repo_root>
-        ledger, hyp, om_dir, repo_root = _auto_args(os.path.abspath(argv[1]))
+        ledger, hyp, om_dir, repo_root = _auto_args(os.path.abspath(_session_repo(argv[1])))
         try:
             run(ledger, hyp, om_dir, repo_root)
         except Exception:

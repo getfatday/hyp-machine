@@ -42,6 +42,9 @@ import json
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hyp_config import resolve_root  # shared, worktree-aware (one resolver for every hook)
+
 
 def parse_node(path):
     """Minimal YAML-frontmatter parser for policy nodes (no dependencies).
@@ -114,16 +117,6 @@ def path_matches(fpath, patterns, root):
         if not rel.startswith(".."):
             candidates.add(norm(rel))
     return any(fnmatch.fnmatch(c, norm(pat)) for c in candidates for pat in patterns)
-
-
-def resolve_root(payload):
-    root = os.environ.get("CLAUDE_PROJECT_DIR")
-    if root and os.path.isdir(root):
-        return root
-    cwd = payload.get("cwd")
-    if cwd and os.path.isdir(cwd):
-        return cwd
-    return os.getcwd()
 
 
 def policy_files(root):

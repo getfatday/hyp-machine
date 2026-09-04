@@ -22,7 +22,10 @@ Five mechanisms, each proven in the source lab before shipping:
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch-status.py" [--json] [--at <sha>]
 ```
 
-Repo root: `--root`, then `CLAUDE_PROJECT_DIR`, then the cwd. Requires the experiments
+Repo root: `--root`, then `CLAUDE_PROJECT_DIR`, then the cwd. (Hooks resolve their root through
+`hyp_config.resolve_root`, which since 0.3.2 prefers the payload cwd's toplevel when that cwd sits
+in a linked worktree of the `CLAUDE_PROJECT_DIR` repository — so a worktree-isolated session's
+Stop driver dispatches against the worktree's own HEAD.) Requires the experiments
 profile's directories (`hypotheses/`, a runs dir); with no hypotheses directory the
 dispatch is empty by construction.
 

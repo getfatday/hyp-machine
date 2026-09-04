@@ -262,6 +262,25 @@ One suite per skill under `evals/<skill>/<case>/case.yaml`; see `evals/README.md
 
 ## Changelog
 
+### 0.3.2 — worktree-aware hook root (issue #6)
+- **One resolver, the session's real tree** (lab H-DRAFT-e90628b6, counted 2x 5/5 zero-LLM): in a
+  worktree-isolated session `CLAUDE_PROJECT_DIR` keeps naming the launching checkout while the
+  hook payload's `cwd` lives in the worktree, so every hook graded the wrong tree — the Stop
+  driver let a consumer session end with five specs open on its branch. `hyp_config.resolve_root`
+  now returns the worktree's toplevel when the payload cwd sits in a **linked worktree of the same
+  repository** (decided from the `.git` pointer file and its `commondir`, the two files git reads;
+  no subprocess, ~1 ms), and keeps the 0.3.1 order byte-for-byte everywhere else (main checkout,
+  subdirectories, foreign repositories, submodules, non-git cwds, unset variable).
+- The policy interpreter imports that resolver instead of a private copy; `commit-backstop.py`
+  and `session_resolver.py` route their argv root through the same check; `rel_to_root` tolerates
+  symlinked prefixes (`/var` vs `/private/var`). Hardened after adversarial review of the counted
+  patch: pointer and `commondir` reads accept regular files only, bounded to 4 KB (a planted FIFO
+  no longer hangs the hook), and a cwd reached through a symlink into a worktree's interior
+  resolves to that worktree.
+- **Regression test shipped**: `python3 scripts/selftest-worktree-root.py` builds its own fixture
+  under a temp dir and checks the installed plugin (13 checks, exit 0 on PASS) — run it after any
+  change to the hooks.
+
 ### 0.3.1 — consumer-hardening patch (issues #3, #2)
 - **Fixture-freshness gate** (H-262, kept 5/5): preflight now re-hashes every `Fixture-SHA256:` pin
   and fails closed on drift, printing the blast radius (every co-pinning spec). Pin-less specs get
