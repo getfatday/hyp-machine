@@ -344,6 +344,20 @@ RLEOF
   fi
 fi
 
+# ADVISORY-32 hook-wiring parity (H-DRAFT-4c0dadb8-hook-wiring-parity): script bytes and
+# dashboard features are parity-checked (advisory 22) but hook WIRING was not, and it
+# drifted silently — guards that run on only one side of the lab-plugin boundary. The
+# lint normalizes .claude/settings.json and hooks/hooks.json into (event, matcher, guard)
+# rows and prints one HOOK-PARITY line per one-side-only row; this block prints the
+# count. Report-only, never blocks. Pin HOOK_PARITY_SETTINGS / HOOK_PARITY_HOOKS to
+# compare a different pair (tests, consumer installs).
+if [ -f scripts/hook-parity-check.py ] && [ -f "${HOOK_PARITY_SETTINGS:-.claude/settings.json}" ] && [ -f "${HOOK_PARITY_HOOKS:-hooks/hooks.json}" ]; then
+  hw=$(python3 scripts/hook-parity-check.py "${HOOK_PARITY_SETTINGS:-.claude/settings.json}" "${HOOK_PARITY_HOOKS:-hooks/hooks.json}" 2>/dev/null | grep -c "^HOOK-PARITY" || true)
+  if [ -n "$hw" ] && [ "$hw" != "0" ]; then
+    echo "ADVISORY-32 hook-wiring-parity: $hw hook guard row(s) run on only one side of the lab-plugin boundary (python3 scripts/hook-parity-check.py ${HOOK_PARITY_SETTINGS:-.claude/settings.json} ${HOOK_PARITY_HOOKS:-hooks/hooks.json} for detail; port each guard or record it as one-side-only)"; W=1
+  fi
+fi
+
 [ "$W" -eq 0 ] && echo "harden-check: clean (governance in sync, program.md current, tree clean, pushed)"
 :
 }
