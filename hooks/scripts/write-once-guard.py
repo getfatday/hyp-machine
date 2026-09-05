@@ -11,6 +11,11 @@ Deterministic deny rules:
     write-once entries; past entries are never rewritten.
   - Edit/Write/NotebookEdit on the base journal file: always denied — it is
     append-only history, and new entries are fragments.
+  - The event stream (`events_file`, default ledger/events.jsonl) joins the
+    same class (H-238 On-keep: the stream enters the write-once-guard class
+    beside the work ledger): Edit/NotebookEdit always denied, Write denied once
+    it exists — appends go through scripts/events_lib.py / emit-event.py (or
+    `>>`), never a rewrite. The Bash mistake-net below covers it too.
   - Bash: a mistake-net branch parses the command string and denies plain
     destructive forms aimed at an EXISTING file under the raw or fragment
     directories — rm/unlink/shred/truncate, mv (rename-away or overwrite),
@@ -73,13 +78,14 @@ def _deny_bash(rel, form):
 
 def guarded_existing(tok, root, cfg):
     """Repo-relative path when tok names an EXISTING path at or under the raw
-    or journal-fragment directories; else None."""
+    or journal-fragment directories, or the event stream file; else None."""
     if not tok or not isinstance(tok, str) or tok.startswith("-"):
         return None
     rel = rel_to_root(tok, root)
     if rel is None:
         return None
-    if not (in_dir(rel, cfg["raw_dir"]) or in_dir(rel, cfg["journal_dir"])):
+    if not (in_dir(rel, cfg["raw_dir"]) or in_dir(rel, cfg["journal_dir"])
+            or rel == cfg.get("events_file")):
         return None
     if os.path.exists(os.path.join(root, rel)):
         return rel
@@ -218,6 +224,15 @@ def main():
              "%s/<id>-<slug>.md (id = highest existing + 1) and refresh the "
              "compiled view with scripts/compile-journal.py."
              % (rel, cfg["journal_dir"]))
+
+    if rel == cfg.get("events_file"):
+        if tool in ("Edit", "NotebookEdit"):
+            deny("%s is the append-only event stream (H-238): records are never "
+                 "edited or reordered. Append through the plugin's "
+                 "scripts/emit-event.py (validated, idempotent) or `>>`." % rel)
+        if exists:
+            deny("%s already exists and the event stream is append-only. Append "
+                 "through scripts/emit-event.py or `>>` — never a rewrite." % rel)
 
     if in_dir(rel, cfg["raw_dir"]):
         if tool in ("Edit", "NotebookEdit"):
