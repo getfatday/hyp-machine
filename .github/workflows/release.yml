@@ -1,0 +1,39 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+# Runs serialize: a second push while a release is in flight waits its turn rather than
+# racing the tag. The release commit is pushed with GITHUB_TOKEN, which does not trigger
+# another run of this workflow; that is the desired behaviour.
+#
+# The job works on the CURRENT tip of main, never on the sha that triggered it: the
+# checkout is `ref: main`, and release.py --publish fetches and hard-resets to origin/main
+# before computing, pushes main first, and tags only after that push succeeded. A push
+# rejected as non-fast-forward (a changeset merged mid-run) discards the local release
+# commit and recomputes, so the late changeset is batched into the same release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Git identity for the release commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Consume changesets, bump, tag, publish
+        run: python3 scripts/release.py --repo . --publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

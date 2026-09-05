@@ -1,0 +1,17 @@
+name: changeset-check
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  changeset-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a changeset and protect the version and changelog
+        run: python3 scripts/changeset-check.py "origin/${{ github.base_ref }}" HEAD
