@@ -137,6 +137,7 @@ config files and CLAUDE.md rules blocks in place.
 | `scripts/rule-lint.py` | The four-class rule-currency lint: RULE-EXPIRED, unlicensed rules, scope creep, carrier drift — counted H-248; an expiry files a `rule-retest` decision (H-249) through the decision kit |
 | `scripts/incident-anchors-lint.py` | Autopsy honesty lint: every claim line in a collected incident must end with one checkable `[anchor: ...]` that actually verifies (path+mtime or cmd+output) — H-252 kit |
 | `scripts/fidelity-manifest.py` | Declare-then-verify move manifests: source sha256s + destinations recorded BEFORE a move/merge/consolidate executes, `--verify` re-checks after — H-104 port |
+| `scripts/id-rectify.py` + `scripts/selftest-id-allocation.py` | The land-time id gate: allocates the canonical id for a draft handle at land and renumbers any colliding fragment id, rewriting every in-branch reference; see `docs/id-allocation.md` |
 | `scripts/lane-takeover.py` | The claim door: TTL-gated takeover of another executor's lane — typed exit-3 refusal while the heartbeat is fresh, attributed record committed BEFORE any lane write on grant — counted H-216 |
 | `scripts/dispatch-gate.py` | The shared relaunch governor: permit/deny consults + K-strikes quarantine (K=2) behind one committed decision card only a human ruling closes — counted H-218 |
 | `scripts/hyp-resume.sh` + `scripts/install-resume-timer.sh` + `scripts/resume-prompt.md` | The reboot-surviving scheduled resume: emitted (never auto-loaded) launchd plist, one dispatch read + at most one capped adoption per firing — counted H-217 |
@@ -289,6 +290,11 @@ One suite per skill under `evals/<skill>/<case>/case.yaml`; see `evals/README.md
   taking its wall off the stop hot path (455 ms -> ~1.4 ms added p50) with dashboard freshness
   preserved 10/10 and zero error rows. One hooks.json flag; the script's bytes and the
   SessionStart entries are untouched.
+
+- **Consumer contract and regression test**: `docs/id-allocation.md` (the rule, the lander's
+  commands, exit codes, tolerances, upgrade and rollback) and
+  `python3 scripts/selftest-id-allocation.py` (47 checks, including the tolerances for a
+  fragment without an integer id, a hash-less handle, and a handle inside a filename).
 
 ### 0.3.2 — worktree-aware hook root (issue #6)
 - **One resolver, the session's real tree** (lab H-DRAFT-e90628b6, counted 2x 5/5 zero-LLM): in a
