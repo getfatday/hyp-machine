@@ -106,6 +106,26 @@ Fragments are write-once — never modify one after creation; no author names in
 blame is attribution). Update the hypothesis file's Status and Runs table. Never rewrite past
 fragments.
 
+## North star and checkpoints
+
+A north-star file (`ledger/north-stars/<slug>.md`, from
+`${CLAUDE_PLUGIN_ROOT}/templates/north-star.md`; convention in `ledger/north-stars/README.md`)
+names one destination and the conditions that must be true to reach it. It stores no status:
+every condition's state is derived at HEAD from the resolver it is bound to.
+
+- **Bind a spec to a condition.** Add one row: `| C-NN | <what must be true> | hypothesis |
+  H-NNN | hypothesis-kept=H-NNN | <needs or -> |`. Use `hypothesis-verdict=H-NNN` when a
+  discard answers the question too. A verdict landing in the spec's `## Status` is all it takes
+  — never edit the north-star file to record it. Lint before committing:
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/north-star-check.py" --strict`.
+- **Run checkpoint (advisory).** After the grade lands, the grade leg MAY compile the run's
+  single-file page: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-run-checkpoint.py"
+  experiments/runs/<id>/run-<k>` writes `run-checkpoint.html` beside `grade.txt` (typed refusal
+  codes 10-15 when spec and run disagree; a refusal never blocks the grade or the journal).
+- **Progress page.** `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-north-star-progress.py"
+  ledger/north-stars/<slug>.md` renders `north-star-progress.html` beside the file (frontier,
+  distance, replay over sampled commits); `--check PAGE` exits 1 when it is stale.
+
 ## Rules
 
 - No run without a spec; no verdict without assertions; no unjournaled runs.

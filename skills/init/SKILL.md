@@ -13,7 +13,7 @@ repository adopts, and you can upgrade later by re-running init with a higher pr
 | Profile | Adds |
 |---|---|
 | `capture` (default) | Write-once raw capture, distilled notes, the wiki index, write-once journal fragments, the compiled dashboard, guard rules |
-| `experiments` | Everything above, plus the hypothesis loop: `hypotheses/` + spec template, `experiments/runs/`, the deterministic preflight, the run gate |
+| `experiments` | Everything above, plus the hypothesis loop: `hypotheses/` + spec template, `experiments/runs/`, the deterministic preflight, the run gate, and `ledger/north-stars/` with its README (the north-star file convention — nothing else is scaffolded there; see the plugin's `docs/north-star.md`) |
 | `modeling` | Everything above, plus the operating-model lifecycle: `operating-model/` (SCHEMA copy, per-context catalog + glossary + sources seam) and interpreter-enforced policy nodes |
 
 The plugin's hooks are only active while the plugin is enabled; the artifacts this step
@@ -28,7 +28,8 @@ the installed scripts) are the durable layer that survives a plugin disable.
    rename never silently downgrades an experiments or modeling repository. Default paths: raw
    `research/raw/`, notes `research/notes/`, index `research/index.md`, journal fragments
    `experiments/journal-fragments/`; experiments adds specs `hypotheses/`, template
-   `hypotheses/TEMPLATE.md`, runs `experiments/runs/`, preflight `experiments/preflight.py`;
+   `hypotheses/TEMPLATE.md`, runs `experiments/runs/`, preflight `experiments/preflight.py`,
+   north-star files `ledger/north-stars/` (README only; the directory is fixed, not a flag);
    modeling adds `operating-model/` with one context directory (default context = the
    repository directory name). Use the defaults unless the user asked for different
    locations.
