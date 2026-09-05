@@ -10,10 +10,10 @@ the rest of hyp uses (`hypothesis-kept=H-NNN`, `hypothesis-verdict=H-NNN`,
 `decision-resolved=DEC-NNN`, `path-exists=...`). The defining constraint is that the file
 stores no status. `scripts/north-star-check.py` derives every condition's state at the commit
 you ask about — done, open, retired, or unbound — from the committed resolver state, so a
-verdict landing in a spec is all it takes to move the map, and nobody ever edits the map to
-record it. A `needs` column expresses prerequisites, including outcome-conditioned ones
-(`C-03:yes`): when a prerequisite resolves the other way, the dependent condition retires
-itself, with zero edits.
+verdict landing in a spec is all it takes to move the north-star file, and nobody ever edits that
+file to record it. A `needs` column expresses prerequisites, including outcome-conditioned ones
+(`C-03:yes`): when a prerequisite resolves the other way, the dependent condition retires itself,
+with zero edits.
 
 Two compilers turn committed bytes into pages a human can open:
 
@@ -97,8 +97,8 @@ when there is a real destination to point at.
 - A verdict landing in a spec's `## Status` changes the derived vector on the next read without
   any edit to the north-star file (`git log -- ledger/north-stars/` shows only rows added, never
   status changed).
-- `python3 scripts/north-star-check.py --at <older-sha>` reproduces the vector the map had at
-  that commit, byte for byte in `--json`.
+- `python3 scripts/north-star-check.py --at <older-sha>` reproduces the vector the north-star
+  file had at that commit, byte for byte in `--json`.
 - After a discard, every condition that needed `C-NN:yes` on that hypothesis reads
   `retired:C-NN` and the distance drops — with no file edit.
 - `run-checkpoint.html` opens from the file system, every link on it resolves, every number on
@@ -114,8 +114,8 @@ Provenance: the three keeps of the source lab's destination-map wave (2026-09-04
 fragments 0259 and 0260): `H-DRAFT-2cae0933-derived-condition-status` (kept 2x 5/5),
 `H-DRAFT-2cae0933-run-checkpoint-fidelity` (kept 2x 5/5),
 `H-DRAFT-2cae0933-north-star-progress-view` (kept 2x 5/5); the lab's own north-star file for
-the wave was the first real map and its progress page the first real "where are we" view. The
-four-section frame of this page (what it does / when to reach for it / common questions / it is
-working if) is the docs-page pattern the lab's pattern census kept as a gap worth adopting from
-an external repository; the terms here are the lab's own (north-star file, condition,
-frontier, horizon, excluded, retired, distance, checkpoint).
+the wave was the first real north-star file and its progress page the first real "where are we"
+view. The four-section frame of this page (what it does / when to reach for it / common questions
+/ it is working if) is the docs-page pattern the lab's pattern census kept as a gap worth
+adopting from an external repository; the terms here are the lab's own (north-star file,
+condition, frontier, horizon, excluded, retired, distance, checkpoint).
