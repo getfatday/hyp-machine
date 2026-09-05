@@ -100,13 +100,14 @@ config files and CLAUDE.md rules blocks in place.
 | `compile` | modeling | Regenerate executable artifacts (workflows, runners, skills, rule blocks) deterministically from model nodes |
 | `run` | modeling | Execute a compiled flow to a mechanical verdict (adopt-first refusal routing) |
 | `verify` | modeling | Controlled A/B experiments over way-of-working interventions |
+| `runs` | experiments | Compile and open the run-census dashboard — what ran, verdicts, cost, busy/idle (H-269; see `docs/event-stream.md` for the layer it reads beside) |
 | `durability-check` | — | Walk the work-graph re-hydration protocol after any context loss: verify from the graph observe-only, assert back in writing, dispatch by the recomputed frontier, end only at an empty frontier or a FAILURE record — counted H-231 (see `docs/workgraph.md`) |
 
 ## What ships
 
 | Component | Purpose |
 |---|---|
-| `skills/` | The ten skills above |
+| `skills/` | The eleven skills above |
 | `hooks/hooks.json` + `hooks/scripts/` | Deterministic guards (see table below) |
 | `scripts/compile-journal.py` | Renders the compiled journal view from write-once fragments (copied into your repo by init) |
 | `scripts/compile-dashboard.py` | Compiles a DASHBOARD.md status projection from your repo's own ledger and journal fragments (every source is optional) — v3 renders DECISIONS WAITING first as AskUserQuestion-grammar cards, normalizes three ledger row shapes, and regenerates `decisions.html` from the template at every compile (see `docs/decisions.md`) |
@@ -117,7 +118,12 @@ config files and CLAUDE.md rules blocks in place.
 | `scripts/flow-metrics.py` | Typed waste detector: machine-joinable `FLOW <CLASS> lane=...` lines over five classes (idle-runnable, stale-gate, unruled-terminal, void-cluster, WIP-breach) — counted H-192; joins `waste-status.py`, the prose report |
 | `scripts/identity-resolve.py` | Per-user attribution + the YOURS/OTHERS lens: mailmap-canonicalized registering-commit owners, agent-assist disclosure from Co-authored-by trailers, render-time acting-as, offline initials avatars — counted H-156 |
 | `scripts/derive-metrics.py` | Deterministic metric derivation into an append-only time series with `--trend` direction verdicts against each metric node's declared direction-of-good — counted H-129 |
-| `scripts/emit_workflow_fact.py` + `scripts/harvest_gwt.py` + `scripts/facts_lib.py` | The workflow-facts loop: one validated fact record per workflow close (idempotent, append-only) and the gate→GWT harvester emitting candidate `gwt-case/v1` records onto their owning slice — counted H-118 |
+| `scripts/emit_workflow_fact.py` + `scripts/harvest_gwt.py` + `scripts/facts_lib.py` | The workflow-facts loop: one validated fact record per workflow close (idempotent, append-only) and the gate→GWT harvester emitting candidate `gwt-case/v1` records onto their owning slice — counted H-118; each real close now also lands one `event/workflow-closed` stream record (H-238 choke point, experiments profile) |
+| `scripts/events_lib.py` + `scripts/emit-event.py` + `templates/event-nodes/` | The unified event stream: the frozen record grammar with node-validated, canonical-bytes idempotent append, the five choke-point verbs as one gated CLI, and the five canonical event nodes — counted H-238 (see `docs/event-stream.md`) |
+| `scripts/watch-dispatch.py` + `scripts/install-watch-plist.sh` | Watch-triggered dispatch: the kqueue foreground watcher (debounced, silent start) and the launchd WatchPaths plist emitted beside the interval plist — both emitted, never auto-loaded; same H-217 firing contract — counted H-240 |
+| `scripts/events-consume.py` | The licensed event consumer: action iff a committed policy node's `trigger:` names the event and its `then:` fully resolves to command nodes, else the kept degrade rule (advisory → read-model → nothing); actions stub-recorded, never executed — counted H-241 |
+| `scripts/selftest-events.py` | Consumer-runnable event-stream smoke: two appends land, replays land zero, the resolver surfaces exactly once and the cursor advances, and the H-239 byte-compare contract holds (strip-proof additivity + byte-identical non-event output) |
+| `scripts/runs-dashboard.py` + `scripts/runs-census.py` | The runs dashboard: one deterministic, self-checking offline page over the attempt census (one row per run attempt in your own runs dir; void/stopped/budget as their own classes; `--grafana` flat export) — counted H-269; the census carries the H-254 future-date clamp |
 | `scripts/render-case-study.py` + `scripts/fact_fidelity.py` + `scripts/content_lint.py` + `scripts/jargon.json` | The per-keep case-study renderer with its frozen fact grammar and content lint: every number extracted from artifact bytes, every quote byte-verified, fail-closed self-checks — counted H-201 |
 | `scripts/init-scaffold.py` | The deterministic profile-gated scaffold init runs |
 | `scripts/preflight.py` | The deterministic spec preflight (copied into your repo by init at the experiments profile) |
@@ -175,13 +181,13 @@ every mechanism ships three ways:
 
 | Event | Behavior |
 |---|---|
-| PreToolUse (`Edit\|Write\|NotebookEdit\|Bash`) | Write-once guard: Edit/NotebookEdit under the raw directory is always denied; Write there is denied only when the target already exists (creation stays legal, including shell heredoc creation). Journal fragments get the same shape; the base journal file is fully frozen. The Bash branch is a mistake-net denying plain destructive commands aimed at an existing raw file or fragment. |
-| PreToolUse (same matcher) | Generic policy interpreter: reads `operating-model/*/policies/*.md` as data. `enforcement: hook` nodes with a `mechanism:` block deny; `enforcement: advisory` nodes print one advisory line and never affect the exit code. No model, no effect. |
+| PreToolUse (`Edit\|Write\|NotebookEdit\|Bash`) | Write-once guard: Edit/NotebookEdit under the raw directory is always denied; Write there is denied only when the target already exists (creation stays legal, including shell heredoc creation). Journal fragments get the same shape; the base journal file is fully frozen; the event stream (`events_file`) joins the class — append-only, edits and rewrites denied, `>>` and the emitters stay legal. The Bash branch is a mistake-net denying plain destructive commands aimed at an existing raw file, fragment, or the stream. |
+| PreToolUse (same matcher) | Generic policy interpreter: reads `operating-model/*/policies/*.md` as data. `enforcement: hook` nodes with a `mechanism:` block deny; `enforcement: advisory` nodes print one advisory line and never affect the exit code. No model, no effect. At the experiments profile each surfaced advisory also lands one `event/advisory-surfaced` record on the event stream (H-238; inert until the event node is committed, fails silent). |
 | PreToolUse (`Bash`, run-shaped) | Preflight gate (experiments profile): headless agent invocations tied to an experiment are denied when the spec is missing or fails the shipped preflight. |
 | PreToolUse (`Bash`, `git commit`) | Advisory backstop (experiments profile): a tinker-shaped commit with no hypothesis spec staged prints a one-line nudge. Never blocks. |
 | PreToolUse (`Edit\|Write\|MultiEdit`) | License-join advisory on rule-carrier writes (H-250): adding a standing rule without a resolvable license citation prints one `RULE-LICENSE` line and logs the fire. Advisory only — never blocks. |
 | UserPromptSubmit | Capture-intent nudge on phrases like "note this" / "save that". Precision-first; silent otherwise. |
-| SessionStart | Standing rules pointer + drift check against the plugin's canonical templates; uncommitted-capture warning; stale-dashboard check and refresh; ledger resolver (`hooks/scripts/session_resolver.py`): open decisions surface first (`DECISION-LEDGER` lines + summary), then unresolved intent/amendment/commitment/directive rows, capped at 20 lines. |
+| SessionStart | Standing rules pointer + drift check against the plugin's canonical templates; uncommitted-capture warning; stale-dashboard check and refresh; ledger resolver (`hooks/scripts/session_resolver.py`): open decisions surface first (`DECISION-LEDGER` lines + summary), then unresolved intent/amendment/commitment/directive rows, then the events-cursor join (H-239): stream records this session has not yet seen surface exactly once (`EVENT-STREAM` lines + one `EVENTS-NEW` summary), silent afterwards; per-session cursor in runtime `.claude/events-cursor/`, non-event output byte-unchanged. Capped at 40 lines. |
 | Stop | Verdict-gated dispatch (experiments profile): non-empty dispatch with cap headroom re-presents the TOP open item by name — ending a cycle is permitted only by the committed artifact check, never a promise string; frozen caps (12 cycles / 1800 s per lineage) then it stands down; `touch .claude/stop-snooze` silences it 24 h (see `docs/workgraph.md`). Unjournaled-work backstop (blocks once with instructions when new knowledge files have no journal fragment); dashboard refresh. |
 
 All hook scripts are stdlib-only Python, fail open on any error, and use consumer-generic
@@ -208,6 +214,7 @@ read it. All paths are repo-relative.
 | `followups_file` | `hypotheses/FOLLOWUPS.md` (the licensed follow-up lanes the dispatch REFILL reads; grammar in `docs/workgraph.md`) |
 | `preflight_file` | `experiments/preflight.py` |
 | `model_dir` | `operating-model` |
+| `events_file` | `ledger/events.jsonl` (the unified event stream — append-only, write-once-guarded; see `docs/event-stream.md`) |
 | `context` | the repository directory name (slugified) |
 
 ## Install parity
