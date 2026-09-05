@@ -30,8 +30,8 @@ and `--check`-able. Neither computes a number the sources do not carry.
 A repository may carry many destinations (the lab's fixture is shaped like a portfolio of 22
 strategies and 3 programs, each with its own owner). A plain `north-star-check.py` invocation
 reads every committed `ledger/north-stars/*.md` in one pass; each file derives independently
-and its per-file output is byte-unchanged. When more than one file is read the checker also
-emits a `set` block (`--json` top-level key `set`; in text, a trailing `set:` block), reduced
+and its per-file output is byte-unchanged. Whenever at least one file is read the checker also
+emits a `set` block (a one-destination reduction while only one file exists) (`--json` top-level key `set`; in text, a trailing `set:` block), reduced
 from the per-file blocks alone — no file gains a field and no authored order between files
 exists. `union_frontier` lists each distinct effective lane once with the `<slug>#C-NN` pairs
 it closes (`serves`), the count of binding files (`n_serves`), the smallest per-file distance
