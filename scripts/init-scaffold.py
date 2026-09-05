@@ -343,7 +343,7 @@ def main():
                     render(template("HYPOTHESIS-TEMPLATE.md"), cfg), "spec template")
         install_script(root, cfg["preflight_file"], ("scripts", "preflight.py"),
                        "deterministic spec pre-flight")
-        # 0.4.0 destination map: the north-star convention (one tracked file per
+        # Destination-map program (lab H-DRAFT-2cae0933): the north-star convention (one tracked file per
         # destination under ledger/north-stars/, status derived at read time by the
         # plugin's scripts/north-star-check.py). Only the README is scaffolded --
         # consumer-owned once created, no .gitkeep, no example file.

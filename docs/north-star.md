@@ -81,7 +81,7 @@ established corpus most of those predate the file. Pass `--stops <file>` naming 
 which the file exists (`git log --format=%H -- ledger/north-stars/<slug>.md` is the list);
 HEAD is always appended. The lab's own first page was compiled this way.
 
-**Can I compile a checkpoint for a run that was graded before 0.4.0?** Yes, if the run
+**Can I compile a checkpoint for a run that was graded before this release?** Yes, if the run
 directory has results.json, grade.txt and verdict.json and the spec is reachable
 (`<root>/hypotheses/<LANE>-*.md`, or `--spec`). The lab's first real checkpoints were compiled
 for runs graded days earlier.
