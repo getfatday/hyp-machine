@@ -93,7 +93,13 @@ them. Run `/hyp:init` once per repository to scaffold everything.
    would plausibly start from, and added to the index file as one line under the right section:
    `- [<title>](<relative path>) — <one-line summary>`. A file nothing points to is lost.
 4. **Journal** — record the arrival as one write-once fragment
-   `<journal dir>/<id>-<slug>.md`, where id = highest existing fragment id + 1. Create it via
+   `<journal dir>/<id>-<slug>.md`. The id follows the draft-then-allocate contract (lab
+   H-148): landing immediately on the default branch, take the next free integer re-checked
+   right before the write; on any other branch write the same next free integer — it is a
+   draft claim, and the lander's id gate (`scripts/id-rectify.py`) renumbers colliding
+   incoming fragment ids at land. A fragment id is always an integer; never put a hash or a
+   draft handle in a fragment filename (a hypothesis's `H-DRAFT-<hash8>` handle belongs in
+   the fragment's text, where it cites the spec). Create it via
    `tee` heredoc like raw files (the settings deny protects existing records; creation flows
    through `tee`):
 

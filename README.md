@@ -262,6 +262,34 @@ One suite per skill under `evals/<skill>/<case>/case.yaml`; see `evals/README.md
 
 ## Changelog
 
+### 0.3.3 — fail-closed dispatch, draft-then-allocate ids (issues #8, #4)
+- **Fail-closed dispatch read** (lab H-280, kept twice at 5/5 with write-ahead proof; fixes #8): the
+  Stop driver no longer grades a failed dispatch read (timeout, nonzero exit, unparseable output) as
+  an allow — the open-work state is unknown, not a pass. The first consecutive failure blocks the
+  stop once (exit 2) with a visible retry reason; a second consecutive failure allows under the
+  typed reason `dispatch-error-open` instead of `hook-error`, so a persistently failing read costs
+  at most one extra cycle and can never trap a session. A durable `dispatch-read-start` line lands
+  in `.claude/stop-driver/hook-log.jsonl` before every read, so a hook killed by the outer Stop
+  budget still leaves a trace; error records carry `elapsed_s` / `error_class` / `fail_streak`.
+  Healthy-path decisions stay byte-identical to the previous release.
+- **Draft-then-allocate ids and the land-time id gate** (lab H-293, kept 5/5 — 16/16 concurrent
+  registrations landed where the stock tree collided in 4 of 4 cohorts; lab H-295, kept 5/5 — the
+  contract survives a cold-session resume in an offline consumer repository; fixes the id half
+  of #4 — the run-directory half stays open): registering on the default branch and landing
+  immediately still takes `H-NNN`; on any other branch the spec is
+  `hypotheses/H-DRAFT-<hash8>-<slug>.md` and the handle stands in wherever the id would appear,
+  with fragment ids under the same contract. The new `scripts/id-rectify.py` gate allocates
+  canonical ids at land — collision renumber, draft allocation and dedupe, fragment-id allocation,
+  tolerant of a fragment without an integer id, a hash-less handle, and a handle inside any
+  filename — and `--lint` names each finding class on the unrepaired branch.
+  `skills/hypothesis`, `skills/intake`, and both templates carry the contract. Nothing historical
+  is renamed; downgrading restores the next-free rule with zero corpus damage.
+- **Async dashboard recompile** (lab H-291, kept 5/5): the Stop-event `compile-dashboard.py
+  --quiet` entry is consumer-less — nothing reads its stdout — and now carries `"async": true`,
+  taking its wall off the stop hot path (455 ms -> ~1.4 ms added p50) with dashboard freshness
+  preserved 10/10 and zero error rows. One hooks.json flag; the script's bytes and the
+  SessionStart entries are untouched.
+
 ### 0.3.2 — worktree-aware hook root (issue #6)
 - **One resolver, the session's real tree** (lab H-DRAFT-e90628b6, counted 2x 5/5 zero-LLM): in a
   worktree-isolated session `CLAUDE_PROJECT_DIR` keeps naming the launching checkout while the

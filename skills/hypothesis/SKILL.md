@@ -28,8 +28,29 @@ Run `/hyp:init --profile experiments` once per repository to scaffold everything
 
 ## 1. Spec before anything runs
 
-- If the hypothesis isn't registered yet, create `hypotheses/H-NNN-<slug>.md` from
-  `hypotheses/TEMPLATE.md` (next NNN = highest existing + 1, starting at 001 when none exist).
+- If the hypothesis isn't registered yet, create the spec from `hypotheses/TEMPLATE.md`. The
+  id follows the draft-then-allocate contract (lab H-148, kept 2x5/5 — concurrent next-free
+  registrars collided in 4 of 4 measured cohorts):
+  - Registering on the default branch and landing immediately: take
+    `hypotheses/H-NNN-<slug>.md` with NNN = one above the largest landed spec number (H-001
+    when none exist), re-checking next-free immediately before the write — the lander is you,
+    so mint-at-land collapses to this.
+  - Registering on any other branch, in a clone, or whenever the land is not immediate: name
+    it `hypotheses/H-DRAFT-<hash8>-<slug>.md`. hash8 is REQUIRED and is computed, never
+    invented or left out: after writing the spec body to a temp file, run
+    `{ cat <tmp>; git branch --show-current; date -u +%Y-%m-%dT%H:%M; } | shasum -a 256 | cut -c1-8`
+    and use the eight hex characters it prints (a filename like `H-DRAFT-my-slug.md` with no
+    hash is malformed). The draft handle `H-DRAFT-<hash8>` stands in wherever
+    the id would appear — spec filename, spec title, and every citation, including the text of
+    the journal fragment that records the registration. Never claim a numeric id off the
+    default branch. The canonical `H-NNN` is allocated AT LAND by the
+    lander running the id gate (`python3 scripts/id-rectify.py --repo . --base <canon>
+    --head <branch>`), which renumbers the draft and mechanically rewrites every in-branch
+    reference — rectification is the allocation. Journal-fragment ids are ALWAYS integers:
+    name the fragment `<next free integer>-<slug>.md` with a matching `id:` line exactly as on
+    the default branch (never a hash or a handle in a fragment filename); off the default
+    branch that integer is a draft claim, and the id gate renumbers colliding incoming
+    fragment ids at land.
   If the repository keeps a human-edited directives file, read it first for current direction —
   and never edit it.
 - Registering a spec is itself a capture: file it through the `intake`
@@ -76,7 +97,9 @@ Run `/hyp:init --profile experiments` once per repository to scaffold everything
 ## 4. Journal (always, including failures)
 
 Record the run through the capture layer's journal discipline: one write-once
-fragment `<journal dir>/<id>-<slug>.md` (id = highest existing fragment id + 1) with
+fragment `<journal dir>/<id>-<slug>.md` (id = always an integer, never a hash or handle:
+the next free integer re-checked at land when you are the lander; on any other branch it is a
+draft claim the land-time id gate renumbers on collision) with
 frontmatter `id:`, `date:`, and `type: run`, carrying the hypothesis id, what happened,
 assertion results (n/m with failures listed), the verdict, and links to the run artifacts.
 Fragments are write-once — never modify one after creation; no author names in the text (git

@@ -23,15 +23,26 @@ dispatch no longer lists it at HEAD.
 Decision order at every Stop:
   1. profile below `experiments`, snoozed (.claude/stop-snooze <24h -- the standing
      kill-switch for this surface), or no dispatch surface        -> allow
-  2. dispatch empty (all eligible items landed at HEAD)           -> allow, reason
+  2. dispatch read FAILED (timeout, nonzero exit, unparseable output) -- the
+     open-work state is UNKNOWN, never graded like a pass (issue #8: a 45 s
+     TimeoutExpired on a slow disk used to end the session as allow/hook-error
+     with empty stderr): first consecutive failure               -> BLOCK: exit 2
+     once, with a visible retry reason on stderr; second consecutive failure
+     -> allow under the typed reason dispatch-error-open carrying the error
+     class, so a persistently failing read costs at most one extra cycle and
+     can never trap a session. Error records carry structured elapsed_s /
+     error_class / root. A durable read-start line lands in the log BEFORE the
+     read, so a hook killed by the outer Stop budget still leaves a trace.
+  3. dispatch empty (all eligible items landed at HEAD)           -> allow, reason
      artifact-check-pass (basis recorded: landed map + HEAD sha, from git only)
-  3. no cap headroom (cycles or lineage wall exhausted)           -> allow, reason
+  4. no cap headroom (cycles or lineage wall exhausted)           -> allow, reason
      cap-headroom-exhausted
-  4. otherwise                                                    -> BLOCK: exit 2
+  5. otherwise                                                    -> BLOCK: exit 2
      with the top open item re-presented on stderr (the documented Stop-hook path
      that reaches the model), cycle counter incremented
 
-Never crashes a session: any internal error logs a traceback and allows the stop
+Never crashes a session: the dispatch read's own failures grade fail-closed-once
+as above; any OTHER internal error still logs a traceback and allows the stop
 with reason hook-error -- defects surface in the log instead of hiding. Every
 invocation appends one JSON line to .claude/stop-driver/hook-log.jsonl (the
 exit-honesty audit trail). Caps are frozen here (the lab's H-158 law: constants
@@ -155,7 +166,54 @@ def main():
                         detail=surface)
             log_line(runtime, base)
             return 0
-        d = dispatch(root, surface)
+        # Fail-closed-once (H-280, issue #8). The dispatch read is the only
+        # call here that can burn the 45 s inner budget, and a hook killed by
+        # the OUTER Stop budget writes nothing at all -- so land a durable
+        # read-start line BEFORE the read, then grade any read failure as
+        # UNKNOWN: block once with a visible retry reason; allow only on the
+        # second consecutive failure, typed dispatch-error-open. The retry
+        # block leaves the cycle counter alone -- its own counter, the fail
+        # streak, caps at 2, so it can never trap a session.
+        wa = dict(base)
+        wa.update(phase="dispatch-read-start", root=root)
+        log_line(runtime, wa)
+        t_read = time.monotonic()
+        try:
+            d = dispatch(root, surface)
+            read_error = None
+        except Exception as e:
+            read_error = e
+        elapsed_s = round(time.monotonic() - t_read, 3)
+        if read_error is not None:
+            streak = int(st.get("dispatch_fail_streak") or 0) + 1
+            st["dispatch_fail_streak"] = streak
+            os.makedirs(runtime, exist_ok=True)
+            save_state(spath, st)
+            with open(os.path.join(runtime, "hook-errors.log"), "a",
+                      encoding="utf-8") as f:
+                f.write(traceback.format_exc() + "\n")
+            base.update(elapsed_s=elapsed_s,
+                        error_class=type(read_error).__name__, root=root,
+                        fail_streak=streak, detail=str(read_error)[:300])
+            if streak >= 2:
+                base.update(decision="allow", reason="dispatch-error-open")
+                log_line(runtime, base)
+                return 0
+            base.update(decision="block", reason="dispatch-error-retry",
+                        mechanism="exit2-stderr")
+            log_line(runtime, base)
+            print("Work dispatcher: the dispatch read did not complete "
+                  "(%s after %.1fs), so the open-work state is UNKNOWN and "
+                  "this stop is blocked once as a retry. Stop again: a "
+                  "completed read resumes normal grading; a second "
+                  "consecutive failure ends the session under the typed "
+                  "reason dispatch-error-open. (Trail: "
+                  ".claude/stop-driver/hook-log.jsonl)"
+                  % (type(read_error).__name__, elapsed_s), file=sys.stderr)
+            return 2
+        if st.get("dispatch_fail_streak"):
+            st.pop("dispatch_fail_streak", None)
+            save_state(spath, st)
         open_items = d.get("open", [])
         landed = d.get("landed", {})
         base.update(head=d.get("at"), corpus=d.get("corpus"),
