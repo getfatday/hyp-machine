@@ -16,9 +16,9 @@ re-running with a higher profile upgrades in place.
 Idempotent and re-runnable: creates what is missing, repairs the plugin-owned
 canonical artifacts (the config file, the CLAUDE.md marker block, the settings
 deny rules, the installed scripts), and never overwrites consumer-owned content
-(the index, notes, raw files, fragments, registered specs, an edited template,
-model nodes, or an existing GOVERNANCE.md). Re-running with the same inputs is
-a byte-level no-op. Prints one line per artifact: created / updated /
+(the index, notes, raw files, fragments, the ledger, registered specs, an edited
+template, model nodes, or an existing GOVERNANCE.md). Re-running with the same
+inputs is a byte-level no-op. Prints one line per artifact: created / updated /
 unchanged / kept / migrated.
 
 Migration: a repository initialized by the retired predecessor plugins is
@@ -44,6 +44,9 @@ from hyp_config import (CONFIG_RELPATH, DEFAULTS, LEGACY_CONFIG_RELPATH,  # noqa
                         PROFILES, render)
 
 PATH_KEYS = [k for k in DEFAULTS if k not in ("profile", "context", "model_dir")]
+# The work ledger: the append-only JSONL store that scripts/decisions.py, the
+# session resolver, and dashboard sections 1-2 all read at this default path.
+LEDGER_RELPATH = os.path.join("ledger", "ledger.jsonl")
 
 # LEGACY-MIGRATION-BEGIN (data: the retired predecessor plugins' artifact names;
 # these literals exist only so init can adopt repositories they initialized)
@@ -111,6 +114,17 @@ def ensure_dir(root, reldir, label):
         if not os.listdir(path):
             write(keep, "")
         print("unchanged %s/  (%s)" % (reldir, label))
+
+
+def ensure_ledger(root, relpath, label):
+    """created / unchanged: the ledger is append-only consumer data, so an
+    existing file is never compared against a canonical or rewritten."""
+    path = os.path.join(root, relpath)
+    if read(path) is None:
+        write(path, "")
+        print("created   %s  (%s)" % (relpath, label))
+    else:
+        print("unchanged %s  (%s — append-only, never rewritten)" % (relpath, label))
 
 
 def migrate_legacy_config(root, cfg):
@@ -328,6 +342,7 @@ def main():
     ensure_dir(root, cfg["raw_dir"], "raw verbatim sources, write-once")
     ensure_dir(root, cfg["notes_dir"], "distilled notes")
     ensure_dir(root, cfg["journal_dir"], "write-once journal fragments")
+    ensure_ledger(root, LEDGER_RELPATH, "work ledger: decisions, commitments, claims")
     ensure_file(root, cfg["index_file"], template("index.md"), "wiki index seed")
     ensure_file(root, "GOVERNANCE.md", template("GOVERNANCE.md"),
                 "behavioral invariants")
