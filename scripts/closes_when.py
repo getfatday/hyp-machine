@@ -13,20 +13,25 @@ Grammar (at most one bracket per line, appended to the committing line):
 
 parsed by:
 
-    \\[closes-when:\\s*(path-exists|commit-grep|hypothesis-kept|maintainer-ruling|decision-resolved)=([^\\]]+)\\]
+    \\[closes-when:\\s*(path-exists|commit-grep|hypothesis-kept|hypothesis-verdict|maintainer-ruling|decision-resolved)=([^\\]]+)\\]
 
 Unknown predicate or empty argument = malformed. The design treats "malformed" and
 "bracket absent" identically -- both are "no valid closes-when" -- so parse_bracket()
 returns None for both.
 
-All five predicates are evaluated read-only, against committed (HEAD) state ONLY, never
+All six predicates are evaluated read-only, against committed (HEAD) state ONLY, never
 the working tree: "committed at HEAD" (path-exists), "some commit message" (commit-grep),
-"landed as kept ... at HEAD" (hypothesis-kept), "some committed filename" (maintainer-
-ruling), "an accepted|denied decision-resolution row in the ledger at HEAD"
+"landed as kept ... at HEAD" (hypothesis-kept), "landed as kept OR discarded at HEAD"
+(hypothesis-verdict: the question is answered either way -- a discard closes a condition
+whose question a null settles; added with the destination-map ship, lab lane
+H-DRAFT-2cae0933-derived-condition-status kept 2x 5/5), "some committed filename"
+(maintainer-ruling), "an accepted|denied decision-resolution row in the ledger at HEAD"
 (decision-resolved, decisions-schema.md section 4) -- the Durability invariant
 ("uncommitted work effectively does not exist").
 
-Stdlib + git only. No network. No writes.
+Stdlib + git only. No network. No writes. `python3 closes_when.py --selftest` builds a
+throwaway repository and proves the two hypothesis predicates on kept / discarded / draft
+specs (exit 0 iff every check passes).
 """
 import json
 import re
@@ -36,8 +41,8 @@ from pathlib import Path
 # ---------- bracket grammar ----------
 
 CLOSES_WHEN_RE = re.compile(
-    r"\[closes-when:\s*(path-exists|commit-grep|hypothesis-kept|maintainer-ruling"
-    r"|decision-resolved)=([^\]]+)\]"
+    r"\[closes-when:\s*(path-exists|commit-grep|hypothesis-kept|hypothesis-verdict"
+    r"|maintainer-ruling|decision-resolved)=([^\]]+)\]"
 )
 
 # Shared with commitment_lint.py's On-keep-block gating: both need "what word does this
@@ -112,7 +117,7 @@ def _git(repo_root, args):
     return proc.returncode, proc.stdout
 
 
-# ---------- the predicates (v1: four; v2 adds decision-resolved) ----------
+# ---------- the predicates (v1: four; v2 adds decision-resolved; v3 hypothesis-verdict) ----------
 
 def _check_path_exists(arg, repo_root):
     """path-exists=<repo-relative-path> -- committed at HEAD."""
@@ -140,24 +145,39 @@ def _check_commit_grep(arg, repo_root):
     return arg in _all_commit_bodies(repo_root)
 
 
-def _check_hypothesis_kept(arg, repo_root):
-    """hypothesis-kept=H-NNN -- exactly one committed hypotheses/H-NNN-*.md at HEAD whose
-    first non-comment word under '## Status' is 'kept' (case-insensitive: this repo's real
-    specs use both 'kept' and 'KEPT'). Zero or more-than-one match is not satisfied --
-    ambiguity does not close a commitment, the same safe-default the ledger resolver uses
-    for a missing operating_model_dir."""
+def _spec_status_word(arg, repo_root):
+    """The Status word of the single committed hypotheses/<arg>-*.md at HEAD, lower-cased;
+    None when zero or more-than-one spec matches (ambiguity never closes a commitment --
+    the same safe-default the ledger resolver uses for a missing operating_model_dir) or
+    when the spec has no Status word. Shared by hypothesis-kept and hypothesis-verdict so
+    the two predicates can never read the same spec differently."""
     code, out = _git(repo_root, ["ls-tree", "-r", "--name-only", "HEAD", "--", "hypotheses"])
     if code != 0:
-        return False
+        return None
     pattern = re.compile(r"^hypotheses/%s-.*\.md$" % re.escape(arg))
     matches = [p for p in out.splitlines() if pattern.match(p)]
     if len(matches) != 1:
-        return False
+        return None
     code, content = _git(repo_root, ["show", "HEAD:" + matches[0]])
     if code != 0:
-        return False
+        return None
     word = extract_status_word(content)
-    return word is not None and word.lower() == "kept"
+    return word.lower() if word is not None else None
+
+
+def _check_hypothesis_kept(arg, repo_root):
+    """hypothesis-kept=H-NNN -- exactly one committed hypotheses/H-NNN-*.md at HEAD whose
+    first non-comment word under '## Status' is 'kept' (case-insensitive: this repo's real
+    specs use both 'kept' and 'KEPT')."""
+    return _spec_status_word(arg, repo_root) == "kept"
+
+
+def _check_hypothesis_verdict(arg, repo_root):
+    """hypothesis-verdict=H-NNN -- the same single-spec read, satisfied when the Status word
+    is 'kept' OR 'discarded': the hypothesis has a terminal verdict either way. 'refine',
+    'draft', 'running' and a refined-into pointer leave it open (a refine hands the question
+    to a successor; this predicate does not follow lineage -- north-star-check.py does)."""
+    return _spec_status_word(arg, repo_root) in ("kept", "discarded")
 
 
 def _check_maintainer_ruling(arg, repo_root):
@@ -202,6 +222,7 @@ _CHECKERS = {
     "path-exists": _check_path_exists,
     "commit-grep": _check_commit_grep,
     "hypothesis-kept": _check_hypothesis_kept,
+    "hypothesis-verdict": _check_hypothesis_verdict,
     "maintainer-ruling": _check_maintainer_ruling,
     "decision-resolved": _check_decision_resolved,
 }
@@ -214,3 +235,75 @@ def check(predicate, arg, repo_root):
     five known names)."""
     fn = _CHECKERS.get(predicate)
     return bool(fn and fn(arg, repo_root))
+
+
+# ---------- selftest ----------
+
+def _selftest():
+    """Throwaway-repo proof of the two hypothesis predicates. Exit 0 iff every check passes."""
+    import os
+    import shutil
+    import tempfile
+
+    def spec(hid, word):
+        return "# %s\n\n## Status\n%s <!-- rationale -->\n\n## Method\nbody\n" % (hid, word)
+
+    tmp = tempfile.mkdtemp(prefix="closes-when-selftest-")
+    checks = []
+    try:
+        subprocess.run(["git", "init", "-q", tmp], check=True, capture_output=True)
+        os.makedirs(os.path.join(tmp, "hypotheses"))
+        files = {
+            "H-901-kept.md": spec("H-901", "kept"),
+            "H-902-discarded.md": spec("H-902", "DISCARDED"),
+            "H-903-draft.md": spec("H-903", "draft"),
+            "H-904-refined.md": spec("H-904", "refined-into: H-905"),
+            "H-906-a.md": spec("H-906", "kept"),
+            "H-906-b.md": spec("H-906", "kept"),
+        }
+        for name, text in files.items():
+            with open(os.path.join(tmp, "hypotheses", name), "w", encoding="utf-8") as f:
+                f.write(text)
+        env = dict(os.environ, GIT_AUTHOR_NAME="selftest", GIT_AUTHOR_EMAIL="s@t",
+                   GIT_COMMITTER_NAME="selftest", GIT_COMMITTER_EMAIL="s@t")
+        subprocess.run(["git", "-C", tmp, "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", tmp, "-c", "commit.gpgsign=false", "commit", "-q",
+                        "-m", "seed"], check=True, capture_output=True, env=env)
+        # An uncommitted kept spec must not count (committed state only).
+        with open(os.path.join(tmp, "hypotheses", "H-907-staged.md"), "w",
+                  encoding="utf-8") as f:
+            f.write(spec("H-907", "kept"))
+        table = [
+            ("kept spec satisfies hypothesis-kept", check("hypothesis-kept", "H-901", tmp), True),
+            ("kept spec satisfies hypothesis-verdict", check("hypothesis-verdict", "H-901", tmp), True),
+            ("discarded spec fails hypothesis-kept", check("hypothesis-kept", "H-902", tmp), False),
+            ("discarded spec satisfies hypothesis-verdict", check("hypothesis-verdict", "H-902", tmp), True),
+            ("draft spec fails hypothesis-kept", check("hypothesis-kept", "H-903", tmp), False),
+            ("draft spec fails hypothesis-verdict", check("hypothesis-verdict", "H-903", tmp), False),
+            ("refined-into spec fails hypothesis-verdict", check("hypothesis-verdict", "H-904", tmp), False),
+            ("ambiguous id (two specs) fails hypothesis-verdict", check("hypothesis-verdict", "H-906", tmp), False),
+            ("absent id fails hypothesis-verdict", check("hypothesis-verdict", "H-999", tmp), False),
+            ("uncommitted kept spec fails hypothesis-verdict", check("hypothesis-verdict", "H-907", tmp), False),
+            ("bracket parses hypothesis-verdict",
+             parse_bracket("x [closes-when: hypothesis-verdict=H-902]"), ("hypothesis-verdict", "H-902")),
+            ("unknown predicate still parses as None",
+             parse_bracket("x [closes-when: hypothesis-settled=H-902]"), None),
+        ]
+        for name, got, want in table:
+            checks.append((name, got == want, "got %r want %r" % (got, want)))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    failed = [c for c in checks if not c[1]]
+    for name, ok, detail in checks:
+        print("%s %s%s" % ("ok  " if ok else "FAIL", name, "" if ok else "  [%s]" % detail))
+    print("selftest: %d checks, %d failed" % (len(checks), len(failed)))
+    return 0 if not failed else 1
+
+
+if __name__ == "__main__":
+    import sys
+    if "--selftest" in sys.argv[1:]:
+        sys.exit(_selftest())
+    print(__doc__.strip().splitlines()[0])
+    print("usage: closes_when.py --selftest   (the module is otherwise imported, not run)")
+    sys.exit(2)
