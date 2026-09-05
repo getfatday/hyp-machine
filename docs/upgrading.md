@@ -19,3 +19,10 @@ These steps are the counted upgrade path (hypothesis H-161 in the source lab, ke
 4. **Rollback (if you need it):** uninstall hyp and re-enable the lab pair — the
    counted runs verified the write-once history remains byte-identical in that
    direction too. The swap is a two-way door.
+
+Since 0.3.3, ids follow the draft-then-allocate contract: a hypothesis registered anywhere
+other than the default branch takes a draft handle instead of a numeric id, and the numeric id
+is allocated at land by `scripts/id-rectify.py`. Nothing about an existing corpus changes on
+upgrade; every landed `H-NNN` and fragment id keeps resolving exactly as it does today, and the
+new rule only governs registrations made after you upgrade. See `docs/id-allocation.md` for the
+full contract.

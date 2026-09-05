@@ -1,5 +1,5 @@
 ---
-id: <next integer — highest existing fragment id + 1>
+id: <next free integer, always an integer (never a hash or handle) — a draft claim until landed; the land-time id gate renumbers collisions>
 date: <YYYY-MM-DD>
 type: <capture | decision | observation | run>
 ---

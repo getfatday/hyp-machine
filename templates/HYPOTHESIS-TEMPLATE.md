@@ -1,5 +1,5 @@
 # H-NNN-slug: <short title>
-<!-- Copy to {{HYPOTHESES_DIR}}/H-NNN-slug.md — next NNN = highest existing + 1, starting at 001. -->
+<!-- Copy to {{HYPOTHESES_DIR}}/H-NNN-slug.md when landing immediately on the default branch (NNN = one above the largest landed spec number, starting at 001), or to {{HYPOTHESES_DIR}}/H-DRAFT-<hash8>-slug.md on any other branch — the land-time id gate allocates the canonical id (draft-then-allocate; see the hypothesis skill). -->
 <!-- Title rule (contract L15): the prose after the colon is <= 25 words, carries at
 most ONE house-only term (scripts/house-vocabulary.json status field), zero unregistered
 coinages, zero score shorthand. Slugs and filenames never change after registration —

@@ -144,6 +144,7 @@ config files and CLAUDE.md rules blocks in place.
 | `scripts/compile-findings-index.py` | The corpus layer, index half: one plain-language line per resolved hypothesis (id, verdict, date, finding, evidence pointer) plus lineage edges — counted H-226/H-228 |
 | `scripts/prior-art-sweep.py` | The corpus layer, consult half: typed OVERLAP/LINEAGE flags plus a ready-to-paste Prior-work section for any draft spec, so registration mechanically consults everything already proven or disproven — counted H-227/H-228 |
 | `scripts/parity-check.py` | Byte-parity checker between an installed hyp copy and a published manifest or pinned reference tree (see “Install parity” below) |
+| `scripts/id-rectify.py` + `scripts/selftest-id-allocation.py` | The land-time id gate: allocates the canonical id for a draft handle at land and renumbers any colliding fragment id, rewriting every in-branch reference — see `docs/id-allocation.md` |
 | `scripts/migrate-from-crux.sh` | The guided crux-to-hyp migration: runs the marketplace-add / install-hyp / uninstall-crux steps tolerantly (every step rc recorded, never fatal), then exits 0 iff the end-state artifacts verify — hyp enabled at project scope, crux absent from project settings, `.claude/hyp.json` present (seeded from `.claude/crux.json` when init has not run) — one plain verdict line per check (see “Lineage” above) |
 | `scripts/issueops-fetch.py`, `scripts/issueops-reply.py`, `scripts/issueops-teardown.py`, `scripts/issueops_gh.py` | The audited GitHub-issues intake: CRLF-normalizing transport adapter, deterministic reply templater, manifest-scoped teardown, and the account-pinned audited gh helper they share — outward writes confined to a frozen allowlist (see `docs/issueops.md`) |
 | `scripts/preflight-rigor.py` | The ethics extension to preflight, REPORT-ONLY: six calibrated rows over each spec's `## Ethical assumptions` section; the enforcement flip is maintainer-gated (see `docs/preflight-rigor.md`) |
@@ -261,6 +262,46 @@ claude plugin eval . --scaffold
 One suite per skill under `evals/<skill>/<case>/case.yaml`; see `evals/README.md`.
 
 ## Changelog
+
+### 0.3.3 — draft-then-allocate ids and the land-time id gate (issue #4, id half)
+- **The collision**: concurrent branches each computed a hypothesis or fragment id as
+  "highest existing + 1" from their own view and collided at land, so a consumer pilot saw
+  4 of 4 session pairs collide this way, and a live consumer repository landed journal
+  fragments 306/334/335 and specs H-194..H-206 numbered per branch instead of per
+  repository (issue #4).
+- **The new rule**: registering on the default branch and landing immediately still takes
+  `H-NNN` (re-checked right before the write); registering anywhere else takes a draft
+  handle instead: `hypotheses/H-DRAFT-<hash8>-<slug>.md`, hash8 = the first 8 hex
+  characters of `sha256(spec body + branch name + UTC minute)`, computed with
+  `{ cat <tmp>; git branch --show-current; date -u +%Y-%m-%dT%H:%M; } | shasum -a 256 | cut -c1-8`.
+  The canonical `H-NNN` is allocated only at land. Fragment ids are always integers, on
+  every branch, at every stage; off the default branch that integer is a draft claim the
+  gate renumbers on collision, and a hash or handle never appears in a fragment's filename.
+- **The land-time id gate** (`scripts/id-rectify.py`, new): bring canon into the branch
+  first, then `python3 scripts/id-rectify.py --repo . --base <canon> --head <branch>`
+  allocates every draft handle, renumbers any colliding fragment id, and rewrites every
+  in-branch reference; `--lint` runs the same detection read-only. Exit 0 repaired or
+  clean, 1 lint-blocked, 2 usage error, 3 refusal with the tree untouched. The gate
+  tolerates three narrower cases rather than leaving them to land broken, each with its
+  own lint class on the unrepaired branch: an incoming fragment with no integer id at all
+  (`FRAGMENT-WITHOUT-INTEGER-ID`), a draft handle with no well-formed hash8
+  (`MALFORMED-DRAFT-HANDLE`), and a draft handle surviving inside a filename
+  (`DRAFT-HANDLE-SURVIVES`); see `docs/id-allocation.md`.
+- Nothing historical is renamed. Every landed `H-NNN` and fragment id keeps resolving
+  exactly as before; the per-repository floor for new allocations is simply the largest id
+  already landed. Downgrading to 0.3.2 restores the next-free rule with zero corpus
+  damage, a two-way door.
+- **Evidence**: lab H-293 (v3 id patch, KEPT 5/5): 16/16 concurrent registrations landed
+  through the gate with zero collisions, the unpatched tree collided in 4 of 4 cohorts.
+  Lab H-295 (cross-session durability, KEPT 5/5 run 2): 3/3 cold second sessions honored
+  the first session's draft handle verbatim, offline, with no git remote and no `gh` on
+  PATH; the unpatched tree collided 3/3. Both build on lab H-148 (kept 2x5/5, the
+  draft-then-allocate mechanism) and H-147 (kept 2x5/5, the rectifier); H-272 and H-294
+  each found one weak-executor deviation the v3 gate now handles.
+- **Shipped selftest**: `python3 scripts/selftest-id-allocation.py` (new) — 47 checks,
+  exit 0 on PASS.
+- The run-directory half of issue #4 (concurrent `experiments/runs/<id>/` writes) stays
+  open under lab lane H-273.
 
 ### 0.3.2 — worktree-aware hook root (issue #6)
 - **One resolver, the session's real tree** (lab H-DRAFT-e90628b6, counted 2x 5/5 zero-LLM): in a
