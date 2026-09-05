@@ -5,9 +5,15 @@ PROVENANCE — COUNTED, byte-preserving port of the kept H-118 fixture emitter
 (experiments/runs/H-118/fixture/impl/emit_workflow_fact.py in the source lab;
 hypothesis H-118-gwt-accretion-loop KEPT 2026-08-28, two consecutive counted
 4/4: canonically byte-identical replays, zero duplicate appends against an
-already-appended ledger — idempotence key workflow+sha). Only this provenance
-framing differs from the counted fixture copy. Point --ledger at your repo's
-ledger/workflow-facts.jsonl (the stream scripts/derive-metrics.py reads).
+already-appended ledger — idempotence key workflow+sha). Point --ledger at
+your repo's ledger/workflow-facts.jsonl (the stream scripts/derive-metrics.py
+reads). Two named divergences from the counted fixture copy: this provenance
+framing, and the H-238 choke-point emitter (kept 2026-09-02) — each
+REAL append additionally lands one event/workflow-closed record on the
+consumer's unified event stream via events_lib (experiments profile only,
+guarded: an emission failure never fails the fact append; the summary line
+reports events_appended/events_skipped). Repo root for the stream derives from
+the ledger path's grandparent, overridable with --repo-root.
 
 Reads a close-events file (the workflow-close fixture shape or an adapter
 emission), appends workflow-fact/v1 records to the stream ledger in canonical-v1
@@ -62,10 +68,50 @@ def build_record(event, next_id):
     return rec
 
 
+def _emit_stream_events(repo_root, appended_recs):
+    """H-238 choke point (workflow close): one event/workflow-closed stream
+    record per REAL fact append. Experiments-profile machinery, guarded end to
+    end -- a stream failure never fails the fact append. Returns
+    (events_appended, events_skipped)."""
+    if not appended_recs or not repo_root:
+        return 0, 0
+    ok, dup = 0, 0
+    try:
+        try:
+            with open(os.path.join(repo_root, ".claude", "hyp.json"),
+                      encoding="utf-8") as f:
+                profile = (json.load(f) or {}).get("profile", "capture")
+        except Exception:
+            profile = "capture"
+        if profile not in ("experiments", "modeling"):
+            return 0, 0
+        import events_lib
+        for rec in appended_recs:
+            gates = rec.get("gates") or []
+            passed = sum(1 for g in gates
+                         if isinstance(g, dict) and g.get("outcome") == "pass")
+            ev = events_lib.make_record(
+                "event/workflow-closed", "workflow-fact/%s" % rec.get("id"),
+                str(rec.get("ts", ""))[:10], str(rec.get("workflow")),
+                {"workflow": rec.get("workflow"), "sha": rec.get("sha"),
+                 "gates_passed": passed, "gates_total": len(gates)})
+            result = events_lib.emit_event(repo_root, ev)
+            if result["status"] == "appended":
+                ok += 1
+            elif result["status"] == "skipped":
+                dup += 1
+    except Exception:
+        pass
+    return ok, dup
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--close-events", required=True)
     ap.add_argument("--ledger", required=True)
+    ap.add_argument("--repo-root", default=None,
+                    help="consumer repo root for the H-238 event stream "
+                         "(default: the ledger path's grandparent)")
     args = ap.parse_args()
 
     try:
@@ -85,6 +131,7 @@ def main():
     next_id = max([r.get("id", 0) for r in existing] + [0]) + 1
 
     appended, skipped = 0, 0
+    appended_recs = []
     try:
         with open(args.ledger, "a", encoding="utf-8") as ledger:
             for event in events:
@@ -97,11 +144,17 @@ def main():
                 seen.add(key)
                 next_id += 1
                 appended += 1
+                appended_recs.append(rec)
     except ValueError as exc:
         print(json.dumps({"error": str(exc)}))
         return 2
 
+    repo_root = args.repo_root or os.path.dirname(
+        os.path.dirname(os.path.abspath(args.ledger)))
+    ev_ok, ev_dup = _emit_stream_events(repo_root, appended_recs)
+
     print(json.dumps({"appended": appended, "skipped": skipped,
+                      "events_appended": ev_ok, "events_skipped": ev_dup,
                       "ledger_sha256": sha256_file(args.ledger)},
                      sort_keys=True))
     return 0

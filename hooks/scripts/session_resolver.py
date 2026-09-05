@@ -13,6 +13,22 @@ operating-model paths from .claude/hyp.json + the hyp defaults for hook
 wiring. The 3-, 4-, and 5-argument CLI and all resolution semantics are
 identical to the lab copy.
 
+v6: the H-239 events-cursor join (kept 2026-09-02, 2x5/5 -- exactly-once
+cross-session surfacing with the resolver contract byte-preserved). The join is
+the kept fixture BLOCK + one call line, inserted mechanically by the fixture's
+join_lib.make_on at its two anchors (experiments/runs/H-239/fixture/join_lib.py
+in the source lab; the H-230 strip-proof pattern): surface_events() runs LAST in
+run(), so decisions-first, head-20, and every non-event row stay byte-unchanged
+-- the byte-compare contract test ships as scripts/selftest-events.py check 6.
+One named divergence from the kept block: the hook payload is read through the
+module's _hook_stdin_raw() single-read cache, because AUTO mode's worktree
+resolution already consumes stdin and a second read would see EOF and collapse
+every session onto one shared cursor. Cursor semantics unchanged: per-session
+count at runtime .claude/events-cursor/<session>.cursor, never committed;
+silent when nothing is new; a missing ledger/events.jsonl keeps this file's
+output byte-identical to v5 (events are experiments-profile machinery -- the
+stream only exists where the emitters run).
+
 v5 additions (docs/decisions.md sections 5-6) -- everything below this block is the v4
 text, unchanged where it still applies:
   - THREE-shape read: legacy {date,slug,hit,kind} rows unchanged; v2
@@ -115,6 +131,23 @@ import sys
 
 SUPPORTED_KINDS = ('intent', 'amendment', 'commitment', 'directive')
 DECISION_URGENCY_ORDER = {'high': 0, 'normal': 1, 'low': 2}
+
+_HOOK_STDIN_RAW = None
+
+
+def _hook_stdin_raw():
+    """Port adaptation (single-read law): AUTO mode's worktree resolution
+    (_session_repo) and the H-239 events join (_events_session_id) both need the
+    hook's stdin payload, and stdin is consumable exactly once -- the first
+    reader caches it here. A tty or unreadable stdin caches ''. Never raises,
+    never blocks on a tty."""
+    global _HOOK_STDIN_RAW
+    if _HOOK_STDIN_RAW is None:
+        try:
+            _HOOK_STDIN_RAW = '' if sys.stdin.isatty() else (sys.stdin.read() or '')
+        except Exception:
+            _HOOK_STDIN_RAW = ''
+    return _HOOK_STDIN_RAW
 
 # closes_when.py candidate locations (port adaptation): the consumer repo's own
 # scripts/ copy wins when present, then this plugin's shipped copy
@@ -355,6 +388,90 @@ def surface_decisions(decisions, resolutions):
         len(open_rows), oldest.get('id'), _decision_age_days(oldest)))
 
 
+# <<<H-239-EVENTS-JOIN block begin>>>
+def _events_session_id():
+    """H-239: the per-session cursor key. Hook stdin carries the harness's JSON
+    payload (session_id et al.); read it once, guarded -- a tty or empty/opaque
+    stdin degrades to the CLAUDE_SESSION_ID env var, then to 'default'. Never
+    raises, never blocks on a tty; sanitized to [A-Za-z0-9._-], max 80 chars."""
+    sid = None
+    try:
+        raw = _hook_stdin_raw()  # PORT adaptation: shared single-read stdin cache
+        if raw:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                sid = payload.get('session_id')
+    except Exception:
+        sid = None
+    if not sid:
+        sid = os.environ.get('CLAUDE_SESSION_ID') or 'default'
+    cleaned = []
+    for ch in str(sid)[:80]:
+        cleaned.append(ch if (ch.isalnum() or ch in '._-') else '-')
+    return ''.join(cleaned) or 'default'
+
+
+def surface_events(repo_root):
+    """H-239 events-cursor join (additive; called LAST in run(), so the
+    decisions-first head and every non-event row stay byte-unchanged). Surfaces
+    ledger/events.jsonl records this session has not yet seen -- exactly once
+    per session, silent when nothing is new (zero lines printed, the H-204
+    suppression contract extended from decisions to events). The cursor (a
+    consumed-line count) lives in runtime .claude/events-cursor/<session>.cursor
+    -- per-session, never committed. Never raises; a broken stream never breaks
+    a session."""
+    if not repo_root:
+        return
+    events_path = os.path.join(repo_root, 'ledger', 'events.jsonl')
+    if not os.path.isfile(events_path):
+        return
+    try:
+        with open(events_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return
+    sid = _events_session_id()
+    cursor_dir = os.path.join(repo_root, '.claude', 'events-cursor')
+    cursor_path = os.path.join(cursor_dir, sid + '.cursor')
+    seen = 0
+    try:
+        with open(cursor_path, 'r') as f:
+            seen = int(f.read().strip() or '0')
+    except (OSError, ValueError):
+        seen = 0
+    if seen < 0 or seen > len(lines):
+        seen = 0  # stream replaced/truncated: resurface rather than lose events
+    surfaced = 0
+    for raw in lines[seen:]:
+        text = raw.strip()
+        if not text:
+            continue
+        try:
+            rec = json.loads(text)
+        except ValueError:
+            continue  # malformed stream line: consumed, never surfaced
+        if not isinstance(rec, dict):
+            continue
+        eid = rec.get('caused-by') or rec.get('instance-of') or '?'
+        print('EVENT-STREAM\t{}\t{}\t{}\t{}'.format(
+            rec.get('date', ''), rec.get('instance-of', ''), eid,
+            rec.get('subject', '')))
+        surfaced += 1
+    if surfaced:
+        print('EVENTS-NEW\t{}\tcursor {}->{}'.format(surfaced, seen, len(lines)))
+    if len(lines) != seen:
+        try:
+            if not os.path.isdir(cursor_dir):
+                os.makedirs(cursor_dir)
+            tmp_path = cursor_path + '.tmp'
+            with open(tmp_path, 'w') as f:
+                f.write(str(len(lines)))
+            os.replace(tmp_path, cursor_path)
+        except OSError:
+            pass
+# <<<H-239-EVENTS-JOIN block end>>>
+
+
 def run(ledger_path, hyp_dir, om_dir, repo_root):
     filenames = load_hypothesis_filenames(hyp_dir)
     om_contents = load_operating_model_contents(om_dir)
@@ -415,6 +532,7 @@ def run(ledger_path, hyp_dir, om_dir, repo_root):
         else:
             tag = 'INTENT-LEDGER'
         print('{}\t{}\t{}\t{}'.format(tag, date, slug, hit))
+    surface_events(repo_root)  # <<<H-239-EVENTS-JOIN call>>>
 
 
 def _auto_args(repo_root):
@@ -448,7 +566,7 @@ def _session_repo(repo):
             return repo
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from hyp_config import worktree_root
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(_hook_stdin_raw() or "{}")
         cwd = payload.get("cwd") if isinstance(payload, dict) else None
         return worktree_root(cwd, repo) or repo
     except Exception:
