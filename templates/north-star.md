@@ -29,7 +29,10 @@ Column rules (ledger/north-stars/README.md is canonical; scripts/north-star-chec
               path-exists=research/raw/<file>, path-exists=experiments/runs/<lane>/VERDICT.json;
               `-` = unbound (counts in distance, never in the frontier).
   needs       `-`, or comma-separated C-NN (must be done) and C-NN:yes | C-NN:no
-              (must resolve that way; the other outcome retires this row and its dependents).
+              (must resolve that way; the other outcome retires this row and its dependents);
+              <slug>#C-NN[:yes|no] names a condition in the sibling file
+              ledger/north-stars/<slug>.md at the same commit -- write a shared prerequisite
+              once there, never copy its row here; retire root reads retired:<slug>#C-NN.
 Derived at read time: done / open / retired:C-NN / unbound; frontier with verbs
 (register / run / add / resolve / capture / probe); distance; reached. Delete this comment
 in a real file.

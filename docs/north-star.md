@@ -25,6 +25,87 @@ Two compilers turn committed bytes into pages a human can open:
 Both are projections: deterministic, byte-identical on recompile, regenerable after deletion,
 and `--check`-able. Neither computes a number the sources do not carry.
 
+### Typed documents as conditions (document resolver)
+
+A condition may bind a committed typed document instead of a spec, a decision, a capture or a
+probe: resolver kind `document`, the `bound` cell a repository path, and the predicate
+`frontmatter-status=<path>:<done-values>[!<no-values>]` (the path is everything before the last
+colon; values are comma-separated). The checker reads the file at that path at the commit you
+ask about and takes the text after `status:` on the first such line of its frontmatter
+(whitespace and one pair of quotes stripped, compared exactly): a done-value derives `done`; a
+no-value settles the outcome `no` without resolving the row, so its `C-NN:yes` dependents retire
+while the row stays open; a present file with no `status:` line is open with no outcome. The
+frontier verb is `sync` — what moves the condition is the commit that changes the document's
+status line, never an edit to the north-star file. Presence is decided by `git cat-file -e`,
+not by `git show`'s exit code (which is 0 with empty output for some deleted paths); a bound
+path absent at the commit is a `DANGLING-REF` hard finding. `scripts/closes_when.py` carries the
+same predicate under the same presence rule, so an On-keep bracket and a north-star row read one
+document the same way. What the keep evidenced (lab lane
+`H-DRAFT-d6a0a6ef-document-resolver-milestones`, 5/5 twice, journal fragment 0277): over a
+ten-commit fixture shaped like a portfolio strategy's milestone table — twelve bound milestone
+documents moved by Jira-style sync commits — the checker matched a blind reference evaluator at
+every non-seeded commit with zero edits to the north-star file; a cancelled milestone retired
+its dependents and reopened them when the cancellation was reversed on resume; a deleted bound
+file fired `DANGLING-REF` exactly once; and the north-star file's own status-scope lint was
+untouched by the documents' frontmatter (it fired exactly once, on the seeded authored column).
+
+### Many north-star files: the set block
+
+A repository may carry many destinations (the lab's fixture is shaped like a portfolio of 22
+strategies and 3 programs, each with its own owner). A plain `north-star-check.py` invocation
+reads every committed `ledger/north-stars/*.md` in one pass; each file derives independently
+and its per-file output is byte-unchanged. Whenever at least one file is read the checker also
+emits a `set` block (a one-destination reduction while only one file exists) (`--json` top-level key `set`; in text, a trailing `set:` block), reduced
+from the per-file blocks alone — no file gains a field and no authored order between files
+exists. `union_frontier` lists each distinct effective lane once with the `<slug>#C-NN` pairs
+it closes (`serves`), the count of binding files (`n_serves`), the smallest per-file distance
+(`min_distance`) and a `claimed_fresh` flag, sorted by `n_serves` descending, `min_distance`
+ascending, lane id — derived numbers only, so one shared piece of work is counted once and
+ranked by how many destinations it advances. `shared_bounds` maps every lane bound in more
+than one file to its pairs. `exit_strict_by_slug` gives each file its own exit bit: one
+malformed sibling fails its own bit while the others still derive, and the flat `exit_strict`
+keeps its meaning (any file, any hard finding).
+
+### Cross-file needs
+
+A `needs` token may name a sibling file's condition: `<slug>#C-NN`, `<slug>#C-NN:yes`,
+`<slug>#C-NN:no`. It resolves against `ledger/north-stars/<slug>.md` committed at the same
+commit (never the working tree), takes that condition's derived status and outcome, counts
+in distance exactly as a local token does (continuing into the sibling's own chain), and
+retires across the boundary with the boundary token as root (`retired:<slug>#C-NN`). Write a
+shared prerequisite once, in its own file; never copy the row — a copy tracks the bound item
+but goes stale the moment the sibling retires. Three lints extend across files: an unknown
+slug or sibling id is `DANGLING-REF`, a cycle over the union of local and cross-file edges is
+`CYCLE`, and two committed paths under `ledger/north-stars/` (recursive) sharing a basename is
+`DUPLICATE-SLUG`, because the slug is the resolution key. A sibling with hard findings makes
+the token derive `unbound` in the referencer, which still derives. Files without the token
+are byte-unchanged in `--json`; a qualified need entry adds `slug` and `status`.
+
+### The all-files read is hook-safe
+
+The checker's git layer is batched: per commit, one `ls-tree -r` answers every existence
+query and two `cat-file --batch` rounds fetch the north-star files, the work ledger, the
+specs and the probe verdicts, instead of one subprocess per resolver path. On the lab's
+25-file, 15-condition fixture the all-files read dropped from 69-78 s and 364 git invocations
+to under 1.1 s and 4 invocations, with `--json`, text and `--strict` exit codes byte-identical
+to the per-path reader, claim overlay included. That makes the read cheap enough for a
+SessionStart hook; whether the session resolver surfaces the set block's one-line summary is
+a maintainer call, not something this release does.
+
+### Set-mode compile: `--all` and `--check --all`
+
+`compile-north-star-progress.py --all [--repo R]` compiles every committed north-star file at
+HEAD to `ledger/north-stars/<slug>.progress.html` (never to the shared
+`north-star-progress.html`) plus `ledger/north-stars/index.html`, one row per destination
+(distance, frontier size, reached, claimed count, shared lanes; `not derived` for slugs in
+`set.not_derived`), every value copied from the checker's derivation at HEAD. The stop rule
+is the single-file one, except that a default stop predating a file is skipped for that
+file's page (HEAD is always kept). `--check --all` re-derives every expected page and the
+index: exit 0 fresh; 1 stale, naming each page or the index that is missing, unreadable or
+differs; 2 only for an unreadable repository (HEAD unresolvable or `ledger/north-stars/`
+absent). The single-file positional path is unchanged byte for byte, so earlier pages still
+check fresh.
+
 ## When to reach for it
 
 Reach for a north-star file when work spans more than one hypothesis and the question "what is
@@ -42,6 +123,8 @@ The boundary against its siblings:
 | One destination, the conditions that reach it, and how far away it is | a north-star file + `scripts/north-star-check.py` |
 | An openable record of one counted run for a reader who will not open the run directory | `scripts/compile-run-checkpoint.py` |
 | A "where are we" page for one destination, with replay over time | `scripts/compile-north-star-progress.py` |
+| Which shared lane advances the most destinations, across every north-star file | the `set` block of `scripts/north-star-check.py --json` (`union_frontier`, first entry with `claimed_fresh` false) |
+| One page per destination plus an index, checkable as a set | `scripts/compile-north-star-progress.py --all` / `--check --all` |
 
 Do not put a vision paragraph in a north-star file. The lab banked prose steering as a null
 (H-245); the file is structure, and the `--strict` lint refuses an authored status column
@@ -79,7 +162,27 @@ not a change detector; recompile and the page is fresh again with identical cont
 compiler samples every commit whose subject matches `KEPT|DISCARDED|decision:`, and in an
 established corpus most of those predate the file. Pass `--stops <file>` naming commits at
 which the file exists (`git log --format=%H -- ledger/north-stars/<slug>.md` is the list);
-HEAD is always appended. The lab's own first page was compiled this way.
+HEAD is always appended. The lab's own first page was compiled this way. In set mode
+(`--all`) a default stop that predates a file is skipped for that file's page; the single-file
+path keeps the explicit `--stops` rule.
+
+**Two destinations both need the same hypothesis. Do I add the row twice?** Add it once, in
+the file that owns it, and let the other file's `needs` cell name it as `<slug>#C-NN` (or
+`<slug>#C-NN:yes`). The dependent file inherits the sibling's derived status and its retire
+cascade with zero edits to either file; a copied row would go stale the moment the sibling
+retires.
+
+**Can I bind a Jira-synced milestone table?** Yes, through each milestone's typed file: bind the
+row as `document` to the file's path with `frontmatter-status=<path>:<done-values>!<no-values>`,
+and the sync commits that already rewrite that file's `status:` line move the condition. The
+north-star file never learns the Jira key; binding is by path only (a `jira_ticket:` alias is a
+pending maintainer decision with a recommended default of path-only).
+
+**A lane is on the frontier of three files. How many times does the set count it?** Once.
+`union_frontier` keys on the effective lane, lists the three `<slug>#C-NN` pairs under
+`serves`, and ranks it above a nearer lane that serves one destination (`n_serves` sorts
+before `min_distance`). A fresh claim heartbeat sets `claimed_fresh` on that one entry in
+every file that binds the lane; it never reorders or removes it.
 
 **Can I compile a checkpoint for a run that was graded before this release?** Yes, if the run
 directory has results.json, grade.txt and verdict.json and the spec is reachable
@@ -106,16 +209,42 @@ when there is a real destination to point at.
   sha256.
 - `compile-north-star-progress.py --check north-star-progress.html` exits 0 right after a
   compile and 1 after the next commit; three compiles in a row give one sha256.
-- `python3 scripts/north-star-check.py --selftest`, `compile-run-checkpoint.py --selftest`,
-  `compile-north-star-progress.py --selftest` and `closes_when.py --selftest` all exit 0 on the
-  installed copy.
+- With two or more north-star files committed, `python3 scripts/north-star-check.py --json`
+  carries a `set` block; a lane bound on the frontier of two files appears once in
+  `union_frontier` with `n_serves` 2, and two invocations (or a clone) give identical bytes.
+- Adding a `status` column to one file flips only that slug's bit in `exit_strict_by_slug`;
+  the sibling files still derive.
+- A condition that needs `<slug>#C-NN:yes` reads `retired:<slug>#C-NN` the commit after the
+  sibling's hypothesis discards, with no edit to either file; a nested copy
+  `ledger/north-stars/team-a/<slug>.md` makes `--strict` exit 1 with `DUPLICATE-SLUG`.
+- The all-files read at 25 files finishes in seconds, not minutes (`time python3
+  scripts/north-star-check.py --json >/dev/null`).
+- `compile-north-star-progress.py --all` twice gives one sha256 per page and for `index.html`;
+  `--check --all` exits 0, then 1 naming exactly the one page you truncate, then 0 after a
+  recompile.
+- A row bound `document` with `frontmatter-status=docs/<m>.md:completed!cancelled` reads `done`
+  the commit after that file's `status:` line says `completed`, its `C-NN:yes` dependents read
+  `retired:C-NN` the commit it says `cancelled` and reopen when it is changed back, and
+  `--strict` exits 1 with `DANGLING-REF` the commit the file is deleted — with no edit to the
+  north-star file at any step.
+- `python3 scripts/north-star-check.py --selftest` (115 checks), `compile-run-checkpoint.py
+  --selftest`, `compile-north-star-progress.py --selftest` (23 checks) and `closes_when.py
+  --selftest` (19 checks) all exit 0 on the installed copy.
 
 Provenance: the three keeps of the source lab's destination-map wave (2026-09-04, journal
 fragments 0259 and 0260): `H-DRAFT-2cae0933-derived-condition-status` (kept 2x 5/5),
 `H-DRAFT-2cae0933-run-checkpoint-fidelity` (kept 2x 5/5),
 `H-DRAFT-2cae0933-north-star-progress-view` (kept 2x 5/5); the lab's own north-star file for
 the wave was the first real north-star file and its progress page the first real "where are we"
-view. The four-section frame of this page (what it does / when to reach for it / common questions
+view. The many-north-stars wave (2026-09-05, journal fragments 0275 and 0276) added the set
+block, the cross-file `needs` grammar, the batched all-files read and set-mode compile, four
+keeps each at 5/5 twice with a cold-context executor on run 2 and zero LLM calls in any arm:
+`H-DRAFT-d6a0a6ef-north-star-set-union-frontier`, `H-DRAFT-d6a0a6ef-north-star-set-cross-file-needs`,
+`H-DRAFT-d6a0a6ef-north-star-set-batched-reads`, `H-DRAFT-d6a0a6ef-north-star-set-progress-index`;
+every fixture was synthesized from the shape of a portfolio repository that stayed read-only.
+The wave's fifth lane, `H-DRAFT-d6a0a6ef-document-resolver-milestones` (kept 2x 5/5, journal
+fragment 0277), added the `document` resolver kind and the `frontmatter-status` predicate.
+The four-section frame of this page (what it does / when to reach for it / common questions
 / it is working if) is the docs-page pattern the lab's pattern census kept as a gap worth
 adopting from an external repository; the terms here are the lab's own (north-star file,
 condition, frontier, horizon, excluded, retired, distance, checkpoint).

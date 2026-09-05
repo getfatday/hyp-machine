@@ -18,6 +18,8 @@ Usage
   compile-north-star-progress.py <north-star-file> [--repo R] [--stops STOPS.json]
                                  [--now UNIX] [--ttl-s N] [--today YYYY-MM-DD] [--out PATH]
   compile-north-star-progress.py --check PAGE [--repo R]
+  compile-north-star-progress.py --all [--repo R] [--now UNIX] [--ttl-s N] [--today YYYY-MM-DD]
+  compile-north-star-progress.py --check --all [--repo R]
   compile-north-star-progress.py --selftest
 
   <north-star-file>  a path to the north-star file; its bytes are read AS COMMITTED at each
@@ -32,11 +34,29 @@ Usage
   --out              default: north-star-progress.html beside the north-star file.
   --check PAGE       no render: re-derive the data block for the page's stops plus HEAD and
                      compare against the header. Exit 0 fresh, 1 stale, 2 error.
+  --all              set mode (north-star-set-progress-index lane): compile EVERY committed
+                     ledger/north-stars/<slug>.md at HEAD (README.md excluded) to
+                     ledger/north-stars/<slug>.progress.html -- never to the shared
+                     north-star-progress.html -- plus ledger/north-stars/index.html, one row per
+                     destination (distance, frontier size, reached, claimed count from the
+                     checker's per-file block; shared lanes from its `set.shared_bounds`;
+                     `not derived` for slugs in `set.not_derived`), every value copied from the
+                     checker's derivation at HEAD. Same stop rule, same clock flags (a stop
+                     that predates a file is skipped for that file's page; HEAD always kept);
+                     the single-positional path above is unchanged byte for byte.
+  --check --all      set check: re-derive every expected page and the index against a
+                     recompile. Exit 0 fresh; 1 stale, naming every expected page or the index
+                     that is missing, unreadable, or differs; 2 error, reserved for an unreadable
+                     repository (HEAD unresolvable or ledger/north-stars/ absent at HEAD). A set
+                     check never returns 2 for one bad page (the per-page table is unchanged).
   --selftest         build a throwaway repository, prove byte-identical recompiles, --check 0
                      on the clean tree, --check 1 after one seeded status flip, exactly three
                      drift chips for the three seeded drift classes and zero on the clean page,
-                     an exact panel partition at every stop, and the claim overlay. Exit 0 iff
-                     every check passes.
+                     an exact panel partition at every stop, and the claim overlay; then a
+                     multi-file repository: --all twice byte-identical, --check --all 0 clean,
+                     1 naming a truncated page, 0 after recompile, a not-derived index row, 1
+                     naming the index and the flipped page after one seeded status flip, 2 on a
+                     repository without ledger/north-stars/. Exit 0 iff every check passes.
 
 Drift classes (HEAD-contradictions, disjoint from spec 1's --strict lint):
   BANKS-ACTIVE          an Excluded banks: target H-NNN whose committed spec's Status word is
@@ -63,6 +83,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 COMPILER_PATH = "scripts/compile-north-star-progress.py"
 OUTPUT_NAME = "north-star-progress.html"
+INDEX_NAME = "index.html"            # set mode: ledger/north-stars/index.html
+PAGE_SUFFIX = ".progress.html"       # set mode: ledger/north-stars/<slug>.progress.html
 STOP_RULE = re.compile(r"KEPT|DISCARDED|decision:")
 DEFAULT_MAX_STOPS = 60
 __doc__ = __doc__ % DEFAULT_MAX_STOPS
@@ -75,6 +97,9 @@ HEADER_RE = {
 }
 DATA_BLOCK_RE = re.compile(
     r'<script type="application/json" id="north-star-data">(.*?)</script>', re.S)
+INDEX_DATA_BLOCK_RE = re.compile(
+    r'<script type="application/json" id="north-star-index-data">(.*?)</script>', re.S)
+INDEX_PAGES_RE = re.compile(r"^\s*pages: (\d+)\s*$", re.M)
 
 
 def load_ncs():
@@ -394,7 +419,7 @@ render(stops.length-1);
 """
 
 
-def render_html(block, data_json):
+def render_html(block, data_json, check_target=OUTPUT_NAME):
     meta = block["meta"]
     header = "\n".join([
         "<!-- north-star-progress checkpoint",
@@ -405,7 +430,7 @@ def render_html(block, data_json):
         "     stops: %d" % meta["n_stops"],
         "     data: sha256:%s" % sha256_text(data_json),
         "     freshness check: python3 %s --check %s --repo <root> -->" % (meta["compiler"],
-                                                                          OUTPUT_NAME),
+                                                                          check_target),
     ])
     title = "north-star progress: %s" % html.escape(os.path.splitext(
         os.path.basename(meta["source"]))[0])
@@ -471,12 +496,13 @@ def rel_in_repo(path, root):
     return path.replace(os.sep, "/")
 
 
-def compile_page(ncs, root, rel_path, stops_arg, now, ttl_s, today, today_label, out_path):
-    repo = ncs.Repo(root)
-    stops, head = load_stops(repo, stops_arg)
+def compile_page(ncs, root, rel_path, stops_arg, now, ttl_s, today, today_label, out_path,
+                 check_target=OUTPUT_NAME, repo=None, stops_head=None):
+    repo = repo or ncs.Repo(root)
+    stops, head = stops_head or load_stops(repo, stops_arg)
     block = build_block(ncs, repo, root, rel_path, stops, head, now, ttl_s, today, today_label)
     data_json = block_json(block)
-    page = render_html(block, data_json)
+    page = render_html(block, data_json, check_target)
     atomic_write(out_path, page)
     return block, sha256_text(page)
 
@@ -547,6 +573,225 @@ def parse_today(label):
         return datetime.date.fromisoformat(label)
     except (ValueError, TypeError):
         return datetime.date(1970, 1, 1)
+
+
+# ---------------------------------------------------------------- set mode -----------------
+# north-star-set-progress-index lane: one page per committed north-star file plus one index,
+# every index value copied from the checker's own report at HEAD (the derivation the compiler
+# already imports); the legacy single-positional path above is untouched.
+
+def set_targets(ncs, repo, head):
+    """Every committed north-star file at head (README.md excluded) as
+    (rel_md_path, slug, rel_page_path), in slug order."""
+    out = []
+    for p in ncs.north_star_paths(repo, head):
+        slug = ncs.slug_of(p)
+        out.append((p, slug, "%s/%s%s" % (ncs.NORTH_STARS_DIR, slug, PAGE_SUFFIX)))
+    out.sort(key=lambda t: t[1])
+    return out
+
+
+def index_rel(ncs):
+    return "%s/%s" % (ncs.NORTH_STARS_DIR, INDEX_NAME)
+
+
+def build_index_block(ncs, repo, root, head, targets, now, ttl_s, today, today_label):
+    """{"meta", "rows", "set"}: one row per destination in slug order, every value copied from
+    the checker's report at head (claim overlay applied, as `--json --at HEAD` would), plus
+    the report's `set` block verbatim."""
+    report = ncs.check(repo, head, [(p, repo.show(head, p) or "") for p, _, _ in targets],
+                       live_root=root, ttl_s=ttl_s, now=now, today=today)
+    st = report.get("set") or {}
+    shared = st.get("shared_bounds") or {}
+    not_derived = st.get("not_derived") or []
+    by_slug = {s["slug"]: s for s in report["north_stars"]}
+    rows = []
+    for p, slug, page in targets:
+        s = by_slug[slug]
+        derived = bool(s.get("derived"))
+        statuses = {c["id"]: c.get("status") for c in s["conditions"]} if derived else {}
+        reached_count = sum(1 for t in s["reached_when"]
+                            if statuses.get(t) == "done"
+                            or str(statuses.get(t) or "").startswith("retired:"))
+        frontier = s.get("frontier") or []
+        rows.append({
+            "slug": slug, "source": p, "page": page, "derived": derived,
+            "not_derived": (slug in not_derived) or not derived,
+            "distance": s.get("distance") if derived else None,
+            "frontier_n": len(frontier),
+            "next": ("%s %s" % (frontier[0]["id"], frontier[0]["verb"])) if frontier else "",
+            "reached": bool(s.get("reached")) if derived else None,
+            "reached_count": reached_count if derived else 0,
+            "reached_when_n": len(s["reached_when"]),
+            "claimed_n": len(s.get("claimed_fresh") or []),
+            "shared_lanes": sorted(k for k, v in shared.items()
+                                   if any(x.rsplit("#", 1)[0] == slug for x in v)),
+            "findings": sorted(set(f["class"] for f in s.get("findings") or [])),
+        })
+    meta = {"compiler": COMPILER_PATH, "index": index_rel(ncs), "page_suffix": PAGE_SUFFIX,
+            "head": head, "now": int(now), "ttl_s": int(ttl_s), "today": today_label,
+            "n_pages": len(rows), "stop_rule": "KEPT|DISCARDED|decision: plus HEAD"}
+    return {"meta": meta, "rows": rows, "set": st}
+
+
+INDEX_CSS = """
+body{margin:0;font:14px/1.45 -apple-system,Helvetica,Arial,sans-serif;color:#1e1e1e;background:#f7f7f5}
+main{max-width:1180px;margin:0 auto;padding:20px 24px 48px}h1{font-size:20px;margin:0 0 4px}
+p.sum{color:#6b6b6b;margin:0 0 14px}table{border-collapse:collapse;width:100%;background:#fff;
+border:1px solid #d9d9d4;border-radius:6px}th,td{text-align:left;padding:6px 10px;
+border-top:1px solid #d9d9d4;vertical-align:top}th{font-size:12px;text-transform:uppercase;
+letter-spacing:.06em;color:#6b6b6b;border-top:0}td.n{font-family:ui-monospace,Menlo,monospace}
+tr.reached td{color:#2f7d4f}tr.nd td{color:#b3261e}a{color:inherit}
+footer{margin-top:28px;color:#6b6b6b;font-size:12px}
+"""
+
+
+def render_index_html(block, data_json):
+    meta, st = block["meta"], block["set"]
+    e = html.escape
+    header = "\n".join([
+        "<!-- north-star-index checkpoint",
+        "     compiler: %s" % meta["compiler"],
+        "     head: %s" % meta["head"],
+        "     clock: now=%d ttl_s=%d today=%s" % (meta["now"], meta["ttl_s"], meta["today"]),
+        "     pages: %d" % meta["n_pages"],
+        "     data: sha256:%s" % sha256_text(data_json),
+        "     freshness check: python3 %s --check --all --repo <root> -->" % meta["compiler"],
+    ])
+    rows = []
+    for r in block["rows"]:
+        cls = "nd" if r["not_derived"] else ("reached" if r["reached"] else "")
+        if r["not_derived"]:
+            dist, fr, rw, cl = "not derived", "-", "-", "-"
+        else:
+            dist = str(r["distance"])
+            fr = "%d%s" % (r["frontier_n"], (" (%s)" % r["next"]) if r["next"] else "")
+            rw = "%d/%d%s" % (r["reached_count"], r["reached_when_n"],
+                              " reached" if r["reached"] else "")
+            cl = str(r["claimed_n"])
+        rows.append('<tr class="%s"><td><a href="%s">%s</a></td><td class="n">%s</td>'
+                    '<td class="n">%s</td><td class="n">%s</td><td class="n">%s</td>'
+                    '<td class="n">%s</td></tr>' % (
+                        cls, e(os.path.basename(r["page"])), e(r["slug"]), e(dist), e(fr), e(rw),
+                        e(cl), e(", ".join(r["shared_lanes"]) or "-")))
+    summary = "%d destinations, %d reached, not derived: %s, shared lanes: %d, union frontier: %d" % (
+        st.get("destinations", meta["n_pages"]), st.get("reached", 0),
+        ", ".join(st.get("not_derived") or []) or "-", len(st.get("shared_bounds") or {}),
+        len(st.get("union_frontier") or []))
+    parts = [
+        "<!DOCTYPE html>", '<html lang="en"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        "<title>north-star index</title>", header, "<style>%s</style></head><body><main>" % INDEX_CSS,
+        "<h1>north-star index</h1>", '<p class="sum">%s</p>' % e(summary),
+        "<table><thead><tr><th>destination</th><th>distance</th><th>frontier (next)</th>"
+        "<th>reached-when</th><th>claimed</th><th>shared lanes</th></tr></thead><tbody>",
+    ] + rows + [
+        "</tbody></table>",
+        "<footer>%d pages at %s | clock now=%d | compiled by %s | every value above is read from "
+        "the inline data block, which is copied from the checker's derivation at HEAD and "
+        "re-derivable from committed bytes (--check --all).</footer>" % (
+            meta["n_pages"], meta["head"][:12], meta["now"], e(meta["compiler"])),
+        '<script type="application/json" id="north-star-index-data">%s</script>' % data_json,
+        "</main></body></html>\n",
+    ]
+    return "\n".join(parts)
+
+
+def compile_all(ncs, root, now, ttl_s, today, today_label):
+    """-> (written, index_block); written = [{path, sha256, ...}] in slug order, index last."""
+    repo = ncs.Repo(root)
+    stops, head = load_stops(repo, None)
+    if not repo.ls(head, ncs.NORTH_STARS_DIR):
+        raise RuntimeError("%s absent at HEAD %s" % (ncs.NORTH_STARS_DIR, head[:12]))
+    targets = set_targets(ncs, repo, head)
+    written = []
+    for p, slug, page in targets:
+        out_path = os.path.join(root, *page.split("/"))
+        # a stop that predates this file is skipped for its page (HEAD is always retained;
+        # per-file stop filtering by resolver path stays a Horizon line, not this rule)
+        page_stops = [(s, subj) for s, subj in stops if s == head or repo.exists(s, p)]
+        block, digest = compile_page(ncs, root, p, None, now, ttl_s, today, today_label,
+                                     out_path, check_target=page, repo=repo,
+                                     stops_head=(page_stops, head))
+        head_e = block["stops"][-1]
+        written.append({"path": page, "sha256": digest, "slug": slug, "stops": len(page_stops),
+                        "distance": head_e["distance"], "frontier": len(head_e["frontier"]),
+                        "claimed": len(head_e["claimed_fresh"]), "derived": head_e["derived"]})
+    iblock = build_index_block(ncs, repo, root, head, targets, now, ttl_s, today, today_label)
+    ijson = block_json(iblock)
+    ipage = render_index_html(iblock, ijson)
+    atomic_write(os.path.join(root, *index_rel(ncs).split("/")), ipage)
+    written.append({"path": index_rel(ncs), "sha256": sha256_text(ipage),
+                    "rows": len(iblock["rows"])})
+    return written, iblock
+
+
+def check_index(ncs, repo, root, head, path):
+    """-> (0 fresh | 1 stale, message) for the index page; never 2 (repo-level errors are the
+    caller's)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            page = fh.read()
+    except OSError as e:
+        return 1, "missing: %s" % e
+    hdr = {}
+    for k in ("head", "clock", "data"):
+        m = HEADER_RE[k].search(page)
+        if not m:
+            return 1, "unreadable: header line %r" % k
+        hdr[k] = m.groups()
+    if not INDEX_PAGES_RE.search(page):
+        return 1, "unreadable: header line 'pages'"
+    m = INDEX_DATA_BLOCK_RE.search(page)
+    if not m:
+        return 1, "unreadable: data block missing"
+    if sha256_text(m.group(1)) != hdr["data"][0]:
+        return 1, "stale: data block bytes do not match the recorded digest"
+    now, ttl_s, today_label = int(hdr["clock"][0]), int(hdr["clock"][1]), hdr["clock"][2]
+    targets = set_targets(ncs, repo, head)
+    fresh = build_index_block(ncs, repo, root, head, targets, now, ttl_s,
+                              parse_today(today_label), today_label)
+    reasons = []
+    if hdr["head"][0] != head:
+        reasons.append("HEAD moved %s -> %s" % (hdr["head"][0][:12], head[:12]))
+    if sha256_text(block_json(fresh)) != hdr["data"][0]:
+        reasons.append("derived data changed")
+    if reasons:
+        return 1, "stale: " + "; ".join(reasons)
+    return 0, "fresh"
+
+
+def check_all(ncs, root):
+    """Set-mode exit table -> (rc, lines). 0 fresh; 1 stale, one `stale: <path> (<why>)` line
+    per expected page or index that is missing, unreadable, or differs from a recompile; 2
+    error only for an unreadable repository (HEAD unresolvable, ledger/north-stars/ absent)."""
+    repo = ncs.Repo(root)
+    head = repo.resolve("HEAD")
+    if head is None:
+        return 2, ["error: cannot resolve HEAD in %s" % root]
+    if not repo.ls(head, ncs.NORTH_STARS_DIR):
+        return 2, ["error: %s absent at HEAD %s" % (ncs.NORTH_STARS_DIR, head[:12])]
+    targets = set_targets(ncs, repo, head)
+    stale = []
+    for p, slug, page in targets:
+        full = os.path.join(root, *page.split("/"))
+        if not os.path.isfile(full):
+            stale.append((page, "missing"))
+            continue
+        rc, msg = check_page(ncs, full, root)
+        if rc == 2 and msg.startswith("error: "):
+            msg = "unreadable: " + msg[len("error: "):]
+        if rc != 0:
+            stale.append((page, msg))
+    rc, msg = check_index(ncs, repo, root, head, os.path.join(root, *index_rel(ncs).split("/")))
+    if rc != 0:
+        stale.append((index_rel(ncs), msg))
+    lines = ["stale: %s (%s)" % (p, m) for p, m in stale]
+    if stale:
+        lines.append("set check: %d of %d stale" % (len(stale), len(targets) + 1))
+        return 1, lines
+    lines.append("fresh: %d pages + %s" % (len(targets), INDEX_NAME))
+    return 0, lines
 
 
 # ---------------------------------------------------------------- selftest -----------------
@@ -678,6 +923,72 @@ def selftest():
         ok("exactly three drift chips, one per seeded class", chips == want, str(chips))
         ok("--check on a missing page exits 2", check_page(ncs, os.path.join(tmp, "nope.html"),
                                                             lab)[0] == 2)
+        # set mode (north-star-set-progress-index lane): a third throwaway lab with four
+        # north-star files, one of them malformed (authored status column)
+        lab3 = os.path.join(tmp, "lab3")
+        ncs.scenario_build(lab3, north_star_override=base_text)
+        for n in range(1, 10):
+            ncs.scenario_play(lab3, n)
+        _commit_file(ncs, lab3, "ledger/north-stars/set-two.md",
+                     base_text.replace("fixture-destination", "set-two", 1),
+                     "north-star set-two added (selftest set seed)", 3)
+        _commit_file(ncs, lab3, "ledger/north-stars/set-three.md",
+                     base_text.replace("fixture-destination", "set-three", 1),
+                     "north-star set-three added (selftest set seed)", 4)
+        _commit_file(ncs, lab3, "ledger/north-stars/set-bad.md",
+                     ncs._add_status_column(base_text.replace("fixture-destination", "set-bad", 1)),
+                     "north-star set-bad added (selftest set seed, STATUS-STORED)", 5)
+        today3 = datetime.date(2026, 9, 4)
+        w1, ib = compile_all(ncs, lab3, now, 1800, today3, "2026-09-04")
+        w2, _ = compile_all(ncs, lab3, now, 1800, today3, "2026-09-04")
+        ns_dir = os.path.join(lab3, "ledger", "north-stars")
+        want = set("ledger/north-stars/%s.progress.html" % s
+                   for s in ("fixture-destination", "set-two", "set-three", "set-bad"))
+        want.add("ledger/north-stars/" + INDEX_NAME)
+        ok("--all writes one <slug>.progress.html per file plus index.html, never the shared name",
+           set(w["path"] for w in w1) == want and len(w1) == 5
+           and not os.path.exists(os.path.join(ns_dir, OUTPUT_NAME)),
+           str(sorted(w["path"] for w in w1)))
+        ok("--all twice byte-identical for 5/5 files",
+           [w["sha256"] for w in w1] == [w["sha256"] for w in w2]
+           and len(set(w["sha256"] for w in w1)) == 5)
+        rc, lines = check_all(ncs, lab3)
+        ok("--check --all exits 0 on the clean tree", rc == 0, " | ".join(lines))
+        rows = {r["slug"]: r for r in ib["rows"]}
+        ok("index rows in slug order, malformed file renders not derived, others copy the checker",
+           [r["slug"] for r in ib["rows"]] == sorted(rows)
+           and rows["set-bad"]["not_derived"] and rows["set-bad"]["distance"] is None
+           and rows["fixture-destination"]["distance"] == _extract_block(
+               os.path.join(ns_dir, "fixture-destination.progress.html"))["stops"][-1]["distance"]
+           and rows["set-two"]["frontier_n"] == len(_extract_block(
+               os.path.join(ns_dir, "set-two.progress.html"))["stops"][-1]["frontier"]),
+           json.dumps(rows.get("set-bad")))
+        trunc = os.path.join(ns_dir, "set-two.progress.html")
+        with open(trunc, "w", encoding="utf-8"):
+            pass
+        rc, lines = check_all(ncs, lab3)
+        stale_lines = [l for l in lines if l.startswith("stale: ")]
+        ok("--check --all exits exactly 1 after one page is truncated, naming that page only",
+           rc == 1 and len(stale_lines) == 1 and "set-two.progress.html" in stale_lines[0],
+           " | ".join(lines))
+        compile_all(ncs, lab3, now, 1800, today3, "2026-09-04")
+        ok("--check --all exits 0 again after recompile", check_all(ncs, lab3)[0] == 0)
+        _commit_file(ncs, lab3, "hypotheses/H-901-alpha-channel.md",
+                     ncs._spec("H-901", "alpha-channel", "alpha channel", "draft"),
+                     "H-901 status flipped (selftest set flip seed)", 6)
+        rc, lines = check_all(ncs, lab3)
+        ok("--check --all exits 1 after one seeded status flip, naming the index and the pages",
+           rc == 1 and any(INDEX_NAME in l for l in lines)
+           and any("fixture-destination.progress.html" in l for l in lines), " | ".join(lines))
+        compile_all(ncs, lab3, now, 1800, today3, "2026-09-04")
+        ok("--check --all exits 0 after the post-flip recompile", check_all(ncs, lab3)[0] == 0)
+        empty = os.path.join(tmp, "empty")
+        os.makedirs(empty)
+        env0 = ncs.scenario_env("%sT02:00:00Z" % ncs.SCENARIO_DATE)
+        _git(empty, ["init", "-q", "-b", "main"], env0)
+        _git(empty, ["commit", "-q", "--no-verify", "--allow-empty", "-m", "empty"], env0)
+        ok("--check --all exits 2 on a repository without ledger/north-stars/",
+           check_all(ncs, empty)[0] == 2)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     failed = [c for c in checks if not c[1]]
@@ -699,7 +1010,10 @@ def main(argv=None):
     ap.add_argument("--ttl-s", type=int, default=1800)
     ap.add_argument("--today")
     ap.add_argument("--out")
-    ap.add_argument("--check", metavar="PAGE")
+    ap.add_argument("--check", metavar="PAGE", nargs="?", const=True)
+    ap.add_argument("--all", action="store_true",
+                    help="set mode: every committed north-star file -> <slug>.progress.html "
+                         "plus index.html (with --check: the set check)")
     ap.add_argument("--selftest", action="store_true")
     o = ap.parse_args(argv)
 
@@ -709,9 +1023,29 @@ def main(argv=None):
         ncs = load_ncs()
         if o.check:
             root = repo_root_for(None, o.repo)
+            if o.all:
+                rc, lines = check_all(ncs, root)
+                print("\n".join(lines))
+                return rc
+            if o.check is True:
+                ap.error("--check needs PAGE (or --all)")
             rc, msg = check_page(ncs, o.check, root)
             print(msg)
             return rc
+        if o.all:
+            root = repo_root_for(None, o.repo)
+            now = o.now if o.now is not None else int(time.time())
+            today_label = o.today if o.today else "unpinned"
+            today = parse_today(o.today) if o.today else datetime.date(1970, 1, 1)
+            written, iblock = compile_all(ncs, root, now, o.ttl_s, today, today_label)
+            for w in written[:-1]:
+                print("compiled %s: %d stops, distance %s, frontier %d, claimed %d, sha256 %s"
+                      % (w["path"], w["stops"], w["distance"], w["frontier"], w["claimed"],
+                         w["sha256"][:12]))
+            w = written[-1]
+            print("compiled %s: %d rows, HEAD %s, sha256 %s"
+                  % (w["path"], w["rows"], iblock["meta"]["head"][:12], w["sha256"][:12]))
+            return 0
         if not o.north_star:
             ap.error("north-star file required (or --check / --selftest)")
         root = repo_root_for(o.north_star, o.repo)
