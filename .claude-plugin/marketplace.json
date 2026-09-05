@@ -1,5 +1,6 @@
 {
   "name": "hyp-machine",
+  "description": "Hyp Machine — hypothesis-driven development for Claude Code: one plugin (hyp), proven in its source lab before each release.",
   "owner": {
     "name": "Ian Anderson",
     "url": "https://github.com/getfatday"

@@ -343,6 +343,13 @@ def main():
                     render(template("HYPOTHESIS-TEMPLATE.md"), cfg), "spec template")
         install_script(root, cfg["preflight_file"], ("scripts", "preflight.py"),
                        "deterministic spec pre-flight")
+        # Destination-map program (lab H-DRAFT-2cae0933): the north-star convention (one tracked file per
+        # destination under ledger/north-stars/, status derived at read time by the
+        # plugin's scripts/north-star-check.py). Only the README is scaffolded --
+        # consumer-owned once created, no .gitkeep, no example file.
+        ensure_file(root, "ledger/north-stars/README.md",
+                    template("north-stars-README.md"),
+                    "north-star file convention (ledger/north-stars/<slug>.md)")
         # H-254 keep: the reflex install self-test runs as a required install/update
         # step — a seeded synthetic slowdown must fire the detector and land an
         # autopsy record, end to end, before the install reports healthy. Report-only
