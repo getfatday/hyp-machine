@@ -25,6 +25,30 @@ Two compilers turn committed bytes into pages a human can open:
 Both are projections: deterministic, byte-identical on recompile, regenerable after deletion,
 and `--check`-able. Neither computes a number the sources do not carry.
 
+### Typed documents as conditions (document resolver)
+
+A condition may bind a committed typed document instead of a spec, a decision, a capture or a
+probe: resolver kind `document`, the `bound` cell a repository path, and the predicate
+`frontmatter-status=<path>:<done-values>[!<no-values>]` (the path is everything before the last
+colon; values are comma-separated). The checker reads the file at that path at the commit you
+ask about and takes the text after `status:` on the first such line of its frontmatter
+(whitespace and one pair of quotes stripped, compared exactly): a done-value derives `done`; a
+no-value settles the outcome `no` without resolving the row, so its `C-NN:yes` dependents retire
+while the row stays open; a present file with no `status:` line is open with no outcome. The
+frontier verb is `sync` — what moves the condition is the commit that changes the document's
+status line, never an edit to the north-star file. Presence is decided by `git cat-file -e`,
+not by `git show`'s exit code (which is 0 with empty output for some deleted paths); a bound
+path absent at the commit is a `DANGLING-REF` hard finding. `scripts/closes_when.py` carries the
+same predicate under the same presence rule, so an On-keep bracket and a north-star row read one
+document the same way. What the keep evidenced (lab lane
+`H-DRAFT-d6a0a6ef-document-resolver-milestones`, 5/5 twice, journal fragment 0277): over a
+ten-commit fixture shaped like a portfolio strategy's milestone table — twelve bound milestone
+documents moved by Jira-style sync commits — the checker matched a blind reference evaluator at
+every non-seeded commit with zero edits to the north-star file; a cancelled milestone retired
+its dependents and reopened them when the cancellation was reversed on resume; a deleted bound
+file fired `DANGLING-REF` exactly once; and the north-star file's own status-scope lint was
+untouched by the documents' frontmatter (it fired exactly once, on the seeded authored column).
+
 ### Many north-star files: the set block
 
 A repository may carry many destinations (the lab's fixture is shaped like a portfolio of 22
@@ -148,6 +172,12 @@ the file that owns it, and let the other file's `needs` cell name it as `<slug>#
 cascade with zero edits to either file; a copied row would go stale the moment the sibling
 retires.
 
+**Can I bind a Jira-synced milestone table?** Yes, through each milestone's typed file: bind the
+row as `document` to the file's path with `frontmatter-status=<path>:<done-values>!<no-values>`,
+and the sync commits that already rewrite that file's `status:` line move the condition. The
+north-star file never learns the Jira key; binding is by path only (a `jira_ticket:` alias is a
+pending maintainer decision with a recommended default of path-only).
+
 **A lane is on the frontier of three files. How many times does the set count it?** Once.
 `union_frontier` keys on the effective lane, lists the three `<slug>#C-NN` pairs under
 `serves`, and ranks it above a nearer lane that serves one destination (`n_serves` sorts
@@ -192,6 +222,11 @@ when there is a real destination to point at.
 - `compile-north-star-progress.py --all` twice gives one sha256 per page and for `index.html`;
   `--check --all` exits 0, then 1 naming exactly the one page you truncate, then 0 after a
   recompile.
+- A row bound `document` with `frontmatter-status=docs/<m>.md:completed!cancelled` reads `done`
+  the commit after that file's `status:` line says `completed`, its `C-NN:yes` dependents read
+  `retired:C-NN` the commit it says `cancelled` and reopen when it is changed back, and
+  `--strict` exits 1 with `DANGLING-REF` the commit the file is deleted — with no edit to the
+  north-star file at any step.
 - `python3 scripts/north-star-check.py --selftest` (115 checks), `compile-run-checkpoint.py
   --selftest`, `compile-north-star-progress.py --selftest` (23 checks) and `closes_when.py
   --selftest` (19 checks) all exit 0 on the installed copy.
@@ -207,6 +242,8 @@ keeps each at 5/5 twice with a cold-context executor on run 2 and zero LLM calls
 `H-DRAFT-d6a0a6ef-north-star-set-union-frontier`, `H-DRAFT-d6a0a6ef-north-star-set-cross-file-needs`,
 `H-DRAFT-d6a0a6ef-north-star-set-batched-reads`, `H-DRAFT-d6a0a6ef-north-star-set-progress-index`;
 every fixture was synthesized from the shape of a portfolio repository that stayed read-only.
+The wave's fifth lane, `H-DRAFT-d6a0a6ef-document-resolver-milestones` (kept 2x 5/5, journal
+fragment 0277), added the `document` resolver kind and the `frontmatter-status` predicate.
 The four-section frame of this page (what it does / when to reach for it / common questions
 / it is working if) is the docs-page pattern the lab's pattern census kept as a gap worth
 adopting from an external repository; the terms here are the lab's own (north-star file,

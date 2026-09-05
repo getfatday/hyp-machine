@@ -130,6 +130,10 @@ every condition's state is derived at HEAD from the resolver it is bound to.
   once, ranked by how many destinations it serves (the pick across destinations is the first
   `union_frontier` entry whose `claimed_fresh` is false), and a `needs` cell may name a
   sibling file's condition as `<slug>#C-NN[:yes|no]` instead of copying its row.
+- **Bind a typed document.** A row may bind a committed file instead of a spec — `| C-NN |
+  <milestone> | document | docs/<file>.md | frontmatter-status=docs/<file>.md:completed!cancelled
+  | - |` — and derives from that file's frontmatter `status:` line at the commit (verb `sync`;
+  an absent path is `DANGLING-REF`).
 
 ## Rules
 

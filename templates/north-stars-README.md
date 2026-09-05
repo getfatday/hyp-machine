@@ -87,7 +87,7 @@ into a `reached-when` condition; **reached** = every `reached-when` condition is
 
 ## Set (many north-star files read together)
 
-When the checker reads more than one file it also emits a computed `set` block (`--json` top-level
+Whenever the checker reads at least one file it also emits a computed `set` block (a one-destination reduction while only one file exists) (`--json` top-level
 key `set`; text form: a trailing `set:` block after the per-file blocks, which are unchanged). It
 is reduced from the per-file blocks alone: no file gains a field, no authored order exists
 between files.

@@ -253,6 +253,11 @@ def _check_frontmatter_status(arg, repo_root):
     done = [v.strip() for v in values.partition("!")[0].split(",") if v.strip()]
     if not path or not done:
         return False
+    # Presence is decided by cat-file -e, never by `show`'s exit code: `git show HEAD:<path>`
+    # returns 0 with empty output for some deleted paths (document-resolver lane, Amendment 1).
+    present, _ = _git(repo_root, ["cat-file", "-e", "HEAD:" + path])
+    if present != 0:
+        return False
     code, text = _git(repo_root, ["show", "HEAD:" + path])
     if code != 0:
         return False
