@@ -73,13 +73,20 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "hooks", "scripts"))
+from hyp_status import TERMINAL, canonical_status  # noqa: E402  (shared status reader)
+
 CONFIG_RELPATH = os.path.join(".claude", "hyp.json")
 DEFAULTS = {
     "hypotheses_dir": "hypotheses",
     "runs_dir": "experiments/runs",
     "followups_file": "hypotheses/FOLLOWUPS.md",
 }
-TERMINAL = ("kept", "discarded")   # committed exit-artifact statuses; refine reruns
+# TERMINAL (kept, discarded, refined-into) is the shared canonical set from
+# hooks/scripts/hyp_status.py; the status word is read through its canonicalizer
+# so consumer spellings (keep, discard, refined-into:, refined (into ...), any
+# casing) close an item the way the author meant. refine reruns.
 # REFILL masking (lab throughput-floor patch, 2026-09-02): open items whose committed
 # status BLOCK carries one of these markers are excluded from the actionable frontier
 # count (never from the open list itself) -- the markers live in the status comment,
@@ -326,8 +333,9 @@ def committed_spec_status(ctx, sha, hid, spec_paths):
     for p in spec_paths:
         base = os.path.basename(p)
         if base.startswith(hid + "-") and base.endswith(".md"):
-            m = re.search(r"^## Status\s*\n(\w+)", show(ctx, sha, p) or "", re.M)
-            return (m.group(1) if m else "unparsed"), p
+            m = re.search(r"^## Status\s*\n\s*(\S.*)$", show(ctx, sha, p) or "",
+                          re.M)
+            return (canonical_status(m.group(1)) if m else None) or "unparsed", p
     return None, None
 
 
