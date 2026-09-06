@@ -358,6 +358,21 @@ if [ -f scripts/hook-parity-check.py ] && [ -f "${HOOK_PARITY_SETTINGS:-.claude/
   fi
 fi
 
+# ADVISORY-33 keeps-unshipped (H-DRAFT-3e26af94-lab-plugin-keep-ships-gate): a keep whose
+# ON arm changed plugin-shipped bytes can close its ledger row with a lab-only commit and
+# sit unshipped for weeks (H-148: 13 days). The gate joins each kept lane's committed
+# VERDICT.json files_changed_in_on to the deploy tree and to a committed
+# experiments/runs/<id>/SHIP.md carrying a pr: line, and prints one KEEP-UNSHIPPED line
+# per unshipped keep; this block prints the count. Plugin-rooted (CLAUDE_PLUGIN_ROOT when
+# set, else this tree) so a consumer install runs the shipped copy. Report-only, never blocks.
+g="${CLAUDE_PLUGIN_ROOT:-.}/scripts/keep-ship-gate.py"
+if [ -f "$g" ]; then
+  ku=$(python3 "$g" . 2>/dev/null | grep -c "^KEEP-UNSHIPPED" || true)
+  if [ -n "$ku" ] && [ "$ku" != "0" ]; then
+    echo "ADVISORY-33 keeps-unshipped: $ku kept lane(s) changed plugin-shipped bytes with no committed SHIP.md carrying a pr: line (python3 $g . for detail; ship through the changeset flow, then commit experiments/runs/<id>/SHIP.md with 'pr: <n>')"; W=1
+  fi
+fi
+
 [ "$W" -eq 0 ] && echo "harden-check: clean (governance in sync, program.md current, tree clean, pushed)"
 :
 }
