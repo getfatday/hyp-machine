@@ -6,16 +6,34 @@
 # infra like .claude/stop-snooze). Capture-then-write rather than a live tee pipe: advisory 19
 # below runs compile-dashboard.py --check, whose source digest covers the cache file — a tee
 # would have already truncated it mid-run and every session would read spuriously stale.
-cd "$(dirname "$0")/.." || exit 0
+# Plugin-rooted (consumer parity G1): every scripts/<name> below resolves under the plugin
+# root -- $CLAUDE_PLUGIN_ROOT in a consumer install, this file's parent directory in the lab
+# -- while the advisories inspect the repo the session works in: the cwd's git toplevel
+# (worktree-aware, the same checkout hyp_config.resolve_root picks), else CLAUDE_PROJECT_DIR,
+# else the parent directory (the pre-parity form). Lab-only linters are skipped where their
+# script is absent under the plugin root; the advisory cache is written only where .claude/
+# exists. Advisory logic, thresholds, and wording are unchanged.
+# Scale guard (consumer parity G1, successor lane): the two whole-tree scans below — advisory
+# 18's name grep and ADVISORY-27's direction lint — measure ~41 s and ~11 s on a 35k-file
+# consumer, more than a SessionStart hook may spend inline. They run when the tree is small
+# (tracked files <= HARDEN_TREE_MAX, default 2000) or when an advisory cache already exists
+# (the cache-first background refresh, a manual --fresh after the first session); the cold
+# first run in a large tree defers them and says so on one HARDEN-SKIP line.
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+S="${CLAUDE_PLUGIN_ROOT:-$HERE}/scripts"
+cd "$(git rev-parse --show-toplevel 2>/dev/null || echo "${CLAUDE_PROJECT_DIR:-$HERE}")" || exit 0
 main() {
 W=0
-if ! python3 scripts/check-governance-drift.py >/dev/null 2>&1; then
+ntracked=$(git ls-files 2>/dev/null | wc -l | tr -d ' ')
+if [ -f .claude/harden-last.txt ] || [ "${ntracked:-0}" -le "${HARDEN_TREE_MAX:-2000}" ]; then SCAN=1; else SCAN=0; fi
+skipped=""
+if [ -f "$S/check-governance-drift.py" ] && ! python3 "$S/check-governance-drift.py" >/dev/null 2>&1; then
   echo "HARDEN-WARNING: GOVERNANCE drift — CLAUDE.md mirror differs from kernel canonical (run scripts/check-governance-drift.py)"; W=1
 fi
 latest_h=$(ls hypotheses/H-*.md 2>/dev/null | sed 's/.*H-\([0-9]*\).*/\1/' | sort -n | tail -1)
 # row-based: the id must appear in a status-table row's ID cell — a mention elsewhere
 # (e.g. another row's "refined-into H-NNN") must not mask a deleted row (H-077's finding)
-if [ -n "$latest_h" ] && ! { grep -E '^\|' program.md | cut -d'|' -f2 | grep -Eq "H-0*${latest_h}([^0-9]|$)"; }; then
+if [ -n "$latest_h" ] && [ -f program.md ] && ! { grep -E '^\|' program.md | cut -d'|' -f2 | grep -Eq "H-0*${latest_h}([^0-9]|$)"; }; then
   echo "HARDEN-WARNING: program.md status table is stale — latest hypothesis H-$latest_h is not reflected"; W=1
 fi
 dirty=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
@@ -27,36 +45,36 @@ if [ -n "$ahead" ] && [ "$ahead" -gt 0 ]; then
   echo "HARDEN-WARNING: $ahead unpushed commit(s) — durable only when shared"; W=1
 fi
 # eighth advisory (H-100/H-101 kept): open + unjoinable commitments, one line
-if [ -f scripts/commitment-lint.py ]; then
-  cm=$(python3 scripts/commitment-lint.py . 2>/dev/null | awk -F'\t' '{n[$1]++} END {for (k in n) printf "%s=%d ", k, n[k]}')
+if [ -f "$S/commitment-lint.py" ]; then
+  cm=$(python3 "$S/commitment-lint.py" . 2>/dev/null | awk -F'\t' '{n[$1]++} END {for (k in n) printf "%s=%d ", k, n[k]}')
   if [ -n "$cm" ]; then
     echo "HARDEN-WARNING: commitment findings: $cm(commitment-lint for detail; close via evidence or rewrite with closes-when)"; W=1
   fi
 fi
 # journal freeze (M5 ruled 2026-08-15): volume 1 is byte-frozen; entries live in fragments
-if [ -f scripts/journal-freeze.sha ] && [ -f experiments/journal.md ]; then
+if [ -f "$S/journal-freeze.sha" ] && [ -f experiments/journal.md ]; then
   cur=$(shasum -a 256 experiments/journal.md | awk '{print $1}')
-  if [ "$cur" != "$(cat scripts/journal-freeze.sha)" ]; then
+  if [ "$cur" != "$(cat "$S/journal-freeze.sha")" ]; then
     echo "HARDEN-WARNING: experiments/journal.md changed after the M5 freeze — volume 1 is byte-frozen; new entries belong in journal-fragments/"; W=1
   fi
 fi
 # sixth advisory class (H-092/H-093 kept): stale/unwired derived claims, one line
-if [ -f scripts/claim-lint.py ]; then
-  cc=$(python3 scripts/claim-lint.py . --check 2>/dev/null | awk -F'\t' '{n[$1]++} END {for (k in n) printf "%s=%d ", k, n[k]}')
+if [ -f "$S/claim-lint.py" ]; then
+  cc=$(python3 "$S/claim-lint.py" . --check 2>/dev/null | awk -F'\t' '{n[$1]++} END {for (k in n) printf "%s=%d ", k, n[k]}')
   if [ -n "$cc" ]; then
     echo "HARDEN-WARNING: derived-claim findings: $cc(claim_tool --check for detail; refresh via --fix in an attributed commit)"; W=1
   fi
 fi
 # fifth advisory class (H-080 kept): corpus staleness summary, one line, never blocking
-if [ -f scripts/corpus-lint.py ]; then
-  cl=$(timeout 45 python3 scripts/corpus-lint.py . 2>/dev/null | awk -F'\t' '{n[$1]++} END {for (k in n) printf "%s=%d ", k, n[k]}')
+if [ -f "$S/corpus-lint.py" ]; then
+  cl=$(timeout 45 python3 "$S/corpus-lint.py" . 2>/dev/null | awk -F'\t' '{n[$1]++} END {for (k in n) printf "%s=%d ", k, n[k]}')
   if [ -n "$cl" ]; then
     echo "HARDEN-WARNING: corpus-lint findings: $cl(run scripts/corpus-lint.py . for detail; triage via doc-factoring tier)"; W=1
   fi
 fi
 # fourteenth advisory class (H-104 kept): open move manifests — declared, never verified
-if [ -f scripts/fidelity-manifest.py ] && [ -d manifests ]; then
-  fm=$(python3 scripts/fidelity-manifest.py . --open 2>/dev/null | grep -c "^UNVERIFIED-MANIFEST" | tr -d ' ')
+if [ -f "$S/fidelity-manifest.py" ] && [ -d manifests ]; then
+  fm=$(python3 "$S/fidelity-manifest.py" . --open 2>/dev/null | grep -c "^UNVERIFIED-MANIFEST" | tr -d ' ')
   if [ -n "$fm" ] && [ "$fm" != "0" ]; then
     echo "HARDEN-WARNING: $fm open move manifest(s) awaiting verification (scripts/fidelity-manifest.py . --open — verify after executing, or --abandon with a reason)"; W=1
   fi
@@ -70,17 +88,17 @@ if [ -f experiments/runs/H-082/fixture/validator.py ] && git rev-parse -q --veri
   fi
 fi
 # twelfth advisory class (H-103 kept): model-instance coincidence, one line, level-triggered
-if [ -f scripts/coincidence-check.py ]; then
-  co=$(python3 scripts/coincidence-check.py . 2>/dev/null | head -1)
+if [ -f "$S/coincidence-check.py" ]; then
+  co=$(python3 "$S/coincidence-check.py" . 2>/dev/null | head -1)
   case "$co" in
     HARDEN-WARNING*) echo "$co"; W=1 ;;
   esac
 fi
 # eleventh advisory class (H-094/H-095 kept; wiring closes the matrix's stage-2 debt): un-modeled amendments
-if [ -f scripts/amendment-detector.py ]; then
+if [ -f "$S/amendment-detector.py" ]; then
   model_base=$(git log -1 --format=%H -- operating-model/ 2>/dev/null)
   if [ -n "$model_base" ]; then
-    am=$(python3 scripts/amendment-detector.py . "$model_base" 2>/dev/null | awk -F'\t' '{n[$1]++} END {for (k in n) printf "%s=%d ", k, n[k]}')
+    am=$(python3 "$S/amendment-detector.py" . "$model_base" 2>/dev/null | awk -F'\t' '{n[$1]++} END {for (k in n) printf "%s=%d ", k, n[k]}')
     if [ -n "$am" ]; then
       echo "HARDEN-WARNING: amendments since the model last moved ($(git log -1 --format=%as -- operating-model/)): $am(scripts/amendment-detector.py . $model_base for detail; model the segment or record why not)"; W=1
     fi
@@ -104,46 +122,48 @@ if [ -d .claude/skills ] && [ -d skills ]; then
     echo "HARDEN-WARNING: skill twin re-forming: $strays non-symlink entr(ies) in .claude/skills — single home is skills/ (experiments/reviews/unification/client-zero-proof.md)"; W=1
   fi
 fi
-if [ -f scripts/em-slice-lint.py ] && [ -f experiments/reviews/self-board/slice-board.json ]; then
-  emfind=$(python3 scripts/em-slice-lint.py experiments/reviews/self-board/slice-board.json 2>/dev/null | grep -cv '^WARN-' || true)
+if [ -f "$S/em-slice-lint.py" ] && [ -f experiments/reviews/self-board/slice-board.json ]; then
+  emfind=$(python3 "$S/em-slice-lint.py" experiments/reviews/self-board/slice-board.json 2>/dev/null | grep -cv '^WARN-' || true)
   if [ "${emfind:-0}" != "0" ]; then
     echo "HARDEN-WARNING: EM slice-board reconciliation queue: $emfind finding(s) (scripts/em-slice-lint.py for detail; baseline at H-114 keep was 35 — GWT-empty slices, projection-less views, unmarked ellipses)"; W=1
   fi
 fi
-if [ -f scripts/repo-coverage-lint.py ] && [ -f experiments/runs/DESIGN-event-modeling/fixture/repo-coverage-map.json ]; then
+if [ -f "$S/repo-coverage-lint.py" ] && [ -f experiments/runs/DESIGN-event-modeling/fixture/repo-coverage-map.json ]; then
   covtmp=$(mktemp)
   git ls-files > "$covtmp" 2>/dev/null
-  covfind=$(python3 scripts/repo-coverage-lint.py "$covtmp" experiments/runs/DESIGN-event-modeling/fixture/repo-coverage-map.json 2>/dev/null | grep -cv '^WARN-' || true)
+  covfind=$(python3 "$S/repo-coverage-lint.py" "$covtmp" experiments/runs/DESIGN-event-modeling/fixture/repo-coverage-map.json 2>/dev/null | grep -cv '^WARN-' || true)
   /bin/rm -f "$covtmp"
   if [ "${covfind:-0}" != "0" ]; then
     echo "HARDEN-WARNING: repo-coverage drift: $covfind unmapped/dead finding(s) — every tracked artifact joins the map or is called out (scripts/repo-coverage-lint.py for detail; classify via the maintenance loop, fragment 0053)"; W=1
   fi
 fi
-if [ -f scripts/lexicon-lint.py ] && [ -d operating-model/cause-n-effect ]; then
-  lexfind=$(python3 scripts/lexicon-lint.py operating-model/cause-n-effect 2>/dev/null | grep -cv '	WARN: ' || true)
+if [ -f "$S/lexicon-lint.py" ] && [ -d operating-model/cause-n-effect ]; then
+  lexfind=$(python3 "$S/lexicon-lint.py" operating-model/cause-n-effect 2>/dev/null | grep -cv '	WARN: ' || true)
   if [ "${lexfind:-0}" != "0" ]; then
     echo "HARDEN-WARNING: lexicon/definition debt: $lexfind finding(s) on the live model (scripts/lexicon-lint.py operating-model/cause-n-effect for detail; baseline at H-111 keep was 68 — mostly D4 definition-block-missing, the census's 0/51 gap made mechanical)"; W=1
   fi
 fi
 # Advisory 18 (name-neutrality ruling, fragment 0091): the banned third-party name is stored
 # rot13-encoded so this guard never reintroduces the literal token into the tree.
+if [ "$SCAN" = 1 ]; then
 nametok=$(printf 'yhpl' | tr 'A-Za-z' 'N-ZA-Mn-za-m')
 namefind=$(grep -rlwi "$nametok" --exclude-dir=.git --exclude-dir=publish --exclude="*grounding-wordlist*" . 2>/dev/null | wc -l | tr -d ' ')
 if [ "${namefind:-0}" != "0" ]; then
   echo "HARDEN-WARNING: name-neutrality violation: banned third-party name present in $namefind file(s) — substitute [P2]/p2 per fragment 0091 (grep -rlwi \"\$(printf 'yhpl' | tr A-Za-z N-ZA-Mn-za-m)\" for detail)"; W=1
 fi
+else skipped="$skipped name-neutrality"; fi
 # Advisory 19 (living-dashboard contract §3): DASHBOARD.md drift guard — the terraform-docs
 # regenerate-or-fail discipline in advisory form. Never blocking, like all 18 before it.
-if [ -f scripts/compile-dashboard.py ] && \
-   ! python3 scripts/compile-dashboard.py --check >/dev/null 2>&1; then
+if [ -f "$S/compile-dashboard.py" ] && \
+   ! python3 "$S/compile-dashboard.py" --check >/dev/null 2>&1; then
   echo "HARDEN-WARNING: DASHBOARD.md is stale against its sources — regenerate via scripts/compile-dashboard.py (the Stop hook normally does this; staleness here means a hook gap)"; W=1
 fi
 # Advisory 20 (decision-triage tracking §4, two-way-doors grant 2026-08-18): triage sidecar
 # coverage drift — an open maintainer-ruling row the triage never saw, or a filed ruling
 # whose file vanished from worktree and HEAD. Silent when the sidecar is absent (the
 # dashboard already renders that state as untriaged: N). Never blocking, like all 19 before it.
-if [ -f scripts/compile-dashboard.py ] && [ -f experiments/runs/DESIGN-decision-triage/triage.json ] && \
-   ! python3 scripts/compile-dashboard.py --triage-check >/dev/null 2>&1; then
+if [ -f "$S/compile-dashboard.py" ] && [ -f experiments/runs/DESIGN-decision-triage/triage.json ] && \
+   ! python3 "$S/compile-dashboard.py" --triage-check >/dev/null 2>&1; then
   echo "HARDEN-WARNING: decision-triage drift — open maintainer-ruling row(s) lack a triage entry, or a filed ruling's file is gone (scripts/compile-dashboard.py --triage-check for detail; re-triage per research/raw/2026-08-18-decisions-are-two-way-doors-grant.md)"; W=1
 fi
 # Advisory 21 (dashboard SPA loop guarantee, spa-design-contract.md §7): a maintainer
@@ -163,8 +183,8 @@ fi
 # moved and the plugin did not, or vice versa). scripts/plugin-parity-check.py prints one
 # KIND<TAB>id<TAB>detail line per finding; silent + exit 0 when the manifests agree.
 # Never blocking, like all 21 before it.
-if [ -f scripts/plugin-parity-check.py ] && [ -f scripts/dashboard-features.json ]; then
-  pp=$(python3 scripts/plugin-parity-check.py . 2>/dev/null | awk -F'\t' '{n[$1]++} END {for (k in n) printf "%s=%d ", k, n[k]}')
+if [ -f "$S/plugin-parity-check.py" ] && [ -f "$S/dashboard-features.json" ]; then
+  pp=$(python3 "$S/plugin-parity-check.py" . 2>/dev/null | awk -F'\t' '{n[$1]++} END {for (k in n) printf "%s=%d ", k, n[k]}')
   if [ -n "$pp" ]; then
     echo "HARDEN-WARNING: dashboard feature parity drift: $pp(scripts/plugin-parity-check.py . for detail; the lab-vs-plugin law is measured drift, never silence — sync the manifests or record the lab-only reason)"; W=1
   fi
@@ -172,14 +192,14 @@ fi
 # Advisory 23 — submission-connectivity guard (H-153 kept, fragment 0146): the surfacing
 # hook must stay registered on SessionStart + UserPromptSubmit + PreCompact; a missing
 # registration reopens the measured 40-minute mid-session black hole (sub-0006).
-if ! python3 scripts/check-submission-connectivity.py >/dev/null 2>&1; then
+if [ -f "$S/check-submission-connectivity.py" ] && ! python3 "$S/check-submission-connectivity.py" >/dev/null 2>&1; then
   echo "ADVISORY-23 submission-connectivity: surface-submissions.py registration incomplete — run scripts/check-submission-connectivity.py for the missing events (H-153, fragment 0146)"; W=1
 fi
 
 # ADVISORY-24 release-train state (maintainer directive 2026-08-26): the wave plan's
 # progress is recomputed mechanically from committed specs at every session boundary,
 # so compression, new sessions, and cold machines all resume the train from git alone.
-python3 scripts/wave-status.py 2>/dev/null | head -8 || true
+[ -f "$S/wave-status.py" ] && python3 "$S/wave-status.py" 2>/dev/null | head -8 || true
 
 # ADVISORY-25 decisions-waiting (consolidated decision-making directive 2026-08-28,
 # decisions-schema.md §6): open kind:"decision" ledger rows surface at every session
@@ -249,8 +269,8 @@ fi
 # ADVISORY-30 flow leak (H-246 keep, closes: flow-leak-meter-ships): the counted
 # answer to "minutes-work taking days" — alarmed 4-21h before the maintainer's catch
 # on all three held-out episodes. Read-only, bounded, count-only line.
-if [ -x scripts/leak-status.sh ]; then
-  fl=$(timeout 50 bash scripts/leak-status.sh 2>/dev/null | grep "^FLOW" | tail -1)
+if [ -x "$S/leak-status.sh" ]; then
+  fl=$(timeout 50 bash "$S/leak-status.sh" 2>/dev/null | grep "^FLOW" | tail -1)
   case "$fl" in
     *ALARM*|*BURN*) echo "ADVISORY-30 flow-leak: $fl (bash scripts/leak-status.sh for the full reading; the reflex chain escalates unconsumed alarms)"; W=1 ;;
   esac
@@ -263,8 +283,8 @@ fi
 # here; the script also lands ONE H-253 fixture-side incident row per fire
 # (ledger/incident-records.jsonl, DEC-013 pending — never the work ledger).
 # Count-only, bounded, exit-0.
-if [ -f scripts/reflex-consume.py ]; then
-  mc=$(timeout 45 python3 scripts/reflex-consume.py . 2>/dev/null | grep -c "^CONSUMPTION-DUE" || true)
+if [ -f "$S/reflex-consume.py" ]; then
+  mc=$(timeout 45 python3 "$S/reflex-consume.py" . 2>/dev/null | grep -c "^CONSUMPTION-DUE" || true)
   if [ -n "$mc" ] && [ "$mc" != "0" ]; then
     echo "ADVISORY-31 meter-consumption: $mc unconsumed meter fire(s) >30m old (python3 scripts/reflex-consume.py . for detail; consume: scripts/reflex-consume.py . --record <fire-ts> --action \"<commit/lane>\")"; W=1
   fi
@@ -273,18 +293,19 @@ fi
 # ADVISORY-27 direction currency (H-243 keep, closes: direction-currency-lint): direction
 # prose (program.md, wave plans, vision text) cites moving targets; the lint catches
 # stale references and rename drift deterministically — report-only, bounded.
-if [ -f scripts/direction-lint.py ]; then
-  dl=$(timeout 45 python3 scripts/direction-lint.py . 2>/dev/null | grep -c "^DIRECTION-LINT" || true)
+if [ -f "$S/direction-lint.py" ] && [ "$SCAN" = 1 ]; then
+  dl=$(timeout 45 python3 "$S/direction-lint.py" . 2>/dev/null | grep -c "^DIRECTION-LINT" || true)
   if [ -n "$dl" ] && [ "$dl" != "0" ]; then
     echo "ADVISORY-27 direction-currency: $dl stale/unresolvable reference(s) in direction prose (python3 scripts/direction-lint.py . for detail)"; W=1
   fi
+elif [ -f "$S/direction-lint.py" ]; then skipped="$skipped direction-currency"
 fi
 
 # ADVISORY-26 vocabulary integrity (H-224 keep, closes: term-lint): a malformed
 # vocabulary entry poisons every render surface, so the vocab lint runs whenever
 # either copy exists — report-only, never blocks.
-if [ -f scripts/clarity-lint.py ] && [ -f scripts/house-vocabulary.json ]; then
-  vline=$(python3 scripts/clarity-lint.py vocab scripts/house-vocabulary.json 2>/dev/null | grep -c "FINDING" || true)
+if [ -f "$S/clarity-lint.py" ] && [ -f "$S/house-vocabulary.json" ]; then
+  vline=$(python3 "$S/clarity-lint.py" vocab "$S/house-vocabulary.json" 2>/dev/null | grep -c "FINDING" || true)
   if [ -n "$vline" ] && [ "$vline" != "0" ]; then
     echo "ADVISORY-26 vocabulary-integrity: $vline finding(s) in scripts/house-vocabulary.json (python3 scripts/clarity-lint.py vocab scripts/house-vocabulary.json for detail)"; W=1
   fi
@@ -297,7 +318,7 @@ fi
 # registry, intent/re-earn stores when present, pinned-tree -> the repo. Report-only,
 # never blocks. RULE-EXPIRED findings are the mechanical trigger for the rule-retest
 # flow (H-249): file the retest via decisions.py add --class rule-retest.
-if [ -f scripts/rule-lint.py ] && [ -f ledger/rules-registry.jsonl ]; then
+if [ -f "$S/rule-lint.py" ] && [ -f ledger/rules-registry.jsonl ]; then
   rlc=.claude/rule-lint-corpus
   mkdir -p "$rlc" 2>/dev/null || true
   printf '%s\n' "${RULE_LINT_TODAY:-$(date +%F)}" > "$rlc/as-of-date.txt" 2>/dev/null || true
@@ -305,7 +326,7 @@ if [ -f scripts/rule-lint.py ] && [ -f ledger/rules-registry.jsonl ]; then
   [ -f ledger/retest-intents.jsonl ] && ln -sfn ../../ledger/retest-intents.jsonl "$rlc/retest-intents.jsonl" 2>/dev/null
   [ -f ledger/re-earn-evidence.jsonl ] && ln -sfn ../../ledger/re-earn-evidence.jsonl "$rlc/re-earn-evidence.jsonl" 2>/dev/null
   ln -sfn ../.. "$rlc/pinned-tree" 2>/dev/null || true
-  rl=$(timeout 45 python3 scripts/rule-lint.py "$rlc" 2>/dev/null | grep -cE '^(RULE-[A-Z]+|SCOPE-EXCESS)' || true)
+  rl=$(timeout 45 python3 "$S/rule-lint.py" "$rlc" 2>/dev/null | grep -cE '^(RULE-[A-Z]+|SCOPE-EXCESS)' || true)
   if [ -n "$rl" ] && [ "$rl" != "0" ]; then
     echo "ADVISORY-28 rule-currency: $rl finding(s) over ledger/rules-registry.jsonl (python3 scripts/rule-lint.py $rlc for detail; RULE-EXPIRED feeds the H-249 retest flow: decisions.py add --class rule-retest)"; W=1
   fi
@@ -315,8 +336,8 @@ fi
 # drift on the same channel as the parity advisories — registry field/license health
 # always (lint-registry at the meta pin), plus LAWS-DRIFT checks on every templated
 # carrier whose source file exists in this tree. Report-only, never blocks.
-if [ -f scripts/compile-laws.py ] && [ -f ledger/rules-registry.jsonl ]; then
-  rdef=$(timeout 45 python3 scripts/compile-laws.py lint-registry --registry ledger/rules-registry.jsonl --repo . 2>/dev/null | grep -c "	DEFECT	" || true)
+if [ -f "$S/compile-laws.py" ] && [ -f ledger/rules-registry.jsonl ]; then
+  rdef=$(timeout 45 python3 "$S/compile-laws.py" lint-registry --registry ledger/rules-registry.jsonl --repo . 2>/dev/null | grep -c "	DEFECT	" || true)
   drift=0
   pairs=$(python3 -c "
 import json,sys
@@ -333,7 +354,7 @@ for cid,t in sorted((meta or {}).get('carrier_templates',{}).items()):
   if [ -n "$pairs" ]; then
     while IFS="$(printf '\t')" read -r cid src; do
       [ -f "$src" ] || continue
-      d=$(timeout 45 python3 scripts/compile-laws.py check --registry ledger/rules-registry.jsonl --carrier "$src" --carrier-id "$cid" 2>/dev/null | grep -c "^LAWS-DRIFT" || true)
+      d=$(timeout 45 python3 "$S/compile-laws.py" check --registry ledger/rules-registry.jsonl --carrier "$src" --carrier-id "$cid" 2>/dev/null | grep -c "^LAWS-DRIFT" || true)
       drift=$((drift + ${d:-0}))
     done <<RLEOF
 $pairs
@@ -351,8 +372,8 @@ fi
 # rows and prints one HOOK-PARITY line per one-side-only row; this block prints the
 # count. Report-only, never blocks. Pin HOOK_PARITY_SETTINGS / HOOK_PARITY_HOOKS to
 # compare a different pair (tests, consumer installs).
-if [ -f scripts/hook-parity-check.py ] && [ -f "${HOOK_PARITY_SETTINGS:-.claude/settings.json}" ] && [ -f "${HOOK_PARITY_HOOKS:-hooks/hooks.json}" ]; then
-  hw=$(python3 scripts/hook-parity-check.py "${HOOK_PARITY_SETTINGS:-.claude/settings.json}" "${HOOK_PARITY_HOOKS:-hooks/hooks.json}" 2>/dev/null | grep -c "^HOOK-PARITY" || true)
+if [ -f "$S/hook-parity-check.py" ] && [ -f "${HOOK_PARITY_SETTINGS:-.claude/settings.json}" ] && [ -f "${HOOK_PARITY_HOOKS:-hooks/hooks.json}" ]; then
+  hw=$(python3 "$S/hook-parity-check.py" "${HOOK_PARITY_SETTINGS:-.claude/settings.json}" "${HOOK_PARITY_HOOKS:-hooks/hooks.json}" 2>/dev/null | grep -c "^HOOK-PARITY" || true)
   if [ -n "$hw" ] && [ "$hw" != "0" ]; then
     echo "ADVISORY-32 hook-wiring-parity: $hw hook guard row(s) run on only one side of the lab-plugin boundary (python3 scripts/hook-parity-check.py ${HOOK_PARITY_SETTINGS:-.claude/settings.json} ${HOOK_PARITY_HOOKS:-hooks/hooks.json} for detail; port each guard or record it as one-side-only)"; W=1
   fi
@@ -373,6 +394,9 @@ if [ -f "$g" ]; then
   fi
 fi
 
+if [ -n "$skipped" ]; then
+  echo "HARDEN-SKIP: whole-tree scan(s) deferred to the cached refresh:$skipped ($ntracked tracked files > ${HARDEN_TREE_MAX:-2000}, no advisory cache yet; bash scripts/harden-check.sh --fresh after this session for the full reading)"; W=1
+fi
 [ "$W" -eq 0 ] && echo "harden-check: clean (governance in sync, program.md current, tree clean, pushed)"
 :
 }
@@ -387,10 +411,10 @@ if [ "${1:-}" != "--fresh" ] && [ "${HARDEN_INLINE:-}" != "1" ] && [ -f "$CACHE"
   age=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
   printf '%s\n' "$(cat "$CACHE")"
   echo "HARDEN-CACHE: advisory snapshot ${age}s old — refreshing in background (bash scripts/harden-check.sh --fresh for live)"
-  ( HARDEN_INLINE=1 nohup bash "$0" --fresh >/dev/null 2>&1 & ) 2>/dev/null
+  ( HARDEN_INLINE=1 nohup bash "$S/harden-check.sh" --fresh >/dev/null 2>&1 & ) 2>/dev/null
   exit 0
 fi
 out=$(main)
 printf '%s\n' "$out"
-printf '%s\n' "$out" >| .claude/harden-last.txt 2>/dev/null || true
+[ -d .claude ] && printf '%s\n' "$out" >| .claude/harden-last.txt 2>/dev/null || true
 exit 0
