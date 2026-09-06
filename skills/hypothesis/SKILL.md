@@ -122,6 +122,11 @@ every condition's state is derived at HEAD from the resolver it is bound to.
   single-file page: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-run-checkpoint.py"
   experiments/runs/<id>/run-<k>` writes `run-checkpoint.html` beside `grade.txt` (typed refusal
   codes 10-15 when spec and run disagree; a refusal never blocks the grade or the journal).
+- **Decision durability.** A rule or decision parked on missing information carries what reopens
+  it as a committed `retest_when` evidence predicate (`event-count`, `metric-crosses`,
+  `evidence-received`), never a date; the grade leg may call
+  `"${CLAUDE_PLUGIN_ROOT}/scripts/checkpoint-shadow.sh"` in place of the compile line to leave one
+  `event/checkpoint-compiled` row per build — see `docs/decision-durability.md`.
 - **Progress page.** `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-north-star-progress.py"
   ledger/north-stars/<slug>.md` renders `north-star-progress.html` beside the file (frontier,
   distance, replay over sampled commits); `--check PAGE` exits 1 when it is stale.

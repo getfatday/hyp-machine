@@ -75,6 +75,15 @@ the committed artifact that authorized it — plus scope and an empirical/perman
 - A `RULE-EXPIRED` finding files a `rule-retest` decision (`scripts/decisions.py`,
   H-249, kept 2026-09-02, 2x5/5): the rule is re-tested under current conditions, never
   argued from memory — retest, re-license, or retire.
+- A rule is retested when its `retest_by` expires OR its `retest_when` turns true: an
+  empirical row may carry an evidence predicate (`event-count=...>=N`,
+  `metric-crosses=...@last=K`, `evidence-received=<target>`; grammar in
+  `scripts/closes_when.py`) in place of, or beside, the date. `scripts/retest-trigger.py`
+  files the `rule-retest` decision the first time the predicate holds at committed HEAD,
+  `compile-laws.py lint-registry` accepts the predicate as the alternative to the date, and
+  `rule-lint.py` no longer expires a date-less row that carries a well-formed predicate
+  (lab H-DRAFT-d564bb31-retest-when-predicates, kept 2x5/5; see
+  `docs/decision-durability.md`).
 - The license-join guard (`hooks/scripts/license-join-check.py`, H-250, kept
   2026-09-02, 2x5/5) is a PreToolUse ADVISORY on rule-carrier writes: adding a standing
   rule without a resolvable license prints one `RULE-LICENSE` line (and logs the fire);
