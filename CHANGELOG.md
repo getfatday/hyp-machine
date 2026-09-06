@@ -4,6 +4,12 @@ Newest first. This file is written by `scripts/release.py` from the pending
 `.changeset/*.md` files on every push to main; do not edit it by hand (see
 `.changeset/README.md`).
 
+## 0.6.0 (2026-09-06)
+
+### Added
+
+- `scripts/hook-parity-check.py` normalizes a repository's `.claude/settings.json` hooks and a plugin's `hooks/hooks.json` into (event, matcher, guard) rows and prints one line per guard that runs on only one side; `harden-check.sh` gains ADVISORY-32 carrying the count. Measured against the source lab's own wiring, the released plugin shows 23 one-side-only rows, which is why lab and consumer sessions have been protected by different guards. Lab H-DRAFT-4c0dadb8-hook-wiring-parity, kept 5/5 in two consecutive runs after Amendment 1, cause-n-effect research/consumer-parity-gaps.md. (H-DRAFT-4c0dadb8-hook-wiring-parity.md)
+
 ## 0.5.0 (2026-09-06)
 
 ### Added
