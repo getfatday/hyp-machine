@@ -4,6 +4,12 @@ Newest first. This file is written by `scripts/release.py` from the pending
 `.changeset/*.md` files on every push to main; do not edit it by hand (see
 `.changeset/README.md`).
 
+## 0.9.0 (2026-09-06)
+
+### Added
+
+- `harden-check.sh` runs as a SessionStart hook in every install: every helper it invokes resolves under the plugin root instead of the consumer's `scripts/`, every advisory inspects the repository the session works in (`leak-status.sh` no longer changes into the plugin tree), whole-tree scans are guarded by a tracked-file ceiling so a cache-less consumer run stays under 15 s, and the advisory cache is written only when `.claude/` exists. Measured on a 256-spec consumer: rc 0 with zero stderr on every run (0.4.0: one error line), 8 of 8 helper paths resolve (0.4.0: 3 missing), the printed advisories map one-to-one to blocks whose inputs exist, walls 2.9 to 6.6 s (0.4.0: 7.5 to 13.3 s with nothing useful printed); in the source lab every existing line is preserved. Lab H-DRAFT-40ec0bc2-portable-harden-advisories-v2 (successor of H-303), kept 5/5 in two consecutive runs, the second by a cold executor; closes consumer gap G1 of the lab-plugin convergence program. (H-DRAFT-40ec0bc2-portable-harden-advisories-v2.md)
+
 ## 0.8.0 (2026-09-06)
 
 ### Added
