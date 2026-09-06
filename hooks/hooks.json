@@ -1,5 +1,5 @@
 {
-  "description": "hyp guards: write-once raw + journal fragments incl. a Bash mistake-net branch (PreToolUse), generic policy interpreter over operating-model policy nodes (PreToolUse), capture-intent context (UserPromptSubmit), standing rules + drift check + uncommitted-capture warning + stale-dashboard check + ledger resolver with open-decision surfacing (SessionStart), verdict-gated dispatch of the top open item + unjournaled-work backstop (Stop, dispatch at experiments profile), dashboard refresh (SessionStart + Stop), preflight gate on run-shaped commands + advisory commit backstop (PreToolUse, experiments profile), license-join advisory on rule-carrier writes — a rule write must cite a resolvable directive/incident license (PreToolUse, H-250 keep).",
+  "description": "hyp guards: write-once raw + journal fragments incl. a Bash mistake-net branch (PreToolUse), generic policy interpreter over operating-model policy nodes (PreToolUse), capture-intent context (UserPromptSubmit), harden-check advisory spine (cache-first, plugin-rooted) + standing rules + drift check + uncommitted-capture warning + stale-dashboard check + ledger resolver with open-decision surfacing (SessionStart), verdict-gated dispatch of the top open item + unjournaled-work backstop (Stop, dispatch at experiments profile), dashboard refresh (SessionStart + Stop), preflight gate on run-shaped commands + advisory commit backstop (PreToolUse, experiments profile), license-join advisory on rule-carrier writes — a rule write must cite a resolvable directive/incident license (PreToolUse, H-250 keep).",
   "hooks": {
     "PreToolUse": [
       {
@@ -70,6 +70,11 @@
       {
         "matcher": "startup|resume|clear|compact",
         "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/harden-check.sh\"",
+            "timeout": 20
+          },
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/drift-check.py\"",
