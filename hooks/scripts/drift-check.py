@@ -4,10 +4,13 @@
 Prints a short context block: the standing capture-rules pointer, plus a
 byte-compare of the consumer-owned durable artifacts against the plugin's
 canonical templates — the CLAUDE.md marker block (per the configured profile),
-the settings deny rules, and GOVERNANCE.md (when installed). Also detects
-repositories initialized by the retired predecessor plugins and points at the
-init migration. Advisory only: always exits 0, and any internal error degrades
-to silence rather than blocking session start.
+the settings deny rules, and GOVERNANCE.md (when installed). Also reports the
+installed copies init never overwrites (the preflight, the spec template, the
+journal compiler) when they have fallen behind the plugin's canonical bytes —
+one advisory line each, nothing rewritten — and detects repositories
+initialized by the retired predecessor plugins and points at the init
+migration. Advisory only: always exits 0, and any internal error degrades to
+silence rather than blocking session start.
 """
 import json
 import os
@@ -137,6 +140,28 @@ def main():
             drift.append("GOVERNANCE.md differs from the plugin canonical "
                          "(kept as-is; delete it and re-run init to restore)")
 
+    # Installed copies: init copies these into the consumer and keeps a
+    # customized copy rather than overwriting it (a migration once destroyed a
+    # consumer amendment), so they go stale silently. Byte-compare each against
+    # the plugin's canonical (the template as init renders it) and report one
+    # advisory line per differing file — path, line counts, review command —
+    # additive to the checks above; nothing is rewritten.
+    stale = []
+    for relpath, src_rel, rendered in (
+            (cfg["preflight_file"], os.path.join("scripts", "preflight.py"), False),
+            (cfg["template_file"], os.path.join("templates", "HYPOTHESIS-TEMPLATE.md"), True),
+            (os.path.join("scripts", "compile-journal.py"),
+             os.path.join("scripts", "compile-journal.py"), False)):
+        shipped = read(os.path.join(proot, src_rel))
+        installed = read(os.path.join(root, relpath))
+        if shipped is None or installed is None:
+            continue
+        if rendered:
+            shipped = render(shipped, cfg)
+        if installed != shipped:
+            stale.append((relpath, len(installed.splitlines()),
+                          len(shipped.splitlines()), os.path.join(proot, src_rel)))
+
     # LEGACY-MIGRATION-BEGIN (advice only; init performs the migration)
     leftovers = [p for p in LEGACY_SIGNS if os.path.isfile(os.path.join(root, p))]
     if claude_text:
@@ -151,6 +176,10 @@ def main():
             print("hyp DRIFT: %s — %s." % (item, REPAIR))
     else:
         print("hyp drift check: clean.")
+    for relpath, have, want, src in stale:
+        print("hyp DRIFT (installed copy): %s differs from the plugin canonical "
+              "(%d lines installed vs %d shipped; kept as-is, never overwritten) "
+              "— review: diff %s %s" % (relpath, have, want, relpath, src))
     sys.exit(0)
 
 
