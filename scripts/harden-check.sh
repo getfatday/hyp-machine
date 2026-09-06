@@ -407,12 +407,41 @@ fi
 # `--fresh` forces the old inline behavior (CI, manual audits). Staleness is
 # disclosed in the output, never silent.
 CACHE=.claude/harden-last.txt
+# Single-flight refresh (consumer gap G9): N concurrent session starts on one repo spawn at
+# most ONE detached refresh. The lock is a directory (mkdir is atomic on every POSIX fs;
+# macOS ships no flock) holding the refresh's pid and start epoch. Stale-lock rule: a lock
+# whose holder pid is dead, or whose pid file is still absent after HARDEN_LOCK_GRACE s, or
+# which is older than HARDEN_LOCK_MAX s, is reclaimed. The reclaim itself is single-flight:
+# only the invocation that wins a second mkdir-atomic token ($LOCK.reclaim) removes the stale
+# lock, so a straggler that judged the OLD lock stale can never remove its successor; the
+# token is released by the refresh's exit (owner-checked, like the lock) or by age. Foreground
+# output is unchanged.
+LOCK=.claude/harden-refresh.lock
 if [ "${1:-}" != "--fresh" ] && [ "${HARDEN_INLINE:-}" != "1" ] && [ -f "$CACHE" ]; then
   age=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
   printf '%s\n' "$(cat "$CACHE")"
   echo "HARDEN-CACHE: advisory snapshot ${age}s old — refreshing in background (bash scripts/harden-check.sh --fresh for live)"
-  ( HARDEN_INLINE=1 nohup bash "$S/harden-check.sh" --fresh >/dev/null 2>&1 & ) 2>/dev/null
+  lnow=$(date +%s); lgrace=${HARDEN_LOCK_GRACE:-60}
+  if [ -d "$LOCK.reclaim" ] && [ $(( lnow - $(stat -f %m "$LOCK.reclaim" 2>/dev/null || echo "$lnow") )) -gt "$lgrace" ]; then
+    rmdir "$LOCK.reclaim" 2>/dev/null
+  fi
+  if [ -d "$LOCK" ]; then
+    lage=$(( lnow - $(stat -f %m "$LOCK" 2>/dev/null || echo "$lnow") ))
+    lpid=$(sed -n 1p "$LOCK/pid" 2>/dev/null)
+    lstale=0
+    if [ -n "$lpid" ]; then kill -0 "$lpid" 2>/dev/null || lstale=1
+    elif [ "$lage" -gt "$lgrace" ]; then lstale=1; fi
+    [ "$lage" -gt "${HARDEN_LOCK_MAX:-1800}" ] && lstale=1
+    if [ "$lstale" -eq 1 ] && mkdir "$LOCK.reclaim" 2>/dev/null; then rm -rf "$LOCK"; fi
+  fi
+  if mkdir "$LOCK" 2>/dev/null; then
+    ( HARDEN_INLINE=1 HARDEN_LOCK="$LOCK" nohup bash "$S/harden-check.sh" --fresh >/dev/null 2>&1 & ) 2>/dev/null
+  fi
   exit 0
+fi
+if [ -n "${HARDEN_LOCK:-}" ] && [ -d "$HARDEN_LOCK" ]; then
+  printf '%s\n%s\n' "$$" "$(date +%s)" > "$HARDEN_LOCK/pid" 2>/dev/null
+  trap '[ "$(sed -n 1p "$HARDEN_LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$HARDEN_LOCK" "$HARDEN_LOCK.reclaim"' EXIT
 fi
 out=$(main)
 printf '%s\n' "$out"
