@@ -34,7 +34,12 @@ Commands
             Compat shim: `resolve --legacy <arg>` answers a legacy maintainer-ruling
             bracket that has no decision row — emits + commits the ruling capture only.
   check     validate every decision/resolution row against the schema; report open/closed;
-            exit 1 on violations (land gate + selftest "check closes" assertion).
+            exit 1 on violations (land gate + selftest "check closes" assertion). Also prints
+            two EXIT-NEUTRAL report classes that never count as findings (decision-retest-when
+            lane): RETEST-DUE for an accepted/denied decision whose `retest_when` evidence
+            predicate holds at committed HEAD (one line, with the evidence pointer), and
+            REVISIT-UNARMED for a decision whose scanned text says revisit/later while the row
+            carries no `retest_when` (the wait lives only in prose that memory must re-find).
   surface   print the open-decision surface (per-row lines + count/oldest-age summary,
             resolver grammar) and run proactive-open.sh (once-per-id guard inside).
   open      open decisions.html front-and-center (--all also opens DASHBOARD.md).
@@ -42,8 +47,16 @@ Commands
             migration tool, not shipped with the plugin) when your repo carries one.
 
 --selftest runs the end-to-end loop in a throwaway git repo + ledger: add -> list ->
-surface-once guard -> resolve -> check closes -> attribution from git. Writes nothing
-outside its tempdir; exits 0 only if every assertion passes.
+surface-once guard -> resolve -> check closes -> attribution from git -> the retest_when
+scenario (an unknown predicate fails validation with one typed error; an armed row fires
+RETEST-DUE only after its evidence COMMIT, never on an uncommitted append; a "later" option
+with no trigger is REVISIT-UNARMED and exit-neutral). Writes nothing outside its tempdir;
+exits 0 only if every assertion passes.
+
+retest_when (optional field on kind:"decision" rows): `<predicate>=<argument>` in the shared
+retest-when grammar of scripts/closes_when.py (event-count | metric-crosses |
+evidence-received; that module is the ONLY parser -- nothing here re-implements it). Evidence,
+never a date: the row is re-presented when committed evidence satisfies the predicate.
 
 Stdlib only. Never touches anything outside the ledger append and the write-once
 ruling capture ADDITIONS under the configured raw dir that `shadows` requires
@@ -99,6 +112,16 @@ DISPOSITIONS = ("accepted", "denied", "commented")
 FORBIDDEN_RESOLUTION_FIELDS = ("decided_by", "decided_at", "resolution_commit")
 ID_RE = re.compile(r"^DEC-(\d{3,})$")
 GIT_TIMEOUT = 20
+# retest_when (decision-retest-when lane): the optional evidence trigger on decision rows and
+# the revisit-prose lint. The grammar and the HEAD evaluation live in scripts/closes_when.py
+# (the shared close-condition module, sibling of this file); imported lazily so a checker
+# without that module still validates every row that carries no retest_when.
+RETEST_WHEN_FIELD = "retest_when"
+REVISIT_RE = re.compile(r"\b(revisit|later)\b", re.IGNORECASE)
+RETEST_DUE_CLASS = "RETEST-DUE"
+REVISIT_UNARMED_CLASS = "REVISIT-UNARMED"
+_RW_POINTER_RE = re.compile(r"^(.+)@([0-9a-f]{40})#L(\d+)-L(\d+)$")
+_CLOSES_WHEN = None
 
 
 def today_str():
@@ -252,6 +275,119 @@ def derive_attribution(root, ledger_rel, resolutions):
                     "resolution_commit": sha[:7]})
 
 
+# ---------- retest_when: evidence trigger + revisit lint (decision-retest-when lane) ----------
+
+def _shared_parser():
+    """scripts/closes_when.py imported from beside this file; None when it is absent."""
+    global _CLOSES_WHEN
+    if _CLOSES_WHEN is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        try:
+            import closes_when  # noqa: the shared grammar module
+            _CLOSES_WHEN = closes_when
+        except ImportError:
+            _CLOSES_WHEN = False
+    return _CLOSES_WHEN or None
+
+
+def validate_retest_when(value):
+    """-> [] for a well-formed `<predicate>=<argument>`, else EXACTLY ONE error string that
+    names retest_when (and the offending predicate when it is unknown)."""
+    if not isinstance(value, str) or not value.strip():
+        return ["retest_when must be a non-empty '<predicate>=<argument>' string, got %r"
+                % (value,)]
+    cw = _shared_parser()
+    if cw is None:
+        return ["retest_when %r cannot be validated: scripts/closes_when.py (the shared "
+                "retest-when parser) is not beside decisions.py" % value]
+    predicate, _sep, argument = value.strip().partition("=")
+    if predicate not in cw.RETEST_WHEN_PREDICATES:
+        return ["retest_when %r: unknown predicate %r (known: %s)"
+                % (value, predicate, "|".join(cw.RETEST_WHEN_PREDICATES))]
+    if not argument.strip():
+        return ["retest_when %r: empty argument for %s" % (value, predicate)]
+    if cw.parse_retest_when_field(value) is None:
+        return ["retest_when %r: argument %r fails the %s grammar (scripts/closes_when.py)"
+                % (value, argument, predicate)]
+    return []
+
+
+def closing_resolution(chain):
+    closing = [r for r in chain if r.get("disposition") in ("accepted", "denied")]
+    return closing[-1] if closing else None
+
+
+def revisit_scan_fields(rec, status, closing):
+    """The lint's field scope: while OPEN (open/commented) -> title, ask.question, every
+    option's label and description; once CLOSED (accepted/denied) -> only the chosen_options
+    (each chosen text resolved to its option's label + description when it names an option,
+    else the chosen text itself) plus the closing resolution's comment. -> [(path, text)]."""
+    fields = []
+    ask = rec.get("ask") if isinstance(rec.get("ask"), dict) else {}
+    opts = ask.get("options") if isinstance(ask.get("options"), list) else []
+    if status in ("open", "commented") or closing is None:
+        fields.append(("title", rec.get("title")))
+        fields.append(("ask.question", ask.get("question")))
+        for i, opt in enumerate(opts):
+            if isinstance(opt, dict):
+                fields.append(("ask.options[%d].label" % i, opt.get("label")))
+                fields.append(("ask.options[%d].description" % i, opt.get("description")))
+    else:
+        res = closing["rec"]
+        for j, chosen in enumerate(res.get("chosen_options") or []):
+            idx = next((i for i, o in enumerate(opts)
+                        if isinstance(o, dict) and o.get("label") == chosen), None)
+            if idx is None:
+                fields.append(("resolution.chosen_options[%d]" % j, chosen))
+            else:
+                fields.append(("ask.options[%d].label" % idx, opts[idx].get("label")))
+                fields.append(("ask.options[%d].description" % idx,
+                               opts[idx].get("description")))
+        fields.append(("resolution.comment", res.get("comment")))
+    return [(path, text) for path, text in fields if isinstance(text, str)]
+
+
+def revisit_unarmed_fields(rec, status, chain):
+    """Comma-joined, order-preserving matching field paths, or '' when the row is armed
+    (carries retest_when) or nothing matches."""
+    if RETEST_WHEN_FIELD in rec:
+        return ""
+    hits = [path for path, text in revisit_scan_fields(rec, status, closing_resolution(chain))
+            if REVISIT_RE.search(text)]
+    return ",".join(hits)
+
+
+def retest_pointer(pointers):
+    """The shared module returns `<path>@<sha40>#L<a>-L<b>` spans; the report line carries ONE
+    line pointer, the last line of the last span (the row that completed the evidence)."""
+    if not pointers:
+        return "-"
+    m = _RW_POINTER_RE.match(pointers[-1])
+    if not m:
+        return pointers[-1]
+    return "%s@%s#L%s" % (m.group(1), m.group(2), m.group(4))
+
+
+def retest_due(root, rec, status):
+    """-> '<pointer>\t<predicate>=<argument>' when this accepted/denied decision's
+    retest_when holds at committed HEAD of root, else None. Read-only."""
+    if status not in ("accepted", "denied"):
+        return None
+    value = rec.get(RETEST_WHEN_FIELD)
+    cw = _shared_parser()
+    if not isinstance(value, str) or cw is None:
+        return None
+    parsed = cw.parse_retest_when_field(value)
+    if parsed is None:
+        return None
+    holds, pointers = cw.retest_when_evidence(parsed[0], parsed[1], root)
+    if not holds:
+        return None
+    return "%s\t%s=%s" % (retest_pointer(pointers), parsed[0], parsed[1])
+
+
 # ---------- validation (check + add both use it) ----------
 
 def validate_decision(rec):
@@ -285,6 +421,8 @@ def validate_decision(rec):
                 if not isinstance(opt, dict) or not str(opt.get("label") or "").strip() \
                         or not str(opt.get("description") or "").strip():
                     errs.append("option %d needs label + description" % (i + 1))
+    if RETEST_WHEN_FIELD in rec:
+        errs.extend(validate_retest_when(rec[RETEST_WHEN_FIELD]))
     for field in FORBIDDEN_RESOLUTION_FIELDS:
         if field in rec:
             errs.append("%s must never be stored (derived from git, H-084)" % field)
@@ -451,6 +589,8 @@ def cmd_add(args, root, ledger):
         rec["shadows"] = args.shadows
     if args.note:
         rec["note"] = args.note
+    if getattr(args, "retest_when", None):
+        rec[RETEST_WHEN_FIELD] = args.retest_when
     errs = validate_decision(rec)
     if errs:
         for e in errs:
@@ -700,8 +840,23 @@ def cmd_check(args, root, ledger):
                     findings.append("%s closed but its shadowed bracket %s has no "
                                     "committed ruling capture (resolve normally emits+"
                                     "commits it)" % (dec["id"], shadow))
+    # exit-neutral report classes (decision-retest-when): never counted as findings, so the
+    # land gate (exit 1 on violations) is unchanged by them.
+    due_lines, unarmed_lines = [], []
+    for dec in parsed["decisions"]:
+        st, chain = joined[dec["id"]]
+        due = retest_due(root, dec["rec"], st)
+        if due is not None:
+            due_lines.append("%s\t%s" % (dec["id"], due))
+        fields = revisit_unarmed_fields(dec["rec"], st, chain)
+        if fields:
+            unarmed_lines.append("%s\t%s" % (dec["id"], fields))
     for line in findings:
         print("DECISIONS-CHECK\tFAIL\t%s" % line)
+    for line in due_lines:
+        print("DECISIONS-CHECK\t%s\t%s" % (RETEST_DUE_CLASS, line))
+    for line in unarmed_lines:
+        print("DECISIONS-CHECK\t%s\t%s" % (REVISIT_UNARMED_CLASS, line))
     print("decisions-check: %d decision(s) (%d open, %d closed), %d resolution(s), "
           "%d truly-malformed ledger line(s), %d finding(s)"
           % (len(parsed["decisions"]), len(opens), len(closed),
@@ -917,6 +1072,72 @@ def selftest():
            r.stdout.strip()[:100])
         r = cli("check")
         ok("check-final", r.returncode == 0, r.stdout.strip()[:140])
+
+        # ---- retest_when scenario (decision-retest-when): the seeded violations must bite ----
+        r = cli("add", "--title", "Armed with an unknown predicate", "--question",
+                "Does the unknown predicate fail?", "--header", "Unknown",
+                "--option", "a:first", "--option", "b:second", "--requested-by", "x",
+                "--urgency", "low", "--class", "plan", "--why-only-you", "y",
+                "--retest-when", "on-full-moon=phase>=1", "--no-open")
+        bad = [l for l in r.stdout.splitlines() if l.startswith("ADD-INVALID\t")]
+        ok("retest-when-unknown-predicate-bites", r.returncode != 0 and len(bad) == 1
+           and "retest_when" in bad[0] and "on-full-moon" in bad[0],
+           " | ".join(bad)[:160])
+        r = cli("add", "--title", "Wait for two compiled checkpoints", "--question",
+                "Act now or wait for the evidence?", "--header", "Wait",
+                "--option", "act-now:do it now",
+                "--option", "wait-for-evidence:the row re-presents itself once two "
+                "checkpoints have compiled", "--requested-by", "lane SELFTEST",
+                "--urgency", "low", "--class", "plan", "--why-only-you", "z",
+                "--retest-when", "event-count=event/selftest-compiled>=2", "--no-open")
+        ok("retest-when-armed-add", r.returncode == 0 and "added DEC-003" in r.stdout,
+           r.stdout.strip()[:120])
+        r = cli("add", "--title", "Unarmed wait", "--question", "Now or not now?",
+                "--header", "Unarmed", "--option", "now:do it",
+                "--option", "later:the card waits", "--requested-by", "lane SELFTEST",
+                "--urgency", "low", "--class", "plan", "--why-only-you", "z", "--no-open")
+        ok("revisit-unarmed-add", r.returncode == 0 and "added DEC-004" in r.stdout)
+        subprocess.run(["git", "-C", root, "commit", "-qm",
+                        "ledger: DEC-003 armed + DEC-004 unarmed", "--", DEFAULT_LEDGER_REL],
+                       check=True)
+        r = cli("resolve", "DEC-003", "--accept", "wait-for-evidence", "--no-recompile")
+        ok("retest-when-armed-resolve", r.returncode == 0, r.stdout.strip()[:120])
+
+        def due_lines(out):
+            return [l for l in out.splitlines()
+                    if l.startswith("DECISIONS-CHECK\tRETEST-DUE\t")]
+
+        def unarmed_lines(out):
+            return [l for l in out.splitlines()
+                    if l.startswith("DECISIONS-CHECK\tREVISIT-UNARMED\t")]
+        r = cli("check")
+        ok("retest-due-silent-before-evidence", r.returncode == 0
+           and due_lines(r.stdout) == [], r.stdout.strip()[:140])
+        ok("revisit-unarmed-reported-exit-neutral", r.returncode == 0
+           and "0 finding(s)" in r.stdout and unarmed_lines(r.stdout) ==
+           ["DECISIONS-CHECK\tREVISIT-UNARMED\tDEC-004\task.options[1].label"],
+           " | ".join(unarmed_lines(r.stdout))[:160])
+        events = os.path.join(root, "ledger", "events.jsonl")
+        with open(events, "w", encoding="utf-8") as fh:
+            for i in range(2):
+                fh.write(json.dumps({"schema": "v1", "instance-of": "event/selftest-compiled",
+                                     "caused-by": "selftest-%d" % i, "date": "2026-08-28",
+                                     "subject": "lane/selftest-%d" % i, "payload": {}},
+                                    sort_keys=True) + "\n")
+        r = cli("check")
+        ok("retest-due-silent-on-uncommitted-evidence", r.returncode == 0
+           and due_lines(r.stdout) == [], r.stdout.strip()[:140])
+        subprocess.run(["git", "-C", root, "add", "--", "ledger/events.jsonl"], check=True)
+        subprocess.run(["git", "-C", root, "commit", "-qm",
+                        "events: two selftest-compiled rows"], check=True)
+        head = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        r = cli("check")
+        due = due_lines(r.stdout)
+        ok("retest-due-fires-once-after-evidence-commit", r.returncode == 0
+           and "0 finding(s)" in r.stdout and due ==
+           ["DECISIONS-CHECK\tRETEST-DUE\tDEC-003\tledger/events.jsonl@%s#L2\t"
+            "event-count=event/selftest-compiled>=2" % head], " | ".join(due)[:200])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("selftest: %d failure(s)" % len(failures))
@@ -950,6 +1171,9 @@ def main(argv=None):
     p.add_argument("--blocks", default="")
     p.add_argument("--shadows", action="append")
     p.add_argument("--note")
+    p.add_argument("--retest-when", dest="retest_when", metavar="PREDICATE=ARGUMENT",
+                   help="evidence trigger (shared retest-when grammar): the decision is "
+                        "re-presented as RETEST-DUE once committed evidence satisfies it")
     p.add_argument("--no-open", action="store_true",
                    help="skip the proactive open (tests)")
 

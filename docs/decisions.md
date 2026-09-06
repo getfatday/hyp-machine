@@ -64,6 +64,7 @@ max-on-file + 1):
  "class": "publish|spend|schema|live-surface|plan|hygiene",
  "why_only_you": "<one clause>",
  "shadows": ["maintainer-ruling=<slug>", ...],
+ "retest_when": "<predicate>=<argument>",
  "note": "<optional>"}
 ```
 
@@ -139,6 +140,30 @@ unparseable JSON or none of the three:
   open `decisions.html` once per NEW id, notify; a crash before the state write re-fires
   safely; a surface with no new ids does nothing (no re-open spam).
 
+## 7. The `retest_when` evidence trigger (optional)
+
+A decision that is parked on missing information carries what would reopen it as a
+committed field, `retest_when: "<predicate>=<argument>"`, in the shared retest-when grammar
+of `scripts/closes_when.py` — `event-count=<event id>[:<subject prefix>]>=N`,
+`metric-crosses=<metric id><op><threshold>@last=K`, `evidence-received=<target>`. That module
+is the only parser: `decisions.py add` validates the field through it (an unknown predicate
+or a malformed argument is `ADD-INVALID` with one typed reason) and nothing here re-implements
+the grammar. Evidence is read at committed HEAD only; a date is never a trigger.
+
+`decisions.py check` prints two EXIT-NEUTRAL report classes — they never count as findings and
+never change the land gate's exit code:
+
+| Line | Meaning |
+|---|---|
+| `DECISIONS-CHECK<TAB>RETEST-DUE<TAB><id><TAB><path>@<sha40>#L<n><TAB><predicate>=<argument>` | an accepted or denied decision whose predicate holds at HEAD; the pointer is the last line of the evidence span |
+| `DECISIONS-CHECK<TAB>REVISIT-UNARMED<TAB><id><TAB><field>` | a decision whose scanned text matches `\b(revisit\|later)\b` while the row carries no `retest_when` (field scope: open rows — title, question, every option; closed rows — chosen options and the resolution comment) |
+
+`scripts/review-cadence.py` re-presents every `RETEST-DUE` row in a `RETEST DUE` block above
+`REVIEW DEBT`, carrying the evidence pointer; `next-touch <date>` stays legal only for one-way-door
+holds (`docs/review-cadence.md`). Arming an already-filed decision is an appended row, never an
+edit. Kept in the source lab as H-DRAFT-d564bb31-decision-retest-when (5/5 twice); the wider
+story is `docs/decision-durability.md`.
+
 ## CLI reference (`python3 scripts/decisions.py ...`)
 
 | Command | Effect |
@@ -151,10 +176,10 @@ unparseable JSON or none of the three:
 | `resolve <id> --comment "..."` | Comment — the decision STAYS OPEN |
 | `resolve <id> ... --reopen` | Append another closing row over an already-closed id |
 | `resolve --legacy <slug> --accept "done"` | Compat shim: answer a legacy maintainer-ruling bracket with no decision row (emits + commits the raw-dir ruling capture) |
-| `check` | Schema + join validation over every row; exit 1 on findings |
+| `check` | Schema + join validation over every row; exit 1 on findings; also prints the exit-neutral `RETEST-DUE` / `REVISIT-UNARMED` lines (section 7) |
 | `surface [--no-open]` | Print the open-decision lines + summary; proactive-open (once-per-id guard) |
 | `open [--all]` | Open `decisions.html` (`--all` also opens `DASHBOARD.md`) |
-| `--selftest` | The full loop in a throwaway git repo; exits 0 only if every assertion passes |
+| `--selftest` | The full loop in a throwaway git repo, plus the `retest_when` scenario (unknown predicate refused; an armed row fires `RETEST-DUE` only after its evidence commit; a "later" option with no trigger is `REVISIT-UNARMED`); exits 0 only if every assertion passes |
 
 Flags `--no-commit` (stage the resolution uncommitted) and `--no-recompile` exist for
 tests. `resolve` refuses to run while the ledger has unrelated uncommitted changes — the
