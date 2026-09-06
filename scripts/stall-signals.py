@@ -51,6 +51,10 @@ import subprocess
 import sys
 from datetime import datetime
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "hooks", "scripts"))
+from hyp_status import canonical_status  # noqa: E402  (shared status reader)
+
 # ---- THE ONE TUNABLE BLOCK (journey section-3 shipped defaults; unit = days) -------------
 TUNABLES = {
     "S1_DAYS": 3.0,   # active spec: run dir quiet / no run dir since registration
@@ -207,7 +211,8 @@ def extract_status_word(text):
     stripped = block.strip()
     if not stripped:
         return None
-    return stripped.split()[0]
+    # shared canonicalizer: consumer spellings map onto the canonical word
+    return canonical_status(stripped) or stripped.split()[0]
 
 
 def extract_status_comment(text):

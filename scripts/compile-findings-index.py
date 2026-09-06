@@ -28,13 +28,17 @@ import re
 import subprocess
 import sys
 
-# Status first-word -> verdict family. Anything not listed is OPEN (not indexed).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "hooks", "scripts"))
+from hyp_status import canonical_status  # noqa: E402  (shared status reader)
+
+# CANONICAL status word (hooks/scripts/hyp_status.py) -> verdict family. Anything
+# not listed is OPEN (not indexed); a bare `refined` canonicalizes to refine (open);
+# `discarded-with-findings` canonicalizes to discarded (qualifier rule).
 RESOLVED_FAMILIES = {
     "kept": "kept",
     "discarded": "discarded",
-    "discarded-with-findings": "discarded",
-    "refined": "refined",
-    "refined-into:": "refined",
+    "refined-into": "refined",
     "retired": "retired",
     "retired-by-design-review;": "retired",
 }
@@ -102,7 +106,8 @@ def parse_spec(path):
         rec["parse_gap"].append("status-word")
         return rec
     rec["status_word"] = wm.group(1)
-    rec["family"] = RESOLVED_FAMILIES.get(rec["status_word"].lower(), "open")
+    rec["family"] = RESOLVED_FAMILIES.get(
+        (canonical_status(status_block) or "").lower(), "open")
 
     rim = re.search(r"refined-into:\s*(H-\d+)", status_block)
     if rim:

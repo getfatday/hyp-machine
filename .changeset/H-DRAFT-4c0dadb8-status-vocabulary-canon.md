@@ -1,0 +1,4 @@
+---
+bump: patch
+---
+`dispatch-status.py`, `stall-signals.py`, and `compile-findings-index.py` read a spec's status through one shared canonicalizer, `hooks/scripts/hyp_status.py`: `keep` is `kept`, `discard` is `discarded`, `refined-into:` and `refined (into` are terminal, a `<canonical>-<qualifier>` token maps to its canonical word, matching is case-insensitive, and `hyp_status.py --lint <root>` lists every non-canonical status with its rewrite. On a 256-spec consumer the dispatch surface drops from 74 open items to the true 50, so 24 closed specs stop re-presenting through the Stop dispatcher; on a vocabulary-clean tree the three scripts' output is unchanged. Lab H-DRAFT-4c0dadb8-status-vocabulary-canon, kept 5/5 in two consecutive runs after Amendment 1, cause-n-effect research/consumer-parity-gaps.md gap G3.
