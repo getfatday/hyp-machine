@@ -4,6 +4,17 @@ Newest first. This file is written by `scripts/release.py` from the pending
 `.changeset/*.md` files on every push to main; do not edit it by hand (see
 `.changeset/README.md`).
 
+## 0.5.0 (2026-09-06)
+
+### Added
+
+- `init` creates an empty `ledger/ledger.jsonl` on every profile and never overwrites it, so the decision kit, the commitment resolver, the claim join, and DASHBOARD.md sections 1 and 2 work in every install instead of reading `source missing`. Re-running init on an existing install adds exactly that file and nothing else; a second run is a no-op. Lab H-DRAFT-4c0dadb8-init-scaffolds-ledger, kept 5/5 in two consecutive runs after Amendment 1 (the baseline's own second-run residue, `.claude/reflex/selftest/report.json` rewritten by the reflex self-test, is recorded as a separate horizon item), cause-n-effect research/consumer-parity-gaps.md gap G2. (H-DRAFT-4c0dadb8-init-scaffolds-ledger.md)
+- `drift-check` now compares the copies `init` installs into a repository (the preflight script, the hypothesis template, and `compile-journal.py`) against the plugin's canonical bytes and prints one advisory line per stale copy with the line delta and a review command; it never overwrites a consumer-owned file. On a 256-spec consumer it reports the preflight at 73 lines against the shipped 151 and the template at 49 against 79 where 0.4.0 printed `clean`; a fresh scaffold prints `clean`; a one-byte seed is reported by path; every other drift-check line is byte-identical. Lab H-DRAFT-4c0dadb8-installed-copy-drift, kept 5/5 in two consecutive runs (run 2 by a cold executor), cause-n-effect research/consumer-parity-gaps.md gap G6. (H-DRAFT-4c0dadb8-installed-copy-drift.md)
+
+### Fixed
+
+- `dispatch-status.py`, `stall-signals.py`, and `compile-findings-index.py` read a spec's status through one shared canonicalizer, `hooks/scripts/hyp_status.py`: `keep` is `kept`, `discard` is `discarded`, `refined-into:` and `refined (into` are terminal, a `<canonical>-<qualifier>` token maps to its canonical word, matching is case-insensitive, and `hyp_status.py --lint <root>` lists every non-canonical status with its rewrite. On a 256-spec consumer the dispatch surface drops from 74 open items to the true 50, so 24 closed specs stop re-presenting through the Stop dispatcher; on a vocabulary-clean tree the three scripts' output is unchanged. Lab H-DRAFT-4c0dadb8-status-vocabulary-canon, kept 5/5 in two consecutive runs after Amendment 1, cause-n-effect research/consumer-parity-gaps.md gap G3. (H-DRAFT-4c0dadb8-status-vocabulary-canon.md)
+
 ## 0.4.0 (2026-09-05)
 
 ### Added
