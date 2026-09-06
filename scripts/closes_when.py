@@ -384,10 +384,381 @@ def _selftest():
     return 0 if not failed else 1
 
 
+# ---------- retest-when family (lane retest-when-predicates; additive, closes-when untouched) ----------
+#
+# A sibling bracket grammar for EMPIRICAL RULES: "retest me when this evidence exists". It never
+# closes anything -- parse_bracket, CLOSES_WHEN_RE, check() and every closes-when checker above
+# are byte-unchanged -- and it is evaluated with the same read-only committed-HEAD discipline:
+# an appended-but-uncommitted stream row or packet is invisible until it is committed.
+#
+#     [retest-when: <predicate>=<argument>]
+#
+#   event-count=event/<node>[:<subject-prefix>]>=N
+#       rows of HEAD:ledger/events.jsonl whose `instance-of` equals event/<node> and whose
+#       `subject` starts with <subject-prefix> (when given) number at least N, counted DISTINCT
+#       by `caused-by` (replaying one install's rows cannot move the count). N is a positive
+#       integer.
+#   metric-crosses=metric/<id><op><T>@last=K          <op> in  <  <=  >  >=
+#       the last K committed derivation rows whose `metric` equals metric/<id> in
+#       HEAD:ledger/metrics-timeseries.jsonl ALL satisfy `value <op> T` (the Prometheus `for`
+#       hold expressed in rows). K counts derivation rows, never days: `@last=3d` or any other
+#       unit suffix is malformed. Fewer than K committed rows -> False.
+#   evidence-received=<target>                        <target> = H-NNN | DEC-NNN | <rule-id>
+#       a committed file under research/raw/ at HEAD whose basename matches
+#       *-evidence-packet-<target>-*.json (the evidence-packet roundtrip's landing shape).
+#
+# Malformed = "no valid retest-when", exactly as parse_bracket treats a malformed closes-when:
+# unknown predicate, empty argument, or an argument that fails its predicate's grammar all
+# parse to None (callers report the field once and never file on it).
+#
+# STABLE API (consumers: scripts/retest-trigger.py, scripts/rule-lint.py, the decision-retest-when
+# and evidence-packet-roundtrip lanes):
+#   RETEST_WHEN_RE                                  the bracket regex; group 1 predicate, group 2 argument
+#   RETEST_WHEN_PREDICATES                          ("event-count", "metric-crosses", "evidence-received")
+#   parse_retest_when(line)            -> (predicate, arg) | None      bracket form, one per line
+#   parse_retest_when_field(value)     -> (predicate, arg) | None      registry-field form: the bare
+#                                         "<predicate>=<argument>" (like the ledger's closes_when
+#                                         field) or the bracketed form; same return contract
+#   retest_when_evidence(predicate, arg, repo_root) -> (holds, pointers)
+#                                         holds: bool; pointers: ["<path>@<sha40>#L<a>-L<b>", ...]
+#                                         maximal contiguous spans into the committed stream at
+#                                         HEAD whose every line satisfies the predicate's row
+#                                         filter (event node + subject prefix; metric id; the
+#                                         whole packet file). Empty when holds is False.
+#   check_retest_when(predicate, arg, repo_root)    -> bool   (holds only)
+
+RETEST_WHEN_PREDICATES = ("event-count", "metric-crosses", "evidence-received")
+
+RETEST_WHEN_RE = re.compile(
+    r"\[retest-when:\s*(event-count|metric-crosses|evidence-received)=([^\]]+)\]"
+)
+
+_RW_EVENT_COUNT_ARG_RE = re.compile(
+    r"^event/([a-z0-9][a-z0-9-]*)(?::([A-Za-z0-9][A-Za-z0-9._/-]*))?>=([1-9][0-9]*)$"
+)
+_RW_METRIC_ARG_RE = re.compile(
+    r"^(metric/[a-z0-9][a-z0-9._-]*)(<=|>=|<|>)(-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+))@last=([1-9][0-9]*)$"
+)
+_RW_TARGET_ARG_RE = re.compile(r"^(?:H-[0-9]+|DEC-[0-9]+|[A-Za-z0-9][A-Za-z0-9._-]*)$")
+_RW_PACKET_GLOB = "*-evidence-packet-%s-*.json"
+_RW_EVENTS_PATH = "ledger/events.jsonl"
+_RW_METRICS_PATH = "ledger/metrics-timeseries.jsonl"
+_RW_RAW_DIR = "research/raw"
+
+
+def _retest_when_arg_ok(predicate, arg):
+    if predicate == "event-count":
+        return _RW_EVENT_COUNT_ARG_RE.match(arg) is not None
+    if predicate == "metric-crosses":
+        return _RW_METRIC_ARG_RE.match(arg) is not None
+    if predicate == "evidence-received":
+        return _RW_TARGET_ARG_RE.match(arg) is not None
+    return False
+
+
+def parse_retest_when(line):
+    """(predicate, arg) for a well-formed retest-when bracket on the line; None otherwise
+    (absent, unknown predicate, empty argument, or an argument its predicate's grammar
+    rejects -- e.g. `@last=3d`). Pure regex parse of the text given, like parse_bracket."""
+    m = RETEST_WHEN_RE.search(line)
+    if not m:
+        return None
+    predicate, arg = m.group(1), m.group(2).strip()
+    if not arg or not _retest_when_arg_ok(predicate, arg):
+        return None
+    return predicate, arg
+
+
+def parse_retest_when_field(value):
+    """The registry-field form: a `retest_when` value written bare as `<predicate>=<argument>`
+    (the shape the work ledger already uses for its `closes_when` field) or already
+    bracketed. Non-string, empty, or malformed -> None."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if not text.startswith("["):
+        text = "[retest-when: " + text + "]"
+    return parse_retest_when(text)
+
+
+def _rw_head_sha(repo_root):
+    code, out = _git(repo_root, ["rev-parse", "HEAD"])
+    sha = out.strip()
+    return sha if code == 0 and re.match(r"^[0-9a-f]{40}$", sha) else None
+
+
+_RW_BLOB_CACHE = {}  # (repo_root, head sha, path) -> lines | None; keyed by the sha, so a moved HEAD never reads stale
+
+
+def _rw_head_lines(repo_root, path, sha=None):
+    """Lines of <path> at HEAD, or None when the path is not committed (cat-file -e decides
+    presence, never `show`'s exit code -- the document-resolver lesson). Cached per
+    (repo, HEAD sha, path): one trigger invocation evaluates many rules over the same two
+    streams, and every cache key names the exact commit it was read at."""
+    key = (str(repo_root), sha, path)
+    if sha is not None and key in _RW_BLOB_CACHE:
+        return _RW_BLOB_CACHE[key]
+    present, _ = _git(repo_root, ["cat-file", "-e", "HEAD:" + path])
+    if present != 0:
+        return None  # absence (or a failed read) is never cached: the next call asks git again
+    code, out = _git(repo_root, ["show", "HEAD:" + path])
+    if code != 0:
+        return None
+    lines = out.splitlines()
+    if sha is not None:
+        _RW_BLOB_CACHE[key] = lines
+    return lines
+
+
+def _rw_spans(line_numbers):
+    """Sorted 1-based line numbers -> maximal contiguous (a, b) runs."""
+    spans = []
+    for n in sorted(set(line_numbers)):
+        if spans and spans[-1][1] == n - 1:
+            spans[-1][1] = n
+        else:
+            spans.append([n, n])
+    return [(a, b) for a, b in spans]
+
+
+def _rw_pointers(path, sha, line_numbers):
+    return ["%s@%s#L%d-L%d" % (path, sha, a, b) for a, b in _rw_spans(line_numbers)]
+
+
+def _rw_json_rows(lines):
+    """(lineno, dict) for every parseable object line; other lines are skipped."""
+    for i, raw in enumerate(lines, 1):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            yield i, rec
+
+
+def _rw_event_count(arg, repo_root):
+    m = _RW_EVENT_COUNT_ARG_RE.match(arg)
+    if not m:
+        return False, []
+    node, prefix, n = "event/" + m.group(1), m.group(2), int(m.group(3))
+    sha = _rw_head_sha(repo_root)
+    lines = _rw_head_lines(repo_root, _RW_EVENTS_PATH, sha) if sha else None
+    if sha is None or lines is None:
+        return False, []
+    matched, causes = [], set()
+    for lineno, rec in _rw_json_rows(lines):
+        if rec.get("instance-of") != node:
+            continue
+        subject = rec.get("subject")
+        if prefix is not None and not (isinstance(subject, str) and subject.startswith(prefix)):
+            continue
+        matched.append(lineno)
+        cause = rec.get("caused-by")
+        if isinstance(cause, str) and cause.strip():
+            causes.add(cause.strip())
+    if len(causes) < n:
+        return False, []
+    return True, _rw_pointers(_RW_EVENTS_PATH, sha, matched)
+
+
+_RW_OPS = {
+    "<": lambda v, t: v < t,
+    "<=": lambda v, t: v <= t,
+    ">": lambda v, t: v > t,
+    ">=": lambda v, t: v >= t,
+}
+
+
+def _rw_metric_crosses(arg, repo_root):
+    m = _RW_METRIC_ARG_RE.match(arg)
+    if not m:
+        return False, []
+    metric, op, threshold, k = m.group(1), m.group(2), float(m.group(3)), int(m.group(4))
+    sha = _rw_head_sha(repo_root)
+    lines = _rw_head_lines(repo_root, _RW_METRICS_PATH, sha) if sha else None
+    if sha is None or lines is None:
+        return False, []
+    rows = []
+    for lineno, rec in _rw_json_rows(lines):
+        if rec.get("metric") != metric:
+            continue
+        value = rec.get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        rows.append((lineno, float(value)))
+    if len(rows) < k:
+        return False, []
+    last = rows[-k:]
+    test = _RW_OPS[op]
+    if not all(test(v, threshold) for _ln, v in last):
+        return False, []
+    return True, _rw_pointers(_RW_METRICS_PATH, sha, [ln for ln, _v in last])
+
+
+def _rw_evidence_received(arg, repo_root):
+    import fnmatch
+    if not _RW_TARGET_ARG_RE.match(arg):
+        return False, []
+    sha = _rw_head_sha(repo_root)
+    if sha is None:
+        return False, []
+    code, out = _git(repo_root, ["ls-tree", "-r", "--name-only", "HEAD", "--", _RW_RAW_DIR])
+    if code != 0:
+        return False, []
+    pattern = _RW_PACKET_GLOB % arg
+    pointers = []
+    for path in sorted(out.splitlines()):
+        if not fnmatch.fnmatchcase(Path(path).name, pattern):
+            continue
+        lines = _rw_head_lines(repo_root, path, sha)
+        if lines is None:
+            continue
+        pointers.append("%s@%s#L1-L%d" % (path, sha, max(1, len(lines))))
+    return (len(pointers) > 0), pointers
+
+
+_RETEST_WHEN_CHECKERS = {
+    "event-count": _rw_event_count,
+    "metric-crosses": _rw_metric_crosses,
+    "evidence-received": _rw_evidence_received,
+}
+
+
+def retest_when_evidence(predicate, arg, repo_root):
+    """(holds, pointers) for <predicate>=<arg> against committed HEAD of repo_root. Unknown
+    predicate or malformed argument -> (False, []). Read-only; never touches the working tree."""
+    fn = _RETEST_WHEN_CHECKERS.get(predicate)
+    if fn is None or not _retest_when_arg_ok(predicate, arg):
+        return False, []
+    holds, pointers = fn(arg, repo_root)
+    return bool(holds), list(pointers)
+
+
+def check_retest_when(predicate, arg, repo_root):
+    """True iff the retest-when predicate holds at HEAD (retest_when_evidence's first value)."""
+    return retest_when_evidence(predicate, arg, repo_root)[0]
+
+
+def _retest_when_selftest():
+    """Throwaway-repo proof of the retest-when family: grammar closure, distinct-by-caused-by,
+    the @last=K hold on a cross-then-revert series, HEAD-only (an uncommitted packet is
+    invisible), and parse_bracket neutrality. Returns [(name, ok, detail)]; the module's
+    --selftest prints and tallies it alongside the closes-when checks."""
+    import os
+    import shutil
+    import tempfile
+
+    def row(node, cause, subject):
+        return json.dumps({"schema": "v1", "instance-of": node, "caused-by": cause,
+                           "date": "2026-09-05", "subject": subject, "payload": {}},
+                          sort_keys=True, separators=(",", ":"))
+
+    def mrow(metric, value):
+        return json.dumps({"schema": "metric-point/v1", "metric": metric, "value": value},
+                          sort_keys=True, separators=(",", ":"))
+
+    tmp = tempfile.mkdtemp(prefix="retest-when-selftest-")
+    checks = []
+    try:
+        subprocess.run(["git", "init", "-q", tmp], check=True, capture_output=True)
+        os.makedirs(os.path.join(tmp, "ledger"))
+        os.makedirs(os.path.join(tmp, "research", "raw"))
+        events = [row("event/verdict-flipped", "c%07d" % i, "lane/H-%d" % i) for i in range(5)]
+        events += [row("event/verdict-flipped", "c%07d" % i, "lane/replay-%d" % i) for i in range(5)]
+        events += [row("event/advisory-surfaced", "d%07d" % i, "lane/beta-%d" % i) for i in range(3)]
+        events += [row("event/advisory-surfaced", "e%07d" % i, "lane/alpha-%d" % i) for i in range(2)]
+        with open(os.path.join(tmp, "ledger", "events.jsonl"), "w", encoding="utf-8") as f:
+            f.write("\n".join(events) + "\n")
+        series = [mrow("metric/x", v) for v in (0.20, 0.20, 0.20, 0.09, 0.08, 0.12)]
+        series += [mrow("metric/y", v) for v in (5, 5, 6, 7)]
+        with open(os.path.join(tmp, "ledger", "metrics-timeseries.jsonl"), "w", encoding="utf-8") as f:
+            f.write("\n".join(series) + "\n")
+        with open(os.path.join(tmp, "research", "raw", "repo-evidence-packet-H-900-abc1234.json"),
+                  "w", encoding="utf-8") as f:
+            f.write('{"target": "H-900"}\n')
+        env = dict(os.environ, GIT_AUTHOR_NAME="selftest", GIT_AUTHOR_EMAIL="s@t",
+                   GIT_COMMITTER_NAME="selftest", GIT_COMMITTER_EMAIL="s@t")
+        subprocess.run(["git", "-C", tmp, "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", tmp, "-c", "commit.gpgsign=false", "commit", "-q",
+                        "-m", "seed"], check=True, capture_output=True, env=env)
+        # uncommitted packet: invisible until committed
+        with open(os.path.join(tmp, "research", "raw", "repo-evidence-packet-H-901-abc1234.json"),
+                  "w", encoding="utf-8") as f:
+            f.write('{"target": "H-901"}\n')
+        ev = retest_when_evidence
+        held, ptrs = ev("event-count", "event/verdict-flipped>=5", tmp)
+        table = [
+            ("bracket parses event-count",
+             parse_retest_when("x [retest-when: event-count=event/verdict-flipped>=5]"),
+             ("event-count", "event/verdict-flipped>=5")),
+            ("bracket parses metric-crosses",
+             parse_retest_when("[retest-when: metric-crosses=metric/ask-rate<0.20@last=3]"),
+             ("metric-crosses", "metric/ask-rate<0.20@last=3")),
+            ("bracket parses evidence-received",
+             parse_retest_when("[retest-when: evidence-received=DEC-016]"),
+             ("evidence-received", "DEC-016")),
+            ("field form parses bare value",
+             parse_retest_when_field("event-count=event/verdict-flipped:lane/>=2"),
+             ("event-count", "event/verdict-flipped:lane/>=2")),
+            ("@last with a unit suffix is malformed",
+             parse_retest_when("[retest-when: metric-crosses=metric/ask-rate<0.20@last=3d]"), None),
+            ("unknown predicate is malformed",
+             parse_retest_when("[retest-when: file-count=ledger/x>=3]"), None),
+            ("empty argument is malformed", parse_retest_when("[retest-when: evidence-received= ]"), None),
+            ("event-count without >=N is malformed",
+             parse_retest_when("[retest-when: event-count=event/verdict-flipped]"), None),
+            ("parse_bracket returns None for a retest-when bracket",
+             parse_bracket("[retest-when: event-count=event/verdict-flipped>=5]"), None),
+            ("closes-when bracket is not a retest-when",
+             parse_retest_when("[closes-when: path-exists=a.md]"), None),
+            ("event-count holds at 5 distinct caused-by (10 rows)", held, True),
+            ("event-count pointers cover the matching rows",
+             ptrs, ["ledger/events.jsonl@%s#L1-L10" % _rw_head_sha(tmp)]),
+            ("event-count 6 fails: replays do not move the distinct count",
+             check_retest_when("event-count", "event/verdict-flipped>=6", tmp), False),
+            ("event-count subject prefix counts only the prefix",
+             check_retest_when("event-count", "event/advisory-surfaced:lane/beta>=3", tmp), True),
+            ("event-count subject prefix above count fails",
+             check_retest_when("event-count", "event/advisory-surfaced:lane/beta>=4", tmp), False),
+            ("metric hold @last=3 fails on cross-then-revert",
+             check_retest_when("metric-crosses", "metric/x<0.10@last=3", tmp), False),
+            ("metric hold @last=1 sees the revert (0.12 not < 0.10)",
+             check_retest_when("metric-crosses", "metric/x<0.10@last=1", tmp), False),
+            ("metric hold >=5 @last=4 holds", check_retest_when("metric-crosses", "metric/y>=5@last=4", tmp), True),
+            ("metric hold fewer rows than K fails",
+             check_retest_when("metric-crosses", "metric/y>=5@last=5", tmp), False),
+            ("metric pointers are the last K rows",
+             ev("metric-crosses", "metric/y>5@last=2", tmp)[1],
+             ["ledger/metrics-timeseries.jsonl@%s#L9-L10" % _rw_head_sha(tmp)]),
+            ("committed packet satisfies evidence-received",
+             check_retest_when("evidence-received", "H-900", tmp), True),
+            ("uncommitted packet does not (HEAD-only)",
+             check_retest_when("evidence-received", "H-901", tmp), False),
+            ("absent packet fails", check_retest_when("evidence-received", "DEC-777", tmp), False),
+            ("unknown predicate never holds", check_retest_when("row-count", "x", tmp), False),
+        ]
+        for name, got, want in table:
+            checks.append((name, got == want, "got %r want %r" % (got, want)))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return checks
+
+
 if __name__ == "__main__":
     import sys
     if "--selftest" in sys.argv[1:]:
-        sys.exit(_selftest())
+        rc = _selftest()
+        fam = _retest_when_selftest()
+        for name, ok, detail in fam:
+            print("%s retest-when: %s%s" % ("ok  " if ok else "FAIL", name, "" if ok else "  [%s]" % detail))
+        fam_failed = sum(1 for c in fam if not c[1])
+        print("retest-when selftest: %d checks, %d failed" % (len(fam), fam_failed))
+        sys.exit(rc or (1 if fam_failed else 0))
     print(__doc__.strip().splitlines()[0])
     print("usage: closes_when.py --selftest   (the module is otherwise imported, not run)")
     sys.exit(2)

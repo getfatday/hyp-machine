@@ -1,0 +1,47 @@
+{
+ "enums": {
+  "event/checkpoint-compiled": {
+   "class": [
+    "assertion-count-mismatch",
+    "budget-line-missing",
+    "dangling-evidence-pointer",
+    "emitted",
+    "internal-error",
+    "source-digest-stale",
+    "untraceable-numeric",
+    "untyped",
+    "verdict-tally-contradiction"
+   ]
+  },
+  "event/run-completed": {
+   "caused-by": [
+    "command/run-experiment"
+   ],
+   "verdict": [
+    "keep",
+    "discard",
+    "refine"
+   ]
+  }
+ },
+ "event_ids": [
+  "event/checkpoint-compiled",
+  "event/run-completed"
+ ],
+ "metrics": [],
+ "payload_keys": {
+  "event/checkpoint-compiled": [
+   "rc",
+   "class"
+  ],
+  "event/run-completed": [
+   "verdict"
+  ]
+ },
+ "target": "checkpoint-gate-stance",
+ "verdict_words": [
+  "keep",
+  "discard",
+  "refine"
+ ]
+}
