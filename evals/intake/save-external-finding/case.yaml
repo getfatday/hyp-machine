@@ -1,7 +1,10 @@
 schema_version: "1.0"
 name: save-external-finding
 description: >
-  A user shares an external finding with a source URL and asks to save it.
+  A user shares an external finding with a source URL and asks to save it. The URL is
+  a reserved placeholder and the prompt says so: the case grades filing, not citation
+  verification, so a repository whose capture rules demand fetch-verified sources must
+  still file the note instead of ending the turn with a question.
   The intake skill should file a minimal note with the URL attached, add an
   index line, and record one write-once journal fragment.
 tags: [intake, capture]
@@ -17,7 +20,9 @@ execution:
     I just read a useful finding on a public engineering blog: teams that keep a
     one-line-per-page index over their internal notes locate documents about twice
     as fast as teams that rely on search alone. Save that in this repo so we don't
-    lose it. Source: https://example.com/notes-index-study
+    lose it. Source: https://example.com/notes-index-study — that URL is a deliberate
+    placeholder for this exercise (a reserved domain): record it verbatim as the source,
+    do not fetch or verify it, and do not stop to ask whether it is real.
   max_turns: 40
   timeout_seconds: 600
   allowed_tools: ["Write", "Edit", "Bash"]
