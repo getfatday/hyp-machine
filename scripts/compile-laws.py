@@ -65,6 +65,20 @@ from difflib import SequenceMatcher
 REWORD_PAIR_MIN = 0.5  # frozen at registration
 LINE_ORDER = {"LAWS": 0, "D": 1}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# lint-registry accepts `retest_when` (an evidence predicate, lane retest-when-predicates
+# keep) as the alternative to `retest_by` on empirical rows: a defect only when BOTH are absent
+# (or the predicate is malformed and no date backs it). Grammar from the sibling shared module.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from closes_when import parse_retest_when_field as _parse_retest_when_field
+except Exception:  # pragma: no cover
+    _parse_retest_when_field = None
+
+
+def _retest_when_ok(row):
+    return bool(_parse_retest_when_field is not None and "retest_when" in row
+                and _parse_retest_when_field(row.get("retest_when")) is not None)
 REQUIRED_FIELDS = ("kind", "id", "text", "carriers", "licensed_by",
                    "scope_licensed", "scope_written", "class", "cost_class",
                    "status")
@@ -201,9 +215,12 @@ def cmd_lint(args):
         if klass not in ("permanent", "empirical"):
             defects.append("class:invalid:%s" % klass)
         elif klass == "empirical":
-            if not (isinstance(r.get("retest_by"), str)
-                    and DATE_RE.match(r["retest_by"])):
-                defects.append("retest_by:missing-or-not-a-date")
+            has_date = bool(isinstance(r.get("retest_by"), str)
+                            and DATE_RE.match(r["retest_by"]))
+            if not has_date and not _retest_when_ok(r):
+                defects.append("retest_by:missing-or-not-a-date"
+                               if "retest_when" not in r
+                               else "retest_when:malformed-and-no-retest_by-date")
             if not r.get("retest_method"):
                 defects.append("retest_method:missing")
         else:  # permanent: exempt from retest_by, must say why

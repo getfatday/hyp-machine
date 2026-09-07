@@ -35,6 +35,16 @@ Usage (repo root = --repo, else CLAUDE_PROJECT_DIR, else the cwd):
   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/review-cadence.py" emit-doc   # print the cadence rules doc
 
 Stdlib + git only. Deterministic given repo state and the local date.
+
+RETEST DUE (decision-retest-when lane): a decision that was parked on missing information
+carries a `retest_when` evidence predicate on its ledger row (scripts/decisions.py; grammar in
+the shared scripts/closes_when.py). `decisions.py check` prints one exit-neutral
+`DECISIONS-CHECK\tRETEST-DUE\t<id>\t<path>@<sha>#L<n>\t<predicate>=<argument>` line per
+accepted/denied decision whose predicate holds at committed HEAD. This surface re-presents
+those rows in a RETEST DUE block ABOVE REVIEW DEBT, carrying the evidence pointer -- no date
+decides a re-presentation; `next-touch <date>` stays legal only for one-way-door holds
+(docs/review-cadence.md). With nothing due the block is absent and the render is byte-for-byte
+the shipped one.
 """
 import argparse
 import json
@@ -166,6 +176,57 @@ def load_work_rows(root):
     return rows
 
 
+RETEST_DUE_PREFIX = "DECISIONS-CHECK\tRETEST-DUE\t"
+
+
+def decision_titles(root):
+    titles = {}
+    for d in load_jsonl(os.path.join(root, "ledger", "work-ledger.jsonl")):
+        if d.get("kind") == "decision" and d.get("id"):
+            titles[str(d["id"])] = str(d.get("title", ""))
+    return titles
+
+
+def retest_due_rows(root):
+    """The RETEST-DUE lines of `decisions.py check` (the decision kit beside this script),
+    parsed; [] when the kit is absent or reports none. The check is read-only and that class is
+    exit-neutral, so this never changes the kit's land gate."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "decisions.py")
+    if not os.path.isfile(script):
+        return []
+    try:
+        p = subprocess.run([sys.executable, script, "--root", root, "check"],
+                           capture_output=True, text=True, timeout=120)
+    except Exception:
+        return []
+    rows = []
+    for line in p.stdout.splitlines():
+        if line.startswith(RETEST_DUE_PREFIX):
+            parts = line.split("\t")
+            if len(parts) >= 5:
+                rows.append({"id": parts[2], "pointer": parts[3], "predicate": parts[4]})
+    return rows
+
+
+def retest_due_block(root):
+    """Lines rendered above REVIEW DEBT; [] when nothing is due (the shipped render, byte for
+    byte). Impact first, then the pointer; never a question, never a date."""
+    rows = retest_due_rows(root)
+    if not rows:
+        return []
+    titles = decision_titles(root)
+    out = ["RETEST DUE (%d decision(s) whose waited-for evidence has landed at HEAD; "
+           "re-present each now -- evidence decides this, never a date)" % len(rows)]
+    for r in rows:
+        out.append("  RETEST-DUE %s  %s -- the evidence this decision waited on is "
+                   "committed: %s (%s)"
+                   % (r["id"], titles.get(r["id"], ""), r["pointer"], r["predicate"]))
+    out.append("  re-present: python3 scripts/decisions.py show <id>, then resolve <id> "
+               "--reopen with the answer the evidence now supports")
+    out.append("")
+    return out
+
+
 def latest_verdicts(root):
     latest = {}
     for d in load_jsonl(os.path.join(root, "ledger", "review-ledger.jsonl")):
@@ -257,9 +318,10 @@ def render(root):
         0 if age_days(rv[0].get("date"), today) >= AGED_DAYS else 1,
         -age_days(rv[0].get("date"), today),
         rv[0]["_order"]))
-    out = [RULES.rstrip(), "",
-           "REVIEW DEBT (%d row(s); ranked aged-first, then age-descending) "
-           "-- rendered %s" % (len(debt), today)]
+    out = [RULES.rstrip(), ""]
+    out += retest_due_block(root)
+    out.append("REVIEW DEBT (%d row(s); ranked aged-first, then age-descending) "
+               "-- rendered %s" % (len(debt), today))
     if not debt:
         out.append("  (none -- every open row carries a current verdict)")
     for i, (row, v) in enumerate(debt, 1):

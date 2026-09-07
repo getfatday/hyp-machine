@@ -61,6 +61,18 @@ import os
 import re
 import sys
 
+# retest-when awareness (lane retest-when-predicates keep): an empirical row may carry a
+# well-formed `retest_when` evidence predicate instead of (or beside) a `retest_by` date.
+# RULE-EXPIRED still fires on a past date; it no longer fires on `not retest_by` when the row
+# carries a well-formed retest_when (the evidence trigger, scripts/retest-trigger.py, owns that
+# row). The grammar lives in the sibling shared module; absent module -> no row is treated as
+# evidence-armed (fail-closed toward the date path, exactly the pre-keep behaviour).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from closes_when import parse_retest_when_field as _parse_retest_when_field
+except Exception:  # pragma: no cover - the lint stays standalone without the module
+    _parse_retest_when_field = None
+
 BREADTH_RANK = {"instance": 0, "class": 1, "universal": 2}
 CLAUSE_PREFIX = re.compile(r"^\s*(?:#\s*)?(?:[-*]\s+|\d+\.\s+)?(.*)$")
 TAG = re.compile(r"^\[(R-\d{3})\]\s*(.*)$")
@@ -160,7 +172,13 @@ def lint(corpus):
         # RULE-EXPIRED (empirical rows only; permanent never fires)
         if row.get("class") == "empirical":
             retest_by = row.get("retest_by")
-            expired = (not retest_by) or (str(retest_by) < as_of)
+            evidence_armed = bool(
+                _parse_retest_when_field is not None and "retest_when" in row
+                and _parse_retest_when_field(row.get("retest_when")) is not None)
+            if retest_by:
+                expired = str(retest_by) < as_of
+            else:
+                expired = not evidence_armed  # date-less AND predicate-less: expired at every session
             if expired and rid not in open_intent_ids:
                 findings.append(("RULE-EXPIRED", rid, carrier,
                                  "retest_by=%s" % (retest_by or "none")))
@@ -221,9 +239,58 @@ def lint(corpus):
     return 0  # advisory contract: exit 0 always
 
 
+def _selftest():
+    """Seeded-violation selftest (lane retest-when-predicates keep): a throwaway corpus with
+    one EVIDENCE-ONLY row (well-formed retest_when, no retest_by) and one DATE-LESS,
+    PREDICATE-LESS row; exit 1 unless exactly the second is RULE-EXPIRED. Also seeds a past-date
+    row (must fire) and a malformed-predicate, date-less row (must fire: a malformed predicate
+    arms nothing)."""
+    import io
+    import shutil
+    import tempfile
+    from contextlib import redirect_stdout
+
+    tmp = tempfile.mkdtemp(prefix="rule-lint-selftest-")
+    try:
+        os.makedirs(os.path.join(tmp, "pinned-tree"))
+        with open(os.path.join(tmp, "pinned-tree", "seed.md"), "w") as fh:
+            fh.write("seed\n")
+        with open(os.path.join(tmp, "as-of-date.txt"), "w") as fh:
+            fh.write("2026-09-05\n")
+
+        def row(rid, **extra):
+            base = {"kind": "rule", "id": rid, "text": "t", "carriers": [],
+                    "licensed_by": ["path:seed.md"], "class": "empirical", "cost_class": "low",
+                    "retest_method": "counted lane", "status": "active",
+                    "scope_licensed": {"breadth": "class"}, "scope_written": {"breadth": "class"}}
+            base.update(extra)
+            return base
+        rows = [row("R-901", retest_when="evidence-received=H-901"),
+                row("R-902"),
+                row("R-903", retest_by="2026-01-01"),
+                row("R-904", retest_when="metric-crosses=metric/x<0.1@last=3d")]
+        with open(os.path.join(tmp, "rules-registry.jsonl"), "w") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            lint(tmp)
+        expired = sorted(ln.split("\t")[1] for ln in buf.getvalue().splitlines()
+                         if ln.startswith("RULE-EXPIRED\t"))
+        want = ["R-902", "R-903", "R-904"]
+        ok = expired == want
+        print("%s rule-lint --selftest: RULE-EXPIRED %s (want %s; the evidence-only row R-901 must not fire)"
+              % ("ok  " if ok else "FAIL", expired, want))
+        return 0 if ok else 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv):
+    if argv == ["--selftest"]:
+        return _selftest()
     if len(argv) != 1 or not os.path.isdir(argv[0]):
-        print("# usage: rule-lint.py <corpus-root>")
+        print("# usage: rule-lint.py <corpus-root> | --selftest")
         return 0  # advisory contract holds even on misuse
     return lint(os.path.abspath(argv[0]))
 

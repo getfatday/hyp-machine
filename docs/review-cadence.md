@@ -33,6 +33,18 @@ row's own date never closes it. Supersession is an explicit verdict, never silen
 rows (>= 7 days) must leave the session acted, parked, or closed with evidence — never
 re-scheduled.
 
+## Retest due: evidence decides a re-presentation, never a date
+
+A decision parked on missing information carries a `retest_when` evidence predicate on its
+ledger row (`docs/decisions.md`, section 7). When `decisions.py check` reports that predicate
+as holding at committed HEAD, this surface renders a `RETEST DUE` block ABOVE `REVIEW DEBT`:
+one `RETEST-DUE <id> <title> -- the evidence this decision waited on is committed:
+<path>@<sha40>#L<n> (<predicate>=<argument>)` line per decision and one re-present hint
+(`decisions.py show <id>`, then `resolve <id> --reopen`). With nothing due the block is absent
+and the render is byte-for-byte the previous one. `next-touch <date>` remains legal only for a
+one-way-door hold whose reopening genuinely is calendar-bound. Kept in the source lab as
+H-DRAFT-d564bb31-decision-retest-when (5/5 twice).
+
 ## The multi-evidence law
 
 A verdict declares EVERY artifact the act created: `--evidence` repeats once per artifact,
