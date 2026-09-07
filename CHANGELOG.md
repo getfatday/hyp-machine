@@ -4,6 +4,12 @@ Newest first. This file is written by `scripts/release.py` from the pending
 `.changeset/*.md` files on every push to main; do not edit it by hand (see
 `.changeset/README.md`).
 
+## 0.14.2 (2026-09-07)
+
+### Fixed
+
+- The harden-check background refresh has a time budget: every scanner block runs under a per-block ceiling (`HARDEN_BLOCK_MAX`, default 120 s), no block starts after the total ceiling (`HARDEN_TOTAL_MAX`, default 600 s), a block killed at its ceiling has its output discarded rather than read as zero findings, and one `HARDEN-PARTIAL` line names every deferred block. On a 35k-file consumer the refresh fell from 380 to 485 s down to 126 s by deferring exactly the over-budget whole-tree name scan, with every other advisory line byte-identical and a raised-ceiling control equal to the unbounded run byte for byte; the source lab's refresh through its deploy-tree link is unchanged. Lab H-305 (harden-refresh-cost-bound), kept 5/5 in two consecutive runs after Amendment 1, the second by a cold executor; consumer gap G11 of the lab-plugin convergence program. (H-305-harden-refresh-budget.md)
+
 ## 0.14.1 (2026-09-07)
 
 ### Fixed
