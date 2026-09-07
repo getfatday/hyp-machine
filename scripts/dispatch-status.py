@@ -57,6 +57,19 @@ item. Consumer adaptation from the lab patch: the lab also refills from its rele
 train's next queued wave; a consumer corpus is flat, so the FOLLOWUPS surface is the
 whole refill source.
 
+GATED (0.14.3; issue #28): the REFILL masking above used to be an internal count --
+`--json` exposed only `open`, so the Stop dispatcher (hooks/scripts/stop-dispatch.py),
+which reads the JSON, re-presented a PARKED spec every cycle while this surface already
+knew it was non-actionable (consumer case: four human-gated specs re-presented for the
+full 12-cycle cap, 2026-09-04). The JSON now carries the split the text always
+computed: `actionable` (open items the machine may act on: unmarked, or orphans with
+recovery verbs) and `gated` (open items whose committed status block carries a
+PARKED / BLOCKED-* / COUNTING marker, each with the marker and the comment note that
+names the gate). `open` is unchanged (= actionable + gated, in corpus order) so older
+readers keep working; the text output prints one `GATED` line per gated item. Gated is
+"open but not actionable by the machine": a human-only step, never an exit artifact --
+the item closes only when its spec status turns terminal, exactly as before.
+
 Usage (repo root: --root, then CLAUDE_PROJECT_DIR, then cwd):
     python3 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch-status.py" [--json] [--at <sha>]
 
@@ -355,6 +368,41 @@ def status_block(ctx, sha, hid, spec_paths):
     return ""
 
 
+def gate_note(block, match):
+    """The human-readable gate behind a marker hit: the HTML comment that carries
+    the marker (its text, whitespace-collapsed, bounded), else the marker's own
+    line. Never raises; always a string."""
+    for m in re.finditer(r"<!--(.*?)-->", block, re.S):
+        if m.start() <= match.start() < m.end():
+            return " ".join(m.group(1).split())[:240]
+    line_start = block.rfind("\n", 0, match.start()) + 1
+    line_end = block.find("\n", match.end())
+    if line_end < 0:
+        line_end = len(block)
+    return " ".join(block[line_start:line_end].split())[:240]
+
+
+def split_actionable(ctx, sha, open_items, spec_paths):
+    """(actionable, gated) over the claim-joined open list -- the REFILL masking
+    rule made a first-class surface (issue #28): orphans are always actionable
+    (they carry recovery verbs); an item whose committed status block carries a
+    PARKED / BLOCKED-* / COUNTING marker is gated -- open, but not actionable by
+    the machine -- and is annotated with the marker and its note."""
+    actionable, gated = [], []
+    for it in open_items:
+        if it.get("orphan"):
+            actionable.append(it)
+            continue
+        block = status_block(ctx, sha, it["id"], spec_paths)
+        m = NON_ACTIONABLE_RE.search(block)
+        if m:
+            gated.append(dict(it, gate={"marker": m.group(0),
+                                        "note": gate_note(block, m)}))
+        else:
+            actionable.append(it)
+    return actionable, gated
+
+
 def read_followups(ctx):
     """Bullets of the live FOLLOWUPS surface's '## FOLLOWUPS' block:
     [{id, note, source}]. One bullet per licensed lane, `- <lane-id> — <license
@@ -398,8 +446,9 @@ def compute(ctx, sha):
     """Dispatch state at the commit: every registered item (eligible = a spec
     file <hypotheses_dir>/H-NNN-*.md committed at sha; landed = committed
     terminal spec status), claim-joined (H-215) and orphan-joined (H-217):
-    {corpus, at, open: [{id, lane, kind[, claim][, orphan]}], claimed_fresh,
-    live, orphans, landed}. CONSUMER ADAPTATION (the one enumeration change
+    {corpus, at, open: [{id, lane, kind[, claim][, orphan]}], actionable,
+    gated: [{..., gate: {marker, note}}], claimed_fresh, live, orphans, landed}
+    (open = actionable + gated; issue #28). CONSUMER ADAPTATION (the one enumeration change
     from the lab install): eligible items come from the hypotheses corpus at
     the commit, not from a release-train wave plan."""
     spec_paths = (git(ctx, ["ls-tree", "-r", "--name-only", sha, ctx.hyp_rel],
@@ -415,16 +464,16 @@ def compute(ctx, sha):
                        kind=status[i][0] or "unregistered")
                   for i in hyp_items if i not in landed]
     open_items, claimed_fresh, live = claim_join(ctx, open_items)
+    # GATED split (issue #28): the REFILL masking, exposed. `open` stays the
+    # full list (= actionable + gated) for older readers.
+    actionable, gated = split_actionable(ctx, sha, open_items, spec_paths)
     result = {"corpus": ctx.hyp_rel, "at": sha, "open": open_items,
+              "actionable": actionable, "gated": gated,
               "claimed_fresh": claimed_fresh, "live": live,
               "orphans": [i["id"] for i in open_items if i.get("orphan")],
               "landed": landed}
     # REFILL (throughput floor): orphans count actionable (recovery verbs);
-    # marker-carrying open items do not
-    actionable = [it for it in open_items
-                  if it.get("orphan")
-                  or not NON_ACTIONABLE_RE.search(
-                      status_block(ctx, sha, it["id"], spec_paths))]
+    # marker-carrying (gated) open items do not
     if len(actionable) < 2:
         result["refill"] = build_refill(ctx, len(actionable),
                                         len(open_items))
@@ -440,7 +489,10 @@ def dispatch_main(ctx, o):
     if o.json:
         print(json.dumps(st, indent=1, sort_keys=True))
         return 0
-    print("DISPATCH (%s): %d open" % (st["corpus"], len(st["open"])))
+    gated_ids = set(i["id"] for i in st.get("gated", []))
+    print("DISPATCH (%s): %d open -- %d actionable, %d gated"
+          % (st["corpus"], len(st["open"]), len(st.get("actionable", [])),
+             len(gated_ids)))
     print("join: committed spec statuses x live claims (LANE-STATE.json "
           "fresh-heartbeat filter, ttl_s = %d) x live pid table (orphan "
           "join, this host)" % TTL_S)
@@ -448,6 +500,8 @@ def dispatch_main(ctx, o):
     print("ORPHANS: %s" % (",".join(orphans) if orphans else "none"))
     for n, it in enumerate(st["open"], 1):
         note = ""
+        if it["id"] in gated_ids:
+            continue   # printed under GATED below, never as a ranked item
         if it.get("orphan"):
             note = " -- ORPHAN: %s" % it["orphan"].get("detail")
         elif it.get("claim"):
@@ -463,6 +517,12 @@ def dispatch_main(ctx, o):
             print("   next=%s -> %s"
                   % (it["orphan"].get("verb"),
                      next_action_text(it["id"], it["orphan"].get("verb"))))
+    for it in st.get("gated", []):
+        g = it.get("gate") or {}
+        print("GATED %s -- %s -- %s: %s -- lane %s (open, not actionable by "
+              "the machine; closes only by a committed terminal spec status)"
+              % (it["id"], it["kind"], g.get("marker"), g.get("note"),
+                 it["lane"]))
     for it in st.get("live", []):
         print("LIVE %s -- %s" % (it["id"], it.get("detail")))
     for it in st.get("claimed_fresh", []):
@@ -503,6 +563,7 @@ def main():
         # no hypotheses corpus: the dispatch surface is empty by construction
         if o.json:
             print(json.dumps({"corpus": ctx.hyp_rel, "at": None, "open": [],
+                              "actionable": [], "gated": [],
                               "claimed_fresh": [], "live": [], "orphans": [],
                               "landed": {}}, indent=1, sort_keys=True))
         else:

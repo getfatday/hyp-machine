@@ -62,6 +62,18 @@ follow-up lanes of your FOLLOWUPS surface, so the dispatch never reads empty whi
 licensed work exists. Ported from the source lab's throughput-floor patch (2026-09-02,
 live case: a 2-open dispatch whose entire frontier was PARKED/BLOCKED by construction).
 
+### GATED items (0.14.3, issue #28)
+
+The masking above is a first-class surface, not just a count. `--json` carries
+`actionable` (open items the machine may act on: unmarked, or orphans with recovery
+verbs) and `gated` (marker-carrying open items, each with `gate.marker` and
+`gate.note`, the text of the status comment that names the human step); `open` stays
+the full list (`actionable` + `gated`) for older readers. The text output prints one
+`GATED <id> -- <status> -- <MARKER>: <note>` line per gated item and never ranks it.
+A gated item is open but not actionable by the machine: it closes only when its spec
+status turns terminal, exactly as before, and it becomes actionable again the moment
+its marker is removed from the committed status block.
+
 The FOLLOWUPS surface is one file (`followups_file` in `.claude/hyp.json`, default
 `hypotheses/FOLLOWUPS.md`), read from the live working tree — advisory refill surface,
 never an exit artifact. Grammar, machine-read by `dispatch-status.py`:
@@ -84,9 +96,14 @@ followup lane goes through the same claim door as everything else.
 ## The Stop-boundary dispatcher (hook)
 
 At every Stop, `hooks/scripts/stop-dispatch.py` (experiments profile only) runs the
-dispatch. Non-empty dispatch with cap headroom blocks the stop once per cycle (exit 2)
-and re-presents the TOP item by name with the exit rule; empty dispatch allows with
-reason `artifact-check-pass`. Frozen caps bound it: 12 cycles or 1800 s per session
+dispatch. Non-empty ACTIONABLE dispatch with cap headroom blocks the stop once per
+cycle (exit 2) and re-presents the TOP actionable item by name with the exit rule (gated
+items are named as gated, never re-presented); empty dispatch allows with reason
+`artifact-check-pass`; a dispatch whose every open item is gated allows with reason
+`all-open-gated`, consumes no cycle, and prints the gate list (id, marker, note) once
+to the user, so the human sees exactly what only they can do (issue #28: before 0.14.3
+the driver read the raw open list and re-presented human-gated specs for the full
+12-cycle cap). Frozen caps bound it: 12 cycles or 1800 s per session
 lineage, then it allows with `cap-headroom-exhausted`. Kill-switch: `touch
 .claude/stop-snooze` silences it for 24 h. It never crashes a session — every internal
 error allows the stop and logs a traceback; every invocation appends one JSON line to
