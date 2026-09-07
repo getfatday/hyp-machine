@@ -45,6 +45,9 @@ While the current version is `0.y.z`, a `major` changeset bumps the minor (0.3.3
 
 ## What happens on merge
 
+Owner PRs are normally merged by GitHub auto-merge once checks pass (see CLAUDE.md, Shipping a
+change); the release job then runs on the resulting push to main exactly as for a manual merge.
+
 On every push to main the release job (`.github/workflows/release.yml`, one run at a
 time) runs `scripts/release.py`:
 

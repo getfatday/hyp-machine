@@ -20,11 +20,20 @@ about versions:
 
    `bump` is `patch`, `minor`, `major`, or `none` (`none` for changes with no user-visible
    effect, such as CI or comments). Below 1.0, `major` bumps the minor number.
-2. Never edit the `version` in `.claude-plugin/plugin.json`, never edit `CHANGELOG.md`, never
+2. After opening the pull request, enable auto-merge on it:
+
+   ```
+   GH_TOKEN=$(gh auth token --user getfatday) gh pr merge <n> --repo getfatday/hyp-machine --auto --merge
+   ```
+
+   GitHub then merges the PR as you once `changeset-check` (and any later required check) is
+   green. The main ruleset "main: required checks" is what makes auto-merge available; a PR
+   that is already green when you run the command merges immediately.
+3. Never edit the `version` in `.claude-plugin/plugin.json`, never edit `CHANGELOG.md`, never
    create a tag or a GitHub release. CI is the only writer of all three: on every merge to main
    the release job computes the next version from the highest reachable `v*` tag, writes
    plugin.json and CHANGELOG.md, deletes the consumed changesets, tags, and publishes.
-3. The pull request check `changeset-check` fails a PR that lacks a changeset, edits the version
+4. The pull request check `changeset-check` fails a PR that lacks a changeset, edits the version
    line, or edits CHANGELOG.md. Its output says what to fix.
 
 Full contract: `.changeset/README.md`. Regression test: `python3 scripts/selftest-release.py`.
