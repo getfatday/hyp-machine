@@ -1,0 +1,5 @@
+---
+bump: minor
+---
+
+The north-star follow-through keeps (lab H-DRAFT-c1c1344b, fragment 0282, each kept 5/5 in two counted runs): `scripts/knob-observe.py` accepts `rule: band` alongside the kept ladder (integer `bounds: [min, max]`, `band`, `sense`, `step`, `hysteresis: one-change-per-window`, held `would_set` and a recorded `proposal` under every kill switch, resumable `--replay`; `--selftest` 23/23 with seeded out-of-bounds, double-change and kill-switch violations each exiting 1) and `docs/knobs.md` documents the band grammar; `scripts/stopping-rule.py` lands with `docs/stopping-rules.md` (`--freeze <rule> --into <copy>`, `--evaluate <rows> --looks k --rule <copy> [--json]`, `--selftest` 6/6; typed exits 12 `frozen-rule-missing`, 13 `frozen-rule-tampered`; verdict vocabulary evidence-sufficient / evidence-insufficient, never keep or discard); `scripts/compile-dashboard.py --check` exits 1 when the compile raises instead of reading a swallowed crash as fresh (the lab's keep-flip sort key has no anchor in the plugin's compiler yet and rides the next compiler sync).
