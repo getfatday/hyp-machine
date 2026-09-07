@@ -66,3 +66,56 @@ node stays at advise), and its `note` carries `plan: 10=deny 11=deny ...` plus t
 counts; `context_pointers` name the knob node, the signal file at its sha256, and the state row.
 The SessionStart resolver line reads the latest state row:
 `KNOB checkpoint-gate-stance n=k/30 would=10:advise,...`.
+
+## Band rule: an integer knob (`rule: band`, lane bounded-knob-controller)
+
+The second rule the controller block accepts. Same node grammar, same state ledger, same kill
+switches, same idempotence key; the value is an integer inside a closed `[min, max]`.
+
+```yaml
+mode: shadow
+controller:
+  signal: event/lane-width-sample       # the committed rows whose payload.value the rule averages
+  window: 10 observations               # the most recent 10 rows; fewer is evidence-insufficient (hold)
+  rule: band
+  band: [20, 40]                        # the window mean is compared against this closed interval
+  sense: inverse                        # inverse: mean above the band steps the value DOWN, below steps it UP; direct is the mirror
+  step: 1                               # one step per change
+  bounds: [1, 4]                        # the proposal is clipped here; a node whose action lies outside is refused (exit 2)
+  hysteresis: one-change-per-window     # a change is recorded only when >= window rows arrived since the last recorded change
+  actuator: action
+  kill_switch: mode off | .claude/knob-freeze | open kind:knob-pin row
+action: 3                               # one integer, not a per-class block
+```
+
+Semantics (pinned by the lane's spec): the current value is the latest state row's `would_set`
+(the node's `action` when there is none); a full window whose mean lies outside the band proposes
+one `step` against the `sense`, clipped to `bounds`, and the proposal is recorded as a change
+only when at least `window` rows have arrived since the row at which the last change was recorded
+(`last_change_at`); inside the band, or with a short window, the value holds. Band fields
+(`band`, `sense`, `step`) under `rule: ladder` are refused with exit 2, never ignored (H-110: a
+load-bearing node fails closed). Recommend-mode filing for a band knob is a separate hypothesis
+(exit 3 today).
+
+Band state row: no `per_class`; instead `rule: band`, scalar `would_set` (the recorded setting),
+`action` (the node's value), `proposal` (the rule's computed value after clipping), `window_mean`,
+`band_position` (`insufficient` / `below` / `inside` / `above`), `last_change_at` (the
+`total_observations` at which the last change was recorded, or `null`). The state words are the
+ladder's (`evidence-insufficient n=k/10`, `threshold-reached n=10/10 (shadow: would_set only)`,
+`killed: <cond> n=k/10`).
+
+Kill-switch hold (both rules): while any switch is on, `would_set` equals the previous state row's
+`would_set` (the node's `action` when none) and the rule's computed value is recorded under
+`proposal` (`per_class.<c>.proposal` for the ladder), so the recorded setting cannot drift while
+frozen; when the switch is removed one row is appended at the same signal and the rule resumes
+from the held value. `--replay` re-derives every prefix in memory: the previous prefix's row is
+the chain (never the ledger), and a prefix that has a recorded state row adopts that row's
+`kill_switch` and `mode` as its inputs, so a replay reproduces the recorded rows byte-for-byte in
+`would_set`.
+
+`check` adds, for band knobs: a `would_set` / `action` / `proposal` outside `[min, max]`, two
+changes recorded fewer than `window` rows apart, and a change recorded under a kill switch (the
+last also for ladder rows), each exit 1; `--selftest` seeds all three and proves `check` bites
+(`band-seeded-*-check-bites`), runs a band scenario end-to-end, and shows the ladder node with
+band fields spliced in is refused. First integer knob: `policy/scratch-lane-width` (its signal is
+synthetic until a live emitter lands, horizon Z-06 of the destination-map north-star file).

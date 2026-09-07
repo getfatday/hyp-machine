@@ -896,8 +896,14 @@ def main(argv):
             sys.stdout.write("%s: %d line(s) compiled%s\n"
                              % (DASHBOARD_NAME, text.count("\n"),
                                 " (unchanged)" if current == text else ""))
-    except Exception:
-        # fail open: a status surface must never break a session or a stop
+    except Exception as exc:
+        # failure posture: hook invocations never crash a turn, but --check must read a
+        # crash as "stale" (exit 1), never as "fresh" -- a swallowed exception under --check
+        # hid a stale DASHBOARD.md for a whole program (lab
+        # H-DRAFT-c1c1344b-dashboard-check-worktree-fresh, kept 2x 5/5)
+        if "--check" in flags:
+            sys.stdout.write("DASHBOARD-COMPILE-FAILED %s: %s\n" % (type(exc).__name__, exc))
+            return 1
         if not quiet:
             sys.stdout.write("dashboard compile skipped (unexpected error; "
                              "failing open)\n")

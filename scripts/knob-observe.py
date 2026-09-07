@@ -45,6 +45,26 @@ kill_switch, license) differs from the latest state row for the knob; a re-evalu
 same state appends nothing to either ledger. Exit: 0 evaluated; 1 check violations;
 2 node missing or invalid; 3 refused (bounds, unsupported mode, unpinned date in recommend).
 Stdlib only. Python 3.9+.
+
+Band rule (lane bounded-knob-controller, additive): a second `controller.rule`, `band`, for an
+integer knob. Node fields: `bounds: [min, max]` (integers), `band: [lo, hi]` (the window mean of
+`payload.value` is compared against it), `sense: inverse|direct` (inverse: a mean above the band
+steps the value DOWN, below steps it UP; direct is the mirror), `step: <int>`,
+`hysteresis: one-change-per-window`, `actuator: action`, and a scalar `action: <int>` within
+bounds. The current value is the latest state row's `would_set` (the node's `action` when there
+is none); a full window whose mean lies outside the band proposes one step against the sense,
+clipped to bounds; a change is recorded only when at least `window` rows have arrived since the
+row at which the last change was recorded (`last_change_at`). Band state row: no `per_class`;
+scalar `would_set`, `action`, `proposal`, `window_mean`, `band_position`
+(insufficient|below|inside|above), `last_change_at`, `rule: band`. Band fields under
+`rule: ladder` are refused (exit 2), never ignored (H-110: fail closed). Recommend-mode filing
+for a band knob is out of scope here (exit 3).
+Kill-switch hold (both rules): while any switch is on, `would_set` equals the previous state
+row's `would_set` (the node's `action` when none) and the rule's computed value is recorded under
+`proposal` (per class for the ladder), so the recorded setting cannot drift while frozen and
+resume continues from the held value. `--replay` re-derives every prefix in memory: the previous
+prefix's row is the chain (never the ledger), and a prefix that has a recorded state row adopts
+that row's `kill_switch` and `mode` as its inputs, so a replay reproduces the recorded rows.
 """
 import argparse
 import glob
@@ -66,6 +86,10 @@ THRESHOLD_EVENT = "event/checkpoint-gate-threshold-reached"
 STATE_SCHEMA = "knob-state/v1"
 ALLOWED_VALUES = ("advise", "deny")
 MODES = ("shadow", "recommend", "off", "act")
+RULES = ("ladder", "band")
+BAND_FIELDS = ("band", "sense", "step")
+SENSES = ("inverse", "direct")
+BAND_HYSTERESIS = "one-change-per-window"
 CONTRADICTION_CLASSES = ("10", "11", "15")
 COUNTED_STATUS = ("kept", "discarded")
 
@@ -217,8 +241,14 @@ def validate_knob(fm):
     if not m:
         errs.append("controller.window %r must read `<n> observations`" % ctl.get("window"))
     n_min = int(m.group(1)) if m else 0
-    if str(ctl.get("rule", "")).strip() != "ladder":
-        errs.append("controller.rule %r is not ladder" % ctl.get("rule"))
+    rule = str(ctl.get("rule", "")).strip()
+    if rule == "band":
+        return validate_band(fm, ctl, mode, signal, n_min, errs)
+    if rule != "ladder":
+        errs.append("controller.rule %r is not in %s" % (ctl.get("rule"), "|".join(RULES)))
+    present = [f for f in BAND_FIELDS if f in ctl]
+    if present:
+        errs.append("band fields %s under rule ladder (refused, never ignored)" % present)
     if str(ctl.get("hysteresis", "")).strip() != "demote-on-first":
         errs.append("controller.hysteresis %r is not demote-on-first" % ctl.get("hysteresis"))
     if str(ctl.get("actuator", "")).strip() != "action":
@@ -248,7 +278,56 @@ def validate_knob(fm):
         if str(cls) not in clean_bounds:
             errs.append("action[%s] has no bounds" % cls)
     return ({"mode": mode, "signal": signal, "n_min": n_min, "bounds": clean_bounds,
-             "action": clean_action}, errs)
+             "action": clean_action, "rule": "ladder"}, errs)
+
+
+def _pair(v, name, errs, cast):
+    if not isinstance(v, list) or len(v) != 2:
+        errs.append("controller.%s %r must read [a, b]" % (name, v))
+        return None
+    try:
+        a, b = cast(v[0]), cast(v[1])
+    except (TypeError, ValueError):
+        errs.append("controller.%s %r is not a pair of %s" % (name, v, cast.__name__))
+        return None
+    if not a < b:
+        errs.append("controller.%s %r must be ordered a < b" % (name, v))
+        return None
+    return [a, b]
+
+
+def validate_band(fm, ctl, mode, signal, n_min, errs):
+    """rule: band -- integer knob. spec: mode, signal, n_min, rule, bounds[min,max], band[lo,hi],
+    sense, step, action (int)."""
+    bounds = _pair(ctl.get("bounds"), "bounds", errs, int)
+    band = _pair(ctl.get("band"), "band", errs, float)
+    sense = str(ctl.get("sense", "")).strip()
+    if sense not in SENSES:
+        errs.append("controller.sense %r not in %s" % (ctl.get("sense"), "|".join(SENSES)))
+    try:
+        step = int(str(ctl.get("step", "")).strip())
+        if step <= 0:
+            raise ValueError
+    except ValueError:
+        errs.append("controller.step %r must be a positive integer" % ctl.get("step"))
+        step = 0
+    if str(ctl.get("hysteresis", "")).strip() != BAND_HYSTERESIS:
+        errs.append("controller.hysteresis %r is not %s" % (ctl.get("hysteresis"), BAND_HYSTERESIS))
+    if str(ctl.get("actuator", "")).strip() != "action":
+        errs.append("controller.actuator %r is not the node's action field" % ctl.get("actuator"))
+    action_raw = fm.get("action")
+    action = None
+    if isinstance(action_raw, dict):
+        errs.append("action must be one integer under rule band, not a per-class block")
+    else:
+        try:
+            action = int(str(action_raw).strip())
+        except (TypeError, ValueError):
+            errs.append("action %r is not an integer" % action_raw)
+    if bounds and action is not None and not (bounds[0] <= action <= bounds[1]):
+        errs.append("action %r outside bounds %s" % (action, bounds))
+    return ({"mode": mode, "signal": signal, "n_min": n_min, "rule": "band", "bounds": bounds,
+             "band": band, "sense": sense, "step": step, "action": action}, errs)
 
 
 # ----------------------------------------------------------------------------- inputs
@@ -402,12 +481,12 @@ def plan_of(decision):
     return dict(tok.split("=") for tok in m.group(1).split())
 
 
-def latest_state_row(src, knob):
+def state_rows_for(src, knob):
     try:
         text = src.text(STATE_REL)
     except (FileNotFoundError, OSError):
-        return None
-    last = None
+        return []
+    out = []
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -417,8 +496,53 @@ def latest_state_row(src, knob):
         except ValueError:
             continue
         if isinstance(rec, dict) and rec.get("knob") == knob:
-            last = rec
-    return last
+            out.append(rec)
+    return out
+
+
+def latest_state_row(src, knob):
+    rows = state_rows_for(src, knob)
+    return rows[-1] if rows else None
+
+
+# ----------------------------------------------------------------------------- the band
+
+def band(spec, rows, prev):
+    """-> (n, current, proposal, window_mean, position, last_change_at). The current value is the
+    previous state row's would_set (the node's action when none); the proposal is one step against
+    the sense when the full window's mean lies outside the band, clipped to bounds; hysteresis and
+    the kill-switch hold are applied by evaluate()."""
+    n_min = spec["n_min"]
+    window = rows[-n_min:] if n_min else rows
+    n = len(window)
+    current = spec["action"]
+    last_change_at = None
+    if isinstance(prev, dict):
+        ws = prev.get("would_set")
+        if isinstance(ws, int) and not isinstance(ws, bool):
+            current = ws
+        lc = prev.get("last_change_at")
+        if isinstance(lc, int) and not isinstance(lc, bool):
+            last_change_at = lc
+    lo, hi = spec["band"]
+    mn, mx = spec["bounds"]
+    vals = [float(r["payload"]["value"]) for r in window
+            if isinstance(r["payload"].get("value"), (int, float)) and not isinstance(r["payload"].get("value"), bool)]
+    mean = None
+    position = "insufficient"
+    delta = 0
+    if n >= n_min and n > 0 and vals:
+        mean = sum(vals) / len(vals)
+        if mean > hi:
+            position = "above"
+            delta = -spec["step"] if spec["sense"] == "inverse" else spec["step"]
+        elif mean < lo:
+            position = "below"
+            delta = spec["step"] if spec["sense"] == "inverse" else -spec["step"]
+        else:
+            position = "inside"
+    proposal = min(mx, max(mn, current + delta))
+    return n, current, proposal, (round(mean, 6) if mean is not None else None), position, last_change_at
 
 
 # ----------------------------------------------------------------------------- the ladder
@@ -493,8 +617,11 @@ def file_decision(root, args):
 
 # ----------------------------------------------------------------------------- evaluate
 
-def evaluate(root, knob, at=None, dry=False, prefix=None):
-    """-> (exit code, result dict). dry: never append / file (--at, --replay)."""
+def evaluate(root, knob, at=None, dry=False, prefix=None, chain=None):
+    """-> (exit code, result dict). dry: never append / file (--at, --replay).
+    chain (--replay only): {"prev": <the previous prefix's row or None>, "record": <the recorded
+    state row at this prefix or None>}; the previous row is taken from memory instead of the
+    ledger and a recorded row's kill_switch and mode are adopted as this prefix's inputs."""
     src = Source(root, at)
     cfg = consumer_cfg(src)
     knob_rel, fm, err = load_knob(src, cfg, knob)
@@ -505,30 +632,65 @@ def evaluate(root, knob, at=None, dry=False, prefix=None):
         return 2, {"error": "knob node invalid", "errors": errs, "knob_node": knob_rel}
     if spec["mode"] == "act":
         return 3, {"error": "mode act is out of scope for this evaluator (bounded-knob-controller-convergence)"}
+    if spec["rule"] == "band" and spec["mode"] == "recommend":
+        return 3, {"error": "recommend-mode filing for rule band is out of scope for this evaluator (bounded-knob-controller)"}
     rows, signal_sha, signal_rel = signal_rows(src, cfg, spec["signal"])
     if prefix is not None:
         rows = rows[:prefix]
         signal_sha = sha256_bytes("".join(canonical(r) for r in rows).encode("utf-8"))
-    labels = derive_labels(src, rows)
-    n, per_class, advisories = ladder(spec, rows, labels)
     n_min = spec["n_min"]
     kill = kill_switches(src, spec, knob)
+    mode_word = spec["mode"]
+    if chain is not None:
+        last = chain.get("prev")
+        rec = chain.get("record")
+        if isinstance(rec, dict):
+            kill = rec.get("kill_switch") or None
+            mode_word = rec.get("mode") or mode_word
+    else:
+        last = latest_state_row(src, knob)
     license_word, license_rel = license_status(src, cfg)
     all_decisions, open_mine = decisions_for_knob(src, knob_rel)
     open_id = open_mine[-1]["id"] if open_mine else None
     contradicts = None
-    if open_id and advisories:
-        plan = plan_of(open_mine[-1])
-        for adv in advisories:
-            m = re.search(r"class (\d+) refusal", adv)
-            if m and plan.get(m.group(1)) == "deny":
-                contradicts = open_id
-        if contradicts:
-            advisories = ["%s; contradicts open decision %s (plan deny)" % (a, contradicts) for a in advisories]
-    row = {"schema": STATE_SCHEMA, "knob": knob, "mode": spec["mode"], "kill_switch": kill,
-           "license": license_word, "n": n, "n_min": n_min, "total_observations": len(rows),
-           "signal": spec["signal"], "signal_sha256": signal_sha, "per_class": per_class,
-           "advisory": advisories, "contradicts": contradicts, "open_decision": open_id, "filed": []}
+    labels = []
+    row = {"schema": STATE_SCHEMA, "knob": knob, "mode": mode_word, "kill_switch": kill,
+           "license": license_word, "n_min": n_min, "total_observations": len(rows),
+           "signal": spec["signal"], "signal_sha256": signal_sha, "contradicts": None,
+           "open_decision": open_id, "filed": [], "advisory": []}
+    if spec["rule"] == "band":
+        n, current, proposal, mean, position, last_change_at = band(spec, rows, last)
+        if kill:
+            would = current  # hold: the recorded setting cannot drift while frozen
+        elif proposal != current and (last_change_at is None or len(rows) - last_change_at >= n_min):
+            would = proposal
+            last_change_at = len(rows)
+        else:
+            would = current
+        row.update({"rule": "band", "n": n, "would_set": would, "action": spec["action"], "proposal": proposal,
+                    "window_mean": mean, "band_position": position, "last_change_at": last_change_at})
+        per_class = {}
+        advisories = []
+    else:
+        labels = derive_labels(src, rows)
+        n, per_class, advisories = ladder(spec, rows, labels)
+        if open_id and advisories:
+            plan = plan_of(open_mine[-1])
+            for adv in advisories:
+                m = re.search(r"class (\d+) refusal", adv)
+                if m and plan.get(m.group(1)) == "deny":
+                    contradicts = open_id
+            if contradicts:
+                advisories = ["%s; contradicts open decision %s (plan deny)" % (a, contradicts) for a in advisories]
+        if kill:
+            held_pc = (last.get("per_class") or {}) if isinstance(last, dict) else {}
+            for cls, pc in per_class.items():
+                held = (held_pc.get(cls) or {}).get("would_set")
+                if held not in ALLOWED_VALUES:
+                    held = spec["action"][cls]
+                pc["proposal"] = pc["would_set"]
+                pc["would_set"] = held
+        row.update({"n": n, "per_class": per_class, "advisory": advisories, "contradicts": contradicts})
     lines = []
     if kill:
         row["state"] = "killed: %s n=%d/%d" % (kill, n, n_min)
@@ -536,17 +698,22 @@ def evaluate(root, knob, at=None, dry=False, prefix=None):
         row["state"] = "evidence-insufficient n=%d/%d" % (n, n_min)
     elif license_word != "ok":
         row["state"] = "unlicensed n=%d/%d: %s" % (n, n_min, license_word)
-    elif spec["mode"] == "shadow":
+    elif mode_word == "shadow":
         row["state"] = "threshold-reached n=%d/%d (shadow: would_set only)" % (n, n_min)
     elif open_id:
         row["state"] = "threshold-reached n=%d/%d (open decision %s)" % (n, n_min, open_id)
     else:
         row["state"] = "threshold-reached n=%d/%d (recommend: filing)" % (n, n_min)
     # bounds guard on the row about to be written
-    for cls, pc in per_class.items():
-        if pc["would_set"] not in ALLOWED_VALUES or pc["action"] not in ALLOWED_VALUES:
-            return 3, {"error": "per-class value outside {advise, deny}", "class": cls, "row": row}
-    last = latest_state_row(src, knob)
+    if spec["rule"] == "band":
+        mn, mx = spec["bounds"]
+        for key in ("would_set", "proposal", "action"):
+            if not (mn <= row[key] <= mx):
+                return 3, {"error": "band value outside bounds", "field": key, "row": row}
+    else:
+        for cls, pc in per_class.items():
+            if pc["would_set"] not in ALLOWED_VALUES or pc["action"] not in ALLOWED_VALUES:
+                return 3, {"error": "per-class value outside {advise, deny}", "class": cls, "row": row}
     same = bool(last) and all(last.get(k) == row.get(k) for k in ("signal_sha256", "mode", "kill_switch", "license"))
     appended = False
     filed = []
@@ -567,8 +734,12 @@ def evaluate(root, knob, at=None, dry=False, prefix=None):
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(canonical(row))
         appended = True
-    would = ",".join("%s:%s" % (c, per_class[c]["would_set"]) for c in class_key(spec))
-    lines.append("KNOB %s n=%d/%d would=%s state=%s" % (knob, n, n_min, would, row["state"]))
+    if spec["rule"] == "band":
+        lines.append("KNOB %s n=%d/%d would=%s proposal=%s mean=%s state=%s"
+                     % (knob, n, n_min, row["would_set"], row["proposal"], row["window_mean"], row["state"]))
+    else:
+        would = ",".join("%s:%s" % (c, per_class[c]["would_set"]) for c in class_key(spec))
+        lines.append("KNOB %s n=%d/%d would=%s state=%s" % (knob, n, n_min, would, row["state"]))
     for adv in advisories:
         lines.append("advisory: %s" % adv)
     if same and not dry:
@@ -587,29 +758,49 @@ def check(root, knob):
     cfg = consumer_cfg(src)
     knob_rel, fm, err = load_knob(src, cfg, knob)
     bounds = None
+    spec = None
     if not err:
         spec, errs = validate_knob(fm)
-        if not errs:
+        if errs:
+            spec = None
+        else:
             bounds = spec["bounds"]
-    state_rows = []
-    try:
-        for line in src.text(STATE_REL).splitlines():
-            if line.strip():
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(rec, dict) and rec.get("knob") == knob:
-                    state_rows.append(rec)
-    except (FileNotFoundError, OSError):
-        pass
+    state_rows = state_rows_for(src, knob)
     decisions, _open = decisions_for_knob(src, knob_rel or "")
     mine = [d for d in decisions if knob_rel and knob_rel in (d.get("context_pointers") or [])]
     v = []
     filed_by = {}
+    is_band = bool(spec) and spec["rule"] == "band"
+    prev_ws = None
+    last_change_t = None
     for i, row in enumerate(state_rows):
         n_min = row.get("n_min", 0)
-        for cls, pc in (row.get("per_class") or {}).items():
+        if is_band or row.get("rule") == "band":
+            mn, mx = (bounds if (is_band and bounds) else (None, None))
+            for key in ("would_set", "action", "proposal"):
+                val = row.get(key)
+                if not isinstance(val, int) or isinstance(val, bool) or (mn is not None and not (mn <= val <= mx)):
+                    v.append("row %d: %s=%r outside bounds [%s, %s]" % (i, key, val, mn, mx))
+            ws = row.get("would_set")
+            base = prev_ws if prev_ws is not None else row.get("action")
+            if ws != base:
+                if row.get("kill_switch"):
+                    v.append("row %d: change %r -> %r recorded under kill switch %s" % (i, base, ws, row["kill_switch"]))
+                t = row.get("total_observations")
+                if isinstance(t, int) and isinstance(last_change_t, int) and t - last_change_t < n_min:
+                    v.append("row %d: two changes inside one window (%d rows after the change at %d; window %d)"
+                             % (i, t - last_change_t, last_change_t, n_min))
+                last_change_t = t if isinstance(t, int) else last_change_t
+            prev_ws = ws
+            continue
+        pc_all = row.get("per_class") or {}
+        if row.get("kill_switch") and isinstance(prev_ws, dict):
+            for cls, pc in pc_all.items():
+                if cls in prev_ws and pc.get("would_set") != prev_ws[cls]:
+                    v.append("row %d: per_class[%s] change %r -> %r recorded under kill switch %s"
+                             % (i, cls, prev_ws[cls], pc.get("would_set"), row["kill_switch"]))
+        prev_ws = {cls: pc.get("would_set") for cls, pc in pc_all.items()}
+        for cls, pc in pc_all.items():
             for key in ("would_set", "action"):
                 val = pc.get(key)
                 allowed = bounds.get(cls, list(ALLOWED_VALUES)) if bounds else list(ALLOWED_VALUES)
@@ -691,6 +882,40 @@ handler: script/scripts/knob-observe.py
 status: current
 ---
 """
+
+
+BAND_NODE_TEXT = """---
+id: policy/scratch-lane-width
+type: policy
+context: selftest
+summary: selftest integer knob (synthetic signal).
+trigger: event/lane-width-sample
+enforcement: advisory
+then: [command/file-gate-decision]
+status: current
+mode: %s
+controller:
+  signal: event/lane-width-sample
+  window: 10 observations
+  rule: band
+  band: [20, 40]
+  sense: inverse
+  step: 1
+  bounds: [1, 4]
+  hysteresis: one-change-per-window
+  actuator: action
+  kill_switch: mode off | .claude/knob-freeze | open kind:knob-pin row
+action: 3
+---
+selftest band node.
+"""
+
+
+def _vrow(i, value):
+    return canonical({"schema": "v1", "instance-of": "event/lane-width-sample",
+                      "caused-by": "selftest@000000000000", "date": "2026-09-06",
+                      "subject": "scheduler/lane-width-sample/%d" % i,
+                      "payload": {"value": value, "synthetic": True}})
 
 
 def _w(root, rel, text):
@@ -842,6 +1067,73 @@ def selftest():
            KNOB_NODE_TEXT.replace("13: [advise, deny]", "13: [advise, block]") % "shadow")
         rc, res = evaluate(root4, "checkpoint-gate-stance")
         ok("bad-node-refused-exit-2", rc == 2 and not os.path.getsize(os.path.join(root4, "ledger", "knob-state.jsonl")))
+        # ---- band rule (bounded-knob-controller): clean scenario, hold under kill, three seeds, two refusals
+        BK = "scratch-lane-width"
+        band_rel = "operating-model/selftest/knobs/scratch-lane-width.md"
+
+        def band_lab(r, mode="shadow"):
+            build_minilab(r, mode="shadow")
+            _w(r, band_rel, BAND_NODE_TEXT % mode)
+
+        def band_append(r, i, value):
+            with open(os.path.join(r, "ledger", "events.jsonl"), "a", encoding="utf-8") as fh:
+                fh.write(_vrow(i, value))
+
+        root5 = os.path.join(base, "band-clean")
+        band_lab(root5)
+        seq = []
+        for i in range(1, 11):  # 10 rows inside the band -> full window, mean 30, hold at 3
+            band_append(root5, i, 30)
+        rc, res = evaluate(root5, BK)
+        seq.append((rc, res["state_row"].get("would_set"), res["state_row"].get("band_position")))
+        for i in range(11, 15):  # four rows far above -> mean 50 > 40 -> one step down
+            band_append(root5, i, 80)
+        rc, res = evaluate(root5, BK)
+        seq.append((rc, res["state_row"].get("would_set"), res["state_row"].get("band_position")))
+        band_append(root5, 15, 80)  # still above, but only 1 row since the change at 14 -> hold
+        rc, res = evaluate(root5, BK)
+        seq.append((rc, res["state_row"].get("would_set"), res["state_row"].get("band_position")))
+        ok("band-clean-converges-and-holds", seq == [(0, 3, "inside"), (0, 2, "above"), (0, 2, "above")]
+           and res["state_row"]["last_change_at"] == 14 and res["state_row"]["proposal"] == 1, json.dumps(seq))
+        _w(root5, ".claude/knob-freeze", "")
+        band_append(root5, 16, 80)
+        rc, res = evaluate(root5, BK)
+        sr = res["state_row"]
+        ok("band-kill-holds-would-set", rc == 0 and sr["would_set"] == 2 and sr["proposal"] == 1
+           and sr["kill_switch"] == "knob-freeze" and sr["state"].startswith("killed: knob-freeze"), json.dumps(sr)[:300])
+        v, _ = check(root5, BK)
+        ok("band-check-exit-0", not v, "; ".join(v))
+
+        def band_seeded(name, state_rows, freeze=False):
+            r = os.path.join(base, "band-seed-" + name)
+            band_lab(r)
+            _w(r, "ledger/knob-state.jsonl", "".join(canonical(x) for x in state_rows))
+            v, _ = check(r, BK)
+            ok("band-seeded-%s-check-bites" % name, bool(v), "no violation reported")
+
+        bcommon = {"schema": STATE_SCHEMA, "knob": BK, "mode": "shadow", "kill_switch": None, "license": "ok",
+                   "n_min": 10, "signal": "event/lane-width-sample", "signal_sha256": "0" * 64, "advisory": [],
+                   "contradicts": None, "open_decision": None, "filed": [], "rule": "band", "action": 3,
+                   "window_mean": 50.0, "band_position": "above", "state": "x", "n": 10}
+        band_seeded("value-outside-bounds", [dict(bcommon, total_observations=10, would_set=7, proposal=7, last_change_at=10)])
+        band_seeded("two-changes-one-window", [dict(bcommon, total_observations=10, would_set=2, proposal=2, last_change_at=10),
+                                               dict(bcommon, total_observations=13, would_set=1, proposal=1, last_change_at=13)])
+        band_seeded("change-under-kill", [dict(bcommon, total_observations=10, would_set=3, proposal=2, last_change_at=None),
+                                          dict(bcommon, total_observations=11, would_set=2, proposal=2, last_change_at=11,
+                                               kill_switch="knob-freeze", state="killed: knob-freeze n=10/10")])
+        # the ordinal node with band fields spliced in under rule: ladder is refused, never ignored
+        root6 = os.path.join(base, "ladder-band-fields")
+        build_minilab(root6, mode="shadow")
+        _w(root6, "operating-model/selftest/knobs/checkpoint-gate-stance.md",
+           (KNOB_NODE_TEXT % "shadow").replace("  rule: ladder\n", "  rule: ladder\n  band: [20, 40]\n  sense: inverse\n  step: 1\n"))
+        rc, res = evaluate(root6, "checkpoint-gate-stance")
+        ok("ladder-band-fields-refused-exit-2", rc == 2 and not os.path.getsize(os.path.join(root6, "ledger", "knob-state.jsonl"))
+           and any("band fields" in e for e in res.get("errors", [])), json.dumps(res)[:300])
+        # recommend-mode filing for a band knob is out of scope: refused before any row
+        root7 = os.path.join(base, "band-recommend")
+        band_lab(root7, mode="recommend")
+        rc, res = evaluate(root7, BK)
+        ok("band-recommend-refused-exit-3", rc == 3 and not os.path.getsize(os.path.join(root7, "ledger", "knob-state.jsonl")))
     finally:
         shutil.rmtree(base, ignore_errors=True)
         os.environ.pop("DECISIONS_TODAY", None)
@@ -883,12 +1175,20 @@ def main(argv=None):
                 print(json.dumps({"error": "knob node invalid", "errors": errs}))
                 return 2
             rows, _sha, _rel = signal_rows(src, cfg, spec["signal"])
+            # the recorded row per prefix (the last one when several share a prefix): its
+            # kill_switch and mode are the inputs the replay adopts; the chain is in memory
+            records = {}
+            for rec in state_rows_for(src, args.knob):
+                records[rec.get("total_observations")] = rec
             outs = []
+            prev = None
             for k in range(1, len(rows) + 1):
-                rc, res = evaluate(root, args.knob, at=args.at, dry=True, prefix=k)
+                rc, res = evaluate(root, args.knob, at=args.at, dry=True, prefix=k,
+                                   chain={"prev": prev, "record": records.get(k)})
                 if rc != 0:
                     print(json.dumps(res))
                     return rc
+                prev = res["state_row"]
                 outs.append(res["state_row"])
                 if not args.json:
                     print("\n".join(res["lines"]))
