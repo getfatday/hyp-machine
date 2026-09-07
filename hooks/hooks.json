@@ -73,32 +73,32 @@
           {
             "type": "command",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/harden-check.sh\"",
-            "timeout": 20
+            "timeout": 60
           },
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/drift-check.py\"",
-            "timeout": 10
+            "timeout": 60
           },
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-recovery-warning.py\"",
-            "timeout": 10
+            "timeout": 60
           },
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --check || echo \"hyp: DASHBOARD.md was stale at session start (the next hook refreshes it) — review and commit the refreshed copy.\"",
-            "timeout": 10
+            "timeout": 60
           },
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session_resolver.py\" \"${CLAUDE_PROJECT_DIR:-.}\" 2>/dev/null | head -40 || true",
-            "timeout": 15
+            "timeout": 60
           },
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --quiet",
-            "timeout": 10
+            "timeout": 60
           }
         ]
       }
