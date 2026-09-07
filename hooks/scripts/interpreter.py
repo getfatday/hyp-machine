@@ -46,6 +46,41 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hyp_config import resolve_root  # shared, worktree-aware (one resolver for every hook)
 
 
+def _emit_advisory_events(root, advisories, tool, fpath):
+    """H-238 choke point (advisory): each surfaced advisory line also lands one
+    event/advisory-surfaced record on the consumer's event stream — the durable
+    representation an advisory otherwise lacks (kept 2026-09-02; before the
+    stream, hook stdout was its whole trail). Experiments-profile machinery,
+    idempotent per (policy, message, subject, day) via events_lib's
+    canonical-bytes dedupe. Fails silent on ANY error — a PreToolUse hook must
+    never break on its own instrumentation — and events_lib's node validation
+    keeps this inert until the consumer commits the advisory-surfaced event
+    node (canonical copy: templates/event-nodes/)."""
+    if not advisories:
+        return
+    try:
+        from hyp_config import load_config, profile_at_least
+        if not profile_at_least(load_config(root), "experiments"):
+            return
+        import datetime
+        sys.path.insert(0, os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts")))
+        import events_lib
+        subject = str(fpath or tool or "session")
+        subject = "".join(ch if (ch.isalnum() or ch in "._/-") else "-"
+                          for ch in subject)[:120].lstrip("._/-") or "session"
+        date = datetime.date.today().isoformat()
+        for name, message in advisories:
+            node_id = str(name) if str(name).startswith("policy/") \
+                else "policy/%s" % name
+            rec = events_lib.make_record(
+                "event/advisory-surfaced", node_id, date, subject,
+                {"policy": str(name), "message": str(message)})
+            events_lib.emit_event(root, rec)
+    except Exception:
+        pass
+
+
 def parse_node(path):
     """Minimal YAML-frontmatter parser for policy nodes (no dependencies).
 
@@ -242,6 +277,7 @@ def main():
 
     for name in sorted(advisories):
         print("ADVISORY %s: %s" % (name, advisories[name]))
+    _emit_advisory_events(root, sorted(advisories.items()), tool, fpath)
     sys.exit(0)
 
 

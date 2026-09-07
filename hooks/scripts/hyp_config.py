@@ -27,6 +27,7 @@ DEFAULTS = {
     "template_file": "hypotheses/TEMPLATE.md",
     "preflight_file": "experiments/preflight.py",
     "model_dir": "operating-model",
+    "events_file": "ledger/events.jsonl",
     "context": "",
 }
 
