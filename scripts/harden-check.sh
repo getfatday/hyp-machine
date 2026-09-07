@@ -177,7 +177,14 @@ fi
 # coverage drift — an open maintainer-ruling row the triage never saw, or a filed ruling
 # whose file vanished from worktree and HEAD. Silent when the sidecar is absent (the
 # dashboard already renders that state as untriaged: N). Never blocking, like all 19 before it.
+# Capability guard (consumer gap G13, lab H-DRAFT-45585281): the plugin's portable
+# compile-dashboard.py carries no --triage-check branch and renders DASHBOARD.md and
+# decisions.html on any flag it does not know -- a write from a read-only advisory. The
+# block runs only where the script under $S names the flag in its own source (a fixed-string
+# grep; no interpreter is spawned to find out); elsewhere it is skipped silently, like every
+# lab-only helper above.
 if [ -f "$S/compile-dashboard.py" ] && [ -f experiments/runs/DESIGN-decision-triage/triage.json ] && \
+   grep -qF -e "--triage-check" "$S/compile-dashboard.py" && \
    hb triage-drift python3 "$S/compile-dashboard.py" --triage-check && [ "$hb_rc" -ne 0 ]; then
   echo "HARDEN-WARNING: decision-triage drift — open maintainer-ruling row(s) lack a triage entry, or a filed ruling's file is gone (scripts/compile-dashboard.py --triage-check for detail; re-triage per research/raw/2026-08-18-decisions-are-two-way-doors-grant.md)"; W=1
 fi
