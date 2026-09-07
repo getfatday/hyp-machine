@@ -394,6 +394,35 @@ if [ -f "$g" ]; then
   fi
 fi
 
+# ADVISORY-34 branch-without-pr (lab DESIGN-durability-gaps, why-no-pr.md; H-DRAFT-ee81f74d-branch-without-pr-advisory):
+# a pushed worktree branch is "pushed" to the advisory above yet invisible to review — 52 commits sat on
+# one lab branch with no PR (2026-09-04..06) while sibling worktrees had drafts. Fires when HEAD is a
+# non-default branch >= HARDEN_PR_MIN (default 1) commits ahead of origin/<default> and gh reports no
+# open PR whose head is this branch. Silent on the default branch, detached HEAD, no gh on PATH, or
+# HARDEN_PR_CHECK=0. The gh call is pinned to the remote owner's account first (gh auth token --user
+# <owner>; the active account may not see that remote) and falls back to the active account; if both
+# fail it says so rather than hide. Repo-rooted (H-DRAFT-40ec0bc2): every git/gh call reads the
+# repository the session works in.
+if [ "${HARDEN_PR_CHECK:-1}" != "0" ] && command -v gh >/dev/null 2>&1; then
+  br=$(git symbolic-ref -q --short HEAD 2>/dev/null)
+  def=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##'); def=${def:-main}
+  if [ -n "$br" ] && [ "$br" != "$def" ] && git rev-parse -q --verify "origin/$def" >/dev/null 2>&1; then
+    ahead=$(git rev-list --count "origin/$def..HEAD" 2>/dev/null || echo 0)
+    if [ "${ahead:-0}" -ge "${HARDEN_PR_MIN:-1}" ]; then
+      owner=$(git remote get-url origin 2>/dev/null | sed -E 's#.*[:/]([^/]+)/[^/]+(\.git)?$#\1#')
+      n=""
+      if [ -n "$owner" ]; then
+        tok=$(gh auth token --user "$owner" 2>/dev/null)
+        [ -n "$tok" ] && n=$(GH_TOKEN="$tok" timeout 8 gh pr list --head "$br" --state open --json number --jq 'length' 2>/dev/null)
+      fi
+      [ -z "$n" ] && n=$(timeout 8 gh pr list --head "$br" --state open --json number --jq 'length' 2>/dev/null)
+      case "$n" in
+        '') echo "ADVISORY-34 branch-without-pr: $br is $ahead commit(s) ahead of origin/$def and gh could not read pull requests for $owner (gh auth switch --user $owner; or HARDEN_PR_CHECK=0)"; W=1 ;;
+        0)  echo "ADVISORY-34 branch-without-pr: $br is $ahead commit(s) ahead of origin/$def with no open pull request — branch work is durable only once a PR carries it toward $def (gh pr create --draft --base $def --head $br; or HARDEN_PR_CHECK=0)"; W=1 ;;
+      esac
+    fi
+  fi
+fi
 if [ -n "$skipped" ]; then
   echo "HARDEN-SKIP: whole-tree scan(s) deferred to the cached refresh:$skipped ($ntracked tracked files > ${HARDEN_TREE_MAX:-2000}, no advisory cache yet; bash scripts/harden-check.sh --fresh after this session for the full reading)"; W=1
 fi
