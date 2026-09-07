@@ -57,7 +57,20 @@ item. Consumer adaptation from the lab patch: the lab also refills from its rele
 train's next queued wave; a consumer corpus is flat, so the FOLLOWUPS surface is the
 whole refill source.
 
-GATED (0.14.3; issue #28): the REFILL masking above used to be an internal count --
+READ BUDGET (consumer gap G12, lab H-DRAFT-45585281): the committed spec bodies
+arrive in `git cat-file --batch` chunks of 64 `<sha>:<path>` lines under ONE wall
+ceiling, DISPATCH_STATUS_MAX seconds (environment; int or float; default 20), whose
+clock starts when compute() starts, instead of one `git show` subprocess per spec
+(180-303 ids read 38-151 s on a loaded host, above the Stop dispatcher's 45 s inner
+read). A chunk that times out, or would start after the budget is spent, is
+discarded whole and every id in it and after it is UNREAD: listed open with kind
+`unread`, never landed, never actionable, never silently dropped. The partial is
+disclosed only when unread > 0: --json gains a `partial` object {reason, budget_s,
+unread, of, batches_read, batches}; text gains one DISPATCH-PARTIAL: line after the
+join: line. Whenever the budget is not hit the output is byte-identical to the
+per-show read. rev-parse and ls-tree keep their own 30 s timeout outside the budget.
+
+GATED (0.15.1; issue #28): the REFILL masking above used to be an internal count --
 `--json` exposed only `open`, so the Stop dispatcher (hooks/scripts/stop-dispatch.py),
 which reads the JSON, re-presented a PARKED spec every cycle while this surface already
 knew it was non-actionable (consumer case: four human-gated specs re-presented for the
@@ -68,7 +81,9 @@ PARKED / BLOCKED-* / COUNTING marker, each with the marker and the comment note 
 names the gate). `open` is unchanged (= actionable + gated, in corpus order) so older
 readers keep working; the text output prints one `GATED` line per gated item. Gated is
 "open but not actionable by the machine": a human-only step, never an exit artifact --
-the item closes only when its spec status turns terminal, exactly as before.
+the item closes only when its spec status turns terminal, exactly as before. An id left
+UNREAD by the read budget below is neither actionable nor gated (its status is unknown):
+it stays in `open` only, so open ⊇ actionable ∪ gated, with equality whenever nothing is unread.
 
 Usage (repo root: --root, then CLAUDE_PROJECT_DIR, then cwd):
     python3 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch-status.py" [--json] [--at <sha>]
@@ -78,7 +93,9 @@ Read-only over the repo; stdlib only.
 """
 import argparse
 import glob
+import io
 import json
+import math
 import os
 import platform
 import re
@@ -109,6 +126,11 @@ NON_ACTIONABLE_RE = re.compile(r"\b(PARKED|BLOCKED[A-Z-]*|COUNTING)\b")
 # lanes in the source lab, 2026-08-29)
 TTL_S = 1800
 ID_RE = re.compile(r"^(H-\d+)-.*\.md$")
+# read budget (H-DRAFT-45585281): one wall ceiling over the batched body read; the
+# environment variable is the only tunable, the batch size is a constant
+BUDGET_ENV = "DISPATCH_STATUS_MAX"
+BUDGET_DEFAULT_S = 20.0
+BATCH_N = 64
 
 
 def load_config(root):
@@ -327,16 +349,145 @@ def git(ctx, args, ok_missing=False):
 
 
 _SHOW_CACHE = {}
+_UNREAD = set()            # (root, sha, path) keys never read within the budget
+_BATCH_PLAN = {}           # (root, sha) -> {"paths": [first spec path per id], "filled"}
+_BUDGET = {"limit": BUDGET_DEFAULT_S, "t0": None, "batches": 0, "batches_read": 0}
+
+
+def budget_limit():
+    """DISPATCH_STATUS_MAX as a number: an int when it parses as one, else a float,
+    else the default; a negative value reads as 0."""
+    raw = os.environ.get(BUDGET_ENV)
+    if raw is None or not raw.strip():
+        return BUDGET_DEFAULT_S
+    raw = raw.strip()
+    try:
+        val = int(raw)
+    except ValueError:
+        try:
+            val = float(raw)
+        except ValueError:
+            return BUDGET_DEFAULT_S
+    return val if val >= 0 else 0
+
+
+def budget_start():
+    """Start the read clock; compute() calls this once per dispatch."""
+    _BUDGET["limit"] = budget_limit()
+    _BUDGET["t0"] = time.monotonic()
+    _BUDGET["batches"] = 0
+    _BUDGET["batches_read"] = 0
+
+
+def budget_left():
+    """Seconds of read budget left; None before the clock starts (unbounded)."""
+    if _BUDGET["t0"] is None:
+        return None
+    return _BUDGET["limit"] - (time.monotonic() - _BUDGET["t0"])
+
+
+def plan_prefetch(ctx, sha, hyp_items, spec_paths):
+    """Record the one spec path per id (the first <hid>-*.md path, id order --
+    exactly the path committed_spec_status resolves) so the first cache miss at
+    this sha fills the whole corpus in BATCH_N chunks."""
+    paths = []
+    for hid in hyp_items:
+        for p in spec_paths:
+            base = os.path.basename(p)
+            if base.startswith(hid + "-") and base.endswith(".md"):
+                paths.append(p)
+                break
+    _BATCH_PLAN[(ctx.root, sha)] = {"paths": paths, "filled": False}
+    _BUDGET["batches"] = int(math.ceil(len(paths) / float(BATCH_N)))
+
+
+def decode_body(raw):
+    """One blob's bytes as `git show` in text mode returns them: the preferred
+    locale encoding, strict errors, universal newlines."""
+    return io.TextIOWrapper(io.BytesIO(raw)).read()
+
+
+def parse_batch(out, lines):
+    """One `cat-file --batch` reply for `lines` (<sha>:<path>) -> {path: body or
+    None}; a `missing` reply maps to None exactly as a failed `git show` does.
+    Raises ValueError when the reply does not match the request."""
+    got, pos = {}, 0
+    for line in lines:
+        nl = out.find(b"\n", pos)
+        if nl < 0:
+            raise ValueError("truncated batch reply")
+        header, pos = out[pos:nl], nl + 1
+        path = line.split(":", 1)[1]
+        if header.endswith(b" missing"):
+            got[path] = None
+            continue
+        fields = header.split()
+        if len(fields) != 3:
+            raise ValueError("unexpected batch header %r" % header[:80])
+        size = int(fields[2])
+        raw = out[pos:pos + size]
+        if len(raw) != size:
+            raise ValueError("truncated batch body")
+        pos += size + 1   # the LF that follows every body
+        got[path] = decode_body(raw)
+    return got
+
+
+def fill_cache(ctx, sha):
+    """Fill the body cache for every planned path at sha, BATCH_N paths per
+    `git cat-file --batch` subprocess whose timeout is the budget left. A chunk
+    that times out, or would start after the budget is spent, is discarded whole:
+    every path in it and after it is UNREAD. A chunk git refuses (nonzero exit,
+    unparseable reply) caches nothing, so its paths fall to the single show."""
+    plan = _BATCH_PLAN[(ctx.root, sha)]
+    plan["filled"] = True
+    paths = plan["paths"]
+    for start in range(0, len(paths), BATCH_N):
+        left = budget_left()
+        if left is not None and left <= 0:
+            _UNREAD.update((ctx.root, sha, q) for q in paths[start:])
+            return
+        lines = ["%s:%s" % (sha, q) for q in paths[start:start + BATCH_N]]
+        try:
+            p = subprocess.run(["git", "-C", ctx.root, "cat-file", "--batch"],
+                               input=("\n".join(lines) + "\n").encode("utf-8"),
+                               capture_output=True, timeout=left)
+        except subprocess.TimeoutExpired:
+            _UNREAD.update((ctx.root, sha, q) for q in paths[start:])
+            return
+        if p.returncode != 0:
+            continue
+        try:
+            got = parse_batch(p.stdout, lines)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        for q, body in got.items():
+            _SHOW_CACHE[(ctx.root, sha, q)] = body
+        _BUDGET["batches_read"] += 1
 
 
 def show(ctx, sha, path):
-    """git show, memoized per (root, sha, path): the REFILL status_block join
-    re-reads exactly the spec bytes committed_spec_status already fetched, so
-    the cache keeps the corpus scan at one subprocess per spec."""
+    """One committed spec body, memoized per (root, sha, path): the REFILL
+    status_block join re-reads exactly the bytes committed_spec_status already
+    fetched. The first miss at a sha fills the cache for every planned path in
+    batches (fill_cache); a path outside the plan is fetched singly by `git show`
+    while budget remains, else it is UNREAD and reads as None."""
     key = (ctx.root, sha, path)
-    if key not in _SHOW_CACHE:
-        _SHOW_CACHE[key] = git(ctx, ["show", "%s:%s" % (sha, path)],
-                               ok_missing=True)
+    if key in _SHOW_CACHE:
+        return _SHOW_CACHE[key]
+    plan = _BATCH_PLAN.get((ctx.root, sha))
+    if plan is not None and not plan["filled"]:
+        fill_cache(ctx, sha)
+        if key in _SHOW_CACHE:
+            return _SHOW_CACHE[key]
+    if key in _UNREAD:
+        return None
+    left = budget_left()
+    if left is not None and left <= 0:
+        _UNREAD.add(key)
+        return None
+    _SHOW_CACHE[key] = git(ctx, ["show", "%s:%s" % (sha, path)],
+                           ok_missing=True)
     return _SHOW_CACHE[key]
 
 
@@ -387,9 +538,12 @@ def split_actionable(ctx, sha, open_items, spec_paths):
     rule made a first-class surface (issue #28): orphans are always actionable
     (they carry recovery verbs); an item whose committed status block carries a
     PARKED / BLOCKED-* / COUNTING marker is gated -- open, but not actionable by
-    the machine -- and is annotated with the marker and its note."""
+    the machine -- and is annotated with the marker and its note. An item left
+    UNREAD by the read budget is in neither list (status unknown)."""
     actionable, gated = [], []
     for it in open_items:
+        if it.get("kind") == "unread":
+            continue   # read budget hit: status unknown, graded neither way
         if it.get("orphan"):
             actionable.append(it)
             continue
@@ -450,14 +604,23 @@ def compute(ctx, sha):
     gated: [{..., gate: {marker, note}}], claimed_fresh, live, orphans, landed}
     (open = actionable + gated; issue #28). CONSUMER ADAPTATION (the one enumeration change
     from the lab install): eligible items come from the hypotheses corpus at
-    the commit, not from a release-train wave plan."""
+    the commit, not from a release-train wave plan. READ BUDGET
+    (H-DRAFT-45585281): an id whose body was not read within DISPATCH_STATUS_MAX
+    is UNREAD -- open with kind `unread`, never landed, never actionable -- and
+    `partial` is set only when at least one id is unread."""
+    budget_start()
     spec_paths = (git(ctx, ["ls-tree", "-r", "--name-only", sha, ctx.hyp_rel],
                       ok_missing=True) or "").splitlines()
     hyp_items = sorted(set(
         m.group(1) for m in (ID_RE.match(os.path.basename(p))
                              for p in spec_paths) if m))
+    plan_prefetch(ctx, sha, hyp_items, spec_paths)
     status = {i: committed_spec_status(ctx, sha, i, spec_paths)
               for i in hyp_items}
+    unread = [i for i in hyp_items if status[i][1] is not None
+              and (ctx.root, sha, status[i][1]) in _UNREAD]
+    for i in unread:
+        status[i] = ("unread", status[i][1])
     landed = {i: {"class": "spec-status", "status": st, "path": pp}
               for i, (st, pp) in sorted(status.items()) if st in TERMINAL}
     open_items = [dict(id=i, lane="%s/%s" % (ctx.runs_rel, i),
@@ -472,8 +635,15 @@ def compute(ctx, sha):
               "claimed_fresh": claimed_fresh, "live": live,
               "orphans": [i["id"] for i in open_items if i.get("orphan")],
               "landed": landed}
+    if unread:
+        result["partial"] = {"reason": "over-budget",
+                             "budget_s": _BUDGET["limit"],
+                             "unread": len(unread), "of": len(hyp_items),
+                             "batches_read": _BUDGET["batches_read"],
+                             "batches": _BUDGET["batches"]}
     # REFILL (throughput floor): orphans count actionable (recovery verbs);
-    # marker-carrying (gated) open items do not
+    # marker-carrying (gated) open items do not; unread items never do (status
+    # unknown; they are neither actionable nor gated)
     if len(actionable) < 2:
         result["refill"] = build_refill(ctx, len(actionable),
                                         len(open_items))
@@ -496,6 +666,13 @@ def dispatch_main(ctx, o):
     print("join: committed spec statuses x live claims (LANE-STATE.json "
           "fresh-heartbeat filter, ttl_s = %d) x live pid table (orphan "
           "join, this host)" % TTL_S)
+    pt = st.get("partial")
+    if pt:
+        print("DISPATCH-PARTIAL: %d of %d spec statuses unread -- read budget "
+              "%s=%ss reached after %d of %d batch(es); unread items stay open "
+              "(kind unread), never landed"
+              % (pt["unread"], pt["of"], BUDGET_ENV, pt["budget_s"],
+                 pt["batches_read"], pt["batches"]))
     orphans = st.get("orphans", [])
     print("ORPHANS: %s" % (",".join(orphans) if orphans else "none"))
     for n, it in enumerate(st["open"], 1):

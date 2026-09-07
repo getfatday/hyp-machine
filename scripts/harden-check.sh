@@ -177,7 +177,14 @@ fi
 # coverage drift — an open maintainer-ruling row the triage never saw, or a filed ruling
 # whose file vanished from worktree and HEAD. Silent when the sidecar is absent (the
 # dashboard already renders that state as untriaged: N). Never blocking, like all 19 before it.
+# Capability guard (consumer gap G13, lab H-DRAFT-45585281): the plugin's portable
+# compile-dashboard.py carries no --triage-check branch and renders DASHBOARD.md and
+# decisions.html on any flag it does not know -- a write from a read-only advisory. The
+# block runs only where the script under $S names the flag in its own source (a fixed-string
+# grep; no interpreter is spawned to find out); elsewhere it is skipped silently, like every
+# lab-only helper above.
 if [ -f "$S/compile-dashboard.py" ] && [ -f experiments/runs/DESIGN-decision-triage/triage.json ] && \
+   grep -qF -e "--triage-check" "$S/compile-dashboard.py" && \
    hb triage-drift python3 "$S/compile-dashboard.py" --triage-check && [ "$hb_rc" -ne 0 ]; then
   echo "HARDEN-WARNING: decision-triage drift — open maintainer-ruling row(s) lack a triage entry, or a filed ruling's file is gone (scripts/compile-dashboard.py --triage-check for detail; re-triage per research/raw/2026-08-18-decisions-are-two-way-doors-grant.md)"; W=1
 fi
@@ -438,6 +445,21 @@ if [ "${HARDEN_PR_CHECK:-1}" != "0" ] && command -v gh >/dev/null 2>&1 && ht adv
       esac
     fi
   fi
+fi
+# ADVISORY-35 id-collisions (consumer gap G4, lab H-DRAFT-6ec1691d-consumer-id-collision-advisory):
+# the land gate (scripts/id-rectify.py) inspects only the base->head delta, so ids already shared on
+# canon stay invisible -- one consumer at b7c77473 carried 57 spec ids shared by more than one file and
+# 131 fragment ids duplicated (one id 15 times) with no line saying so. scripts/id-collision-lint.py
+# reads the two id directories (.claude/hyp.json hypotheses_dir / journal_dir, else the default
+# layout) and prints one ID-COLLISION / ID-MISMATCH row per finding, or with --summary one SUMMARY
+# row; this block prints the three counts. Plugin-rooted like every block above (the lint runs from
+# $S); silent when the lint is absent there or finds nothing. Report-only, never blocks.
+if [ -f "$S/id-collision-lint.py" ] && hb advisory-35 python3 "$S/id-collision-lint.py" . --summary; then
+  ic=$(awk -F'\t' '$1=="SUMMARY" {print $2" "$3" "$4}' < "$hb_out")
+  case "$ic" in
+    ''|'spec=0 fragment=0 mismatch=0') ;;
+    *) echo "ADVISORY-35 id-collisions: $ic — spec ids carried by more than one file, fragment ids carried by more than one file, fragments whose id: line disagrees with their filename (python3 scripts/id-collision-lint.py . for detail; renumber the newer file to the next free id in one attributed commit — the land gate only sees ids that arrive, never ids already shared)"; W=1 ;;
+  esac
 fi
 if [ -n "$skipped" ]; then
   echo "HARDEN-SKIP: whole-tree scan(s) deferred to the cached refresh:$skipped ($ntracked tracked files > ${HARDEN_TREE_MAX:-2000}, no advisory cache yet; bash scripts/harden-check.sh --fresh after this session for the full reading)"; W=1

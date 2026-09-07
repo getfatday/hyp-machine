@@ -18,6 +18,7 @@ this file lives in):
   stop-dispatch all gated  -> a second Stop still allows and consumes no cycle
   stop-dispatch all landed -> exit 0, reason artifact-check-pass (unchanged)
   stop-dispatch old surface (JSON without `actionable`) -> exit 2 as before (compat)
+  stop-dispatch unread item (read budget hit)         -> exit 2, unknown is never gated
 
 Usage: python3 scripts/selftest-gated-dispatch.py        exit 0 = PASS, 1 = FAIL
 Provenance: hyp-machine issue #28 (consumer vault, 2026-09-04 / re-verified 2026-09-07).
@@ -218,6 +219,21 @@ def main():
         p = run_hook(repo, "selftest-old-surface", plugin_root=fake)
         check("hook-old-surface-compat", p.returncode == 2 and "Top item: H-009" in p.stderr,
               "rc=%d stderr=%s" % (p.returncode, p.stderr.strip()[:120]))
+
+        # --- an UNREAD item (read budget hit) is unknown: never graded as gated --------
+        fake2 = os.path.join(tmp, "partial-plugin")
+        write(fake2, "scripts/dispatch-status.py",
+              "import json\nprint(json.dumps({'corpus': 'hypotheses', 'at': 'x', 'landed': {},\n"
+              "  'open': [{'id': 'H-010', 'lane': 'experiments/runs/H-010', 'kind': 'unread'},\n"
+              "           {'id': 'H-011', 'lane': 'experiments/runs/H-011', 'kind': 'draft',\n"
+              "            'gate': {'marker': 'PARKED', 'note': 'x'}}],\n"
+              "  'actionable': [], 'gated': [{'id': 'H-011', 'lane': 'experiments/runs/H-011',\n"
+              "            'kind': 'draft', 'gate': {'marker': 'PARKED', 'note': 'x'}}],\n"
+              "  'partial': {'reason': 'over-budget', 'unread': 1, 'of': 2}}))\n")
+        p = run_hook(repo, "selftest-unread", plugin_root=fake2)
+        check("hook-unread-never-gated", p.returncode == 2 and "Top item: H-010" in p.stderr
+              and "graded as unknown" in p.stderr and last_log(repo).get("ungraded") == ["H-010"],
+              "rc=%d stderr=%s" % (p.returncode, p.stderr.strip()[:140]))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     ok = all(results)

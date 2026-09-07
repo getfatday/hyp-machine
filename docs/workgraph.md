@@ -62,13 +62,14 @@ follow-up lanes of your FOLLOWUPS surface, so the dispatch never reads empty whi
 licensed work exists. Ported from the source lab's throughput-floor patch (2026-09-02,
 live case: a 2-open dispatch whose entire frontier was PARKED/BLOCKED by construction).
 
-### GATED items (0.14.3, issue #28)
+### GATED items (0.15.1, issue #28)
 
 The masking above is a first-class surface, not just a count. `--json` carries
 `actionable` (open items the machine may act on: unmarked, or orphans with recovery
 verbs) and `gated` (marker-carrying open items, each with `gate.marker` and
 `gate.note`, the text of the status comment that names the human step); `open` stays
-the full list (`actionable` + `gated`) for older readers. The text output prints one
+the full list for older readers (`actionable` + `gated`, plus any id the read budget left
+unread, which is graded neither way). The text output prints one
 `GATED <id> -- <status> -- <MARKER>: <note>` line per gated item and never ranks it.
 A gated item is open but not actionable by the machine: it closes only when its spec
 status turns terminal, exactly as before, and it becomes actionable again the moment
@@ -101,7 +102,7 @@ cycle (exit 2) and re-presents the TOP actionable item by name with the exit rul
 items are named as gated, never re-presented); empty dispatch allows with reason
 `artifact-check-pass`; a dispatch whose every open item is gated allows with reason
 `all-open-gated`, consumes no cycle, and prints the gate list (id, marker, note) once
-to the user, so the human sees exactly what only they can do (issue #28: before 0.14.3
+to the user, so the human sees exactly what only they can do (issue #28: before 0.15.1
 the driver read the raw open list and re-presented human-gated specs for the full
 12-cycle cap). Frozen caps bound it: 12 cycles or 1800 s per session
 lineage, then it allows with `cap-headroom-exhausted`. Kill-switch: `touch

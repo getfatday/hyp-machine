@@ -39,7 +39,9 @@ Decision order at every Stop:
      GATED -- its committed status block carries a PARKED / BLOCKED-* / COUNTING
      marker, a human-only step the dispatch surface already masks out of its
      actionable count)                                            -> allow, reason
-     all-open-gated; the gate list (id, marker, note) is printed ONCE to the user
+     all-open-gated -- only when every open item is graded (an id the surface left
+     UNREAD under its read budget is unknown, re-presented like actionable, so a
+     partial read never ends a session); the gate list (id, marker, note) is printed ONCE to the user
      via systemMessage so the human sees exactly what only they can do, and is
      recorded in the log. No cycle is consumed. Before this the driver read the raw
      `open` list and re-presented human-gated specs for the full 12-cycle cap
@@ -233,10 +235,16 @@ def main():
         if not isinstance(actionable, list):
             actionable = open_items
         gated = d.get("gated") if isinstance(d.get("gated"), list) else []
+        # Items in neither list (an id the surface left UNREAD under its read
+        # budget) have an UNKNOWN status: graded like actionable -- re-presented,
+        # never counted as gated -- so a partial read can never end a session.
+        graded = set(i["id"] for i in actionable) | set(i["id"] for i in gated)
+        ungraded = [i for i in open_items if i["id"] not in graded]
         base.update(head=d.get("at"), corpus=d.get("corpus"),
                     open=[i["id"] for i in open_items],
                     actionable=[i["id"] for i in actionable],
-                    gated=[i["id"] for i in gated], landed_n=len(landed))
+                    gated=[i["id"] for i in gated],
+                    ungraded=[i["id"] for i in ungraded], landed_n=len(landed))
         if payload.get("_parse_error"):
             # a malformed payload is a defect: surface it as hook-error (allow)
             base.update(decision="allow", reason="hook-error",
@@ -248,7 +256,7 @@ def main():
                         artifacts={k: v for k, v in sorted(landed.items())})
             log_line(runtime, base)
             return 0
-        if not actionable:
+        if not actionable and not ungraded:
             gates = [{"id": i["id"], "marker": (i.get("gate") or {}).get("marker"),
                       "note": (i.get("gate") or {}).get("note"),
                       "lane": i.get("lane")} for i in gated] or \
@@ -279,12 +287,16 @@ def main():
         st["cycles"] += 1
         os.makedirs(runtime, exist_ok=True)
         save_state(spath, st)
-        top = actionable[0]
+        top = (actionable + ungraded)[0]
         gated_note = ""
+        if ungraded:
+            gated_note = (" (%d open item(s) were not read within the dispatch "
+                          "surface's budget and are graded as unknown: %s.)"
+                          % (len(ungraded), ", ".join(i["id"] for i in ungraded)))
         if gated:
-            gated_note = (" (%d further open item(s) are gated on a human "
-                          "step and are not re-presented: %s.)"
-                          % (len(gated), ", ".join(i["id"] for i in gated)))
+            gated_note += (" (%d further open item(s) are gated on a human "
+                           "step and are not re-presented: %s.)"
+                           % (len(gated), ", ".join(i["id"] for i in gated)))
         msg = ("Work dispatcher (cycle %d/%d): %d registered item(s) still "
                "open, %d actionable -- ending here is permitted only by the "
                "artifact check, and it did not pass. Top item: %s -- lane %s. "
