@@ -42,7 +42,7 @@ from pathlib import Path
 
 CLOSES_WHEN_RE = re.compile(
     r"\[closes-when:\s*(path-exists|commit-grep|hypothesis-kept|hypothesis-verdict"
-    r"|maintainer-ruling|decision-resolved)=([^\]]+)\]"
+    r"|maintainer-ruling|decision-resolved|frontmatter-status)=([^\]]+)\]"
 )
 
 # Shared with commitment_lint.py's On-keep-block gating: both need "what word does this
@@ -218,6 +218,53 @@ def _check_decision_resolved(arg, repo_root):
     return False
 
 
+def _frontmatter_status_word(text):
+    """The text after `status:` on the first such line between the opening `---` (first
+    line) and the next `---`, whitespace and one pair of matching quotes stripped; None when
+    the document has no frontmatter block or no `status:` line inside it."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return None
+        if line.startswith("status:"):
+            value = line[len("status:"):].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            return value
+    return None
+
+
+def _check_frontmatter_status(arg, repo_root):
+    """frontmatter-status=<repo path>:<done-values>[!<no-values>] -- the typed document
+    committed at <repo path> AT HEAD carries a frontmatter `status:` whose value is one of the
+    comma-separated done-values (exact compare). The path is everything before the LAST colon
+    of the argument, so real paths containing `: ` parse; the no-values only matter to the
+    north-star reader (outcome `no`), never to closure. Absent path, no frontmatter, no
+    `status:` line, an uncommitted edit, or a malformed argument -> False (document-resolver
+    lane). Note the bracket grammar stops at the first `]`, so a path whose segments carry
+    `[...]` cannot ride in an On-keep bracket; the north-star closes-when cell has no such
+    limit."""
+    if ":" not in arg:
+        return False
+    path, values = arg.rsplit(":", 1)
+    path = path.strip()
+    done = [v.strip() for v in values.partition("!")[0].split(",") if v.strip()]
+    if not path or not done:
+        return False
+    # Presence is decided by cat-file -e, never by `show`'s exit code: `git show HEAD:<path>`
+    # returns 0 with empty output for some deleted paths (document-resolver lane, Amendment 1).
+    present, _ = _git(repo_root, ["cat-file", "-e", "HEAD:" + path])
+    if present != 0:
+        return False
+    code, text = _git(repo_root, ["show", "HEAD:" + path])
+    if code != 0:
+        return False
+    word = _frontmatter_status_word(text)
+    return word is not None and word in done
+
+
 _CHECKERS = {
     "path-exists": _check_path_exists,
     "commit-grep": _check_commit_grep,
@@ -225,6 +272,7 @@ _CHECKERS = {
     "hypothesis-verdict": _check_hypothesis_verdict,
     "maintainer-ruling": _check_maintainer_ruling,
     "decision-resolved": _check_decision_resolved,
+    "frontmatter-status": _check_frontmatter_status,
 }
 
 
@@ -264,6 +312,23 @@ def _selftest():
         for name, text in files.items():
             with open(os.path.join(tmp, "hypotheses", name), "w", encoding="utf-8") as f:
                 f.write(text)
+
+        # typed documents for frontmatter-status (a `: ` inside a directory name on purpose)
+        def doc(status_line):
+            body = "---\ntype: milestone\ntitle: \"t\"\n"
+            if status_line is not None:
+                body += status_line + "\n"
+            return body + "date: 2026-09-05\n---\n\n# t\n"
+        docs = {
+            "docs/Area 1: alpha/done.md": doc("status: \"completed\""),
+            "docs/Area 1: alpha/no.md": doc("status: cancelled"),
+            "docs/Area 1: alpha/other.md": doc("status: in-progress"),
+            "docs/Area 1: alpha/nostatus.md": doc(None),
+        }
+        for rel, text in docs.items():
+            os.makedirs(os.path.join(tmp, os.path.dirname(rel)), exist_ok=True)
+            with open(os.path.join(tmp, rel), "w", encoding="utf-8") as f:
+                f.write(text)
         env = dict(os.environ, GIT_AUTHOR_NAME="selftest", GIT_AUTHOR_EMAIL="s@t",
                    GIT_COMMITTER_NAME="selftest", GIT_COMMITTER_EMAIL="s@t")
         subprocess.run(["git", "-C", tmp, "add", "-A"], check=True, capture_output=True)
@@ -273,7 +338,26 @@ def _selftest():
         with open(os.path.join(tmp, "hypotheses", "H-907-staged.md"), "w",
                   encoding="utf-8") as f:
             f.write(spec("H-907", "kept"))
+        # An uncommitted status flip must not count either (committed state only).
+        with open(os.path.join(tmp, "docs/Area 1: alpha/other.md"), "w", encoding="utf-8") as f:
+            f.write(doc("status: completed"))
+        fs_values = ":completed!cancelled,rejected"
         table = [
+            ("frontmatter-status done value satisfies",
+             check("frontmatter-status", "docs/Area 1: alpha/done.md" + fs_values, tmp), True),
+            ("frontmatter-status no value fails",
+             check("frontmatter-status", "docs/Area 1: alpha/no.md" + fs_values, tmp), False),
+            ("frontmatter-status other value fails (uncommitted flip ignored)",
+             check("frontmatter-status", "docs/Area 1: alpha/other.md" + fs_values, tmp), False),
+            ("frontmatter-status missing status line fails",
+             check("frontmatter-status", "docs/Area 1: alpha/nostatus.md" + fs_values, tmp), False),
+            ("frontmatter-status absent path fails",
+             check("frontmatter-status", "docs/Area 1: alpha/absent.md" + fs_values, tmp), False),
+            ("frontmatter-status malformed argument (no values) fails",
+             check("frontmatter-status", "docs/Area 1: alpha/done.md", tmp), False),
+            ("bracket parses frontmatter-status",
+             parse_bracket("x [closes-when: frontmatter-status=docs/a.md:completed!cancelled]"),
+             ("frontmatter-status", "docs/a.md:completed!cancelled")),
             ("kept spec satisfies hypothesis-kept", check("hypothesis-kept", "H-901", tmp), True),
             ("kept spec satisfies hypothesis-verdict", check("hypothesis-verdict", "H-901", tmp), True),
             ("discarded spec fails hypothesis-kept", check("hypothesis-kept", "H-902", tmp), False),
