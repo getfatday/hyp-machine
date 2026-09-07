@@ -4,6 +4,13 @@ Newest first. This file is written by `scripts/release.py` from the pending
 `.changeset/*.md` files on every push to main; do not edit it by hand (see
 `.changeset/README.md`).
 
+## 0.14.3 (2026-09-07)
+
+### Fixed
+
+- harden-check advisory 20 no longer renders a consumer's dashboard: it called `compile-dashboard.py --triage-check` whenever `experiments/runs/DESIGN-decision-triage/triage.json` existed, and the shipped compile-dashboard has no such branch, so the call rendered DASHBOARD.md and decisions.html into the consumer's tree from a read-only advisory hook. The block is guarded on the branch being supported; every other line is byte-identical on the consumer and in the source lab. Lab H-DRAFT-45585281-harden-advisory20-consumer-write, kept 5/5 in two consecutive runs; consumer gap G13. (H-DRAFT-45585281-harden-advisory20-consumer-write.md)
+- `scripts/dispatch-status.py` reads every committed spec body in `git cat-file --batch` chunks of 64 under one wall ceiling, `DISPATCH_STATUS_MAX` seconds (environment, default 20), instead of one `git show` subprocess per spec: a 180-303 id corpus that read in 38-151 s on a loaded host reads in about one second, so the Stop dispatcher's 45 s inner read finishes. A chunk that times out is discarded whole and its ids are disclosed as UNREAD (open with kind `unread`, never landed, never actionable) through a `partial` object in `--json` or one `DISPATCH-PARTIAL:` line in text; whenever the budget is not hit the output is byte-identical to before. Consumer gap G12 (lab H-DRAFT-45585281). (dispatch-status-time-budget.md)
+
 ## 0.14.2 (2026-09-07)
 
 ### Fixed
