@@ -35,6 +35,18 @@ Decision order at every Stop:
      read, so a hook killed by the outer Stop budget still leaves a trace.
   3. dispatch empty (all eligible items landed at HEAD)           -> allow, reason
      artifact-check-pass (basis recorded: landed map + HEAD sha, from git only)
+  3b. dispatch non-empty but NOTHING ACTIONABLE (issue #28: every open item is
+     GATED -- its committed status block carries a PARKED / BLOCKED-* / COUNTING
+     marker, a human-only step the dispatch surface already masks out of its
+     actionable count)                                            -> allow, reason
+     all-open-gated -- only when every open item is graded (an id the surface left
+     UNREAD under its read budget is unknown, re-presented like actionable, so a
+     partial read never ends a session); the gate list (id, marker, note) is printed ONCE to the user
+     via systemMessage so the human sees exactly what only they can do, and is
+     recorded in the log. No cycle is consumed. Before this the driver read the raw
+     `open` list and re-presented human-gated specs for the full 12-cycle cap
+     (consumer vault, 2026-09-04). A surface without the `actionable` field (an
+     older dispatch-status) grades as before: actionable = open.
   4. no cap headroom (cycles or lineage wall exhausted)           -> allow, reason
      cap-headroom-exhausted
   5. otherwise                                                    -> BLOCK: exit 2
@@ -216,8 +228,23 @@ def main():
             save_state(spath, st)
         open_items = d.get("open", [])
         landed = d.get("landed", {})
+        # issue #28: block on the ACTIONABLE list, never the raw open list.
+        # Older surfaces carry no `actionable` field -> every open item is
+        # actionable, the pre-#28 grading.
+        actionable = d.get("actionable")
+        if not isinstance(actionable, list):
+            actionable = open_items
+        gated = d.get("gated") if isinstance(d.get("gated"), list) else []
+        # Items in neither list (an id the surface left UNREAD under its read
+        # budget) have an UNKNOWN status: graded like actionable -- re-presented,
+        # never counted as gated -- so a partial read can never end a session.
+        graded = set(i["id"] for i in actionable) | set(i["id"] for i in gated)
+        ungraded = [i for i in open_items if i["id"] not in graded]
         base.update(head=d.get("at"), corpus=d.get("corpus"),
-                    open=[i["id"] for i in open_items], landed_n=len(landed))
+                    open=[i["id"] for i in open_items],
+                    actionable=[i["id"] for i in actionable],
+                    gated=[i["id"] for i in gated],
+                    ungraded=[i["id"] for i in ungraded], landed_n=len(landed))
         if payload.get("_parse_error"):
             # a malformed payload is a defect: surface it as hook-error (allow)
             base.update(decision="allow", reason="hook-error",
@@ -229,6 +256,27 @@ def main():
                         artifacts={k: v for k, v in sorted(landed.items())})
             log_line(runtime, base)
             return 0
+        if not actionable and not ungraded:
+            gates = [{"id": i["id"], "marker": (i.get("gate") or {}).get("marker"),
+                      "note": (i.get("gate") or {}).get("note"),
+                      "lane": i.get("lane")} for i in gated] or \
+                    [{"id": i["id"], "marker": None, "note": None,
+                      "lane": i.get("lane")} for i in open_items]
+            base.update(decision="allow", reason="all-open-gated",
+                        gates=gates, mechanism="exit0-systemMessage")
+            log_line(runtime, base)
+            lines = ["Work dispatcher: %d registered item(s) open, 0 actionable "
+                     "by the machine -- every open item is gated on a human "
+                     "step, so this stop is allowed (reason all-open-gated). "
+                     "Only you can move these:" % len(open_items)]
+            for g in gates:
+                lines.append("  %s -- %s: %s" % (g["id"], g["marker"] or "gated",
+                                                 g["note"] or "(no note)"))
+            lines.append("Each closes only by a committed terminal spec status "
+                         "(kept/discarded); clear its marker once the human "
+                         "step lands to make it actionable again.")
+            print(json.dumps({"systemMessage": "\n".join(lines)}))
+            return 0
         wall = time.time() - float(st.get("t0") or time.time())
         if st["cycles"] + 1 > MAX_CYCLES or wall > WALL_CAP_S:
             base.update(decision="allow", reason="cap-headroom-exhausted",
@@ -239,18 +287,27 @@ def main():
         st["cycles"] += 1
         os.makedirs(runtime, exist_ok=True)
         save_state(spath, st)
-        top = open_items[0]
+        top = (actionable + ungraded)[0]
+        gated_note = ""
+        if ungraded:
+            gated_note = (" (%d open item(s) were not read within the dispatch "
+                          "surface's budget and are graded as unknown: %s.)"
+                          % (len(ungraded), ", ".join(i["id"] for i in ungraded)))
+        if gated:
+            gated_note += (" (%d further open item(s) are gated on a human "
+                           "step and are not re-presented: %s.)"
+                           % (len(gated), ", ".join(i["id"] for i in gated)))
         msg = ("Work dispatcher (cycle %d/%d): %d registered item(s) still "
-               "open -- ending here is permitted only by the artifact check, "
-               "and it did not pass. Top item: %s -- lane %s. Land its "
-               "committed exit artifact: a line-initial spec Status verdict "
-               "(kept/discarded) with its journal fragment, decided "
+               "open, %d actionable -- ending here is permitted only by the "
+               "artifact check, and it did not pass. Top item: %s -- lane %s. "
+               "Land its committed exit artifact: a line-initial spec Status "
+               "verdict (kept/discarded) with its journal fragment, decided "
                "mechanically from the lane's run record -- never a promise "
                "string. One item this cycle: land the commit, then end your "
                "turn. (To silence this dispatcher for 24h: touch "
-               ".claude/stop-snooze.)"
-               % (st["cycles"], MAX_CYCLES, len(open_items), top["id"],
-                  top["lane"]))
+               ".claude/stop-snooze.)%s"
+               % (st["cycles"], MAX_CYCLES, len(open_items), len(actionable),
+                  top["id"], top["lane"], gated_note))
         base.update(decision="block", reason="re-present",
                     mechanism="exit2-stderr", top_item=top["id"],
                     cycle=st["cycles"])
