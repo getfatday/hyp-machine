@@ -36,7 +36,9 @@ import tempfile
 import time
 from datetime import datetime, timezone
 
-PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# realpath, not abspath: a repository that links scripts/hyp-lab.py into an installed or mirrored plugin tree
+# (the source lab does, one source per file) must still find hooks/scripts/hyp_config.py beside the real file.
+PLUGIN = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, os.path.join(PLUGIN, "hooks", "scripts"))
 import hyp_config  # noqa: E402
 from hyp_config import load_config  # noqa: E402
