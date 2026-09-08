@@ -4,6 +4,16 @@ Newest first. This file is written by `scripts/release.py` from the pending
 `.changeset/*.md` files on every push to main; do not edit it by hand (see
 `.changeset/README.md`).
 
+## 0.17.0 (2026-09-08)
+
+### Added
+
+- `scripts/hyp-lab.py`: one named entry point for the read-only lab instruments — `status | stalls | preflight | recent | prior | mine | next-id`, one subcommand per `make lab-*` target of the reference consumer layer. `status`, `stalls` and `preflight` dispatch to the shipped scripts (`status` appends one `DRAFTS:` line counting the draft-handle specs the released readers skip); `recent`, `prior`, `mine` and `next-id` are built in over the `.claude/hyp.json` paths with `hyp_status.py` as the status reader; `next-id` prints the H-148 draft handle (`H-DRAFT-<hash8>-<slug>`) and never fetches. Zero LLM, nothing written under the repository (lab H-DRAFT-6ec1691d-consumer-lab-entrypoint). (consumer-lab-entrypoint.md)
+
+### Fixed
+
+- `scripts/harden-check.sh` resolves every helper it calls through one resolver: the plugin root first, else the repository's own `scripts/<helper>`, else the block is skipped as before. A repository that keeps helpers the plugin does not ship (the lab's twelve: amendment-detector, check-governance-drift, check-submission-connectivity, claim-lint, coincidence-check, commitment-lint, corpus-lint, dashboard-features.json, journal-freeze.sha, plugin-parity-check, repo-coverage-lint, wave-status) gets their advisory lines back from the plugin-rooted SessionStart fire — 12 of 26 lines had gone dark there — while a consumer without such helpers prints byte-identical output. Lab H-DRAFT-e9c49cbd-harden-helper-repo-fallback (consumer gap G12), kept twice at 5/5. (H-DRAFT-e9c49cbd-harden-helper-repo-fallback.md)
+
 ## 0.16.0 (2026-09-08)
 
 ### Added
