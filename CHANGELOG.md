@@ -4,6 +4,12 @@ Newest first. This file is written by `scripts/release.py` from the pending
 `.changeset/*.md` files on every push to main; do not edit it by hand (see
 `.changeset/README.md`).
 
+## 0.17.1 (2026-09-08)
+
+### Fixed
+
+- `scripts/hyp-lab.py` resolves the plugin root through the real path of the file rather than its invoked path, so a repository that links the script into a mirrored plugin tree (the source lab links every shared script into its deploy tree, one source per file) imports `hooks/scripts/hyp_config.py` beside the real file instead of raising ModuleNotFoundError; invoked from the plugin tree itself nothing changes. Found landing lab H-DRAFT-e9c49cbd-consumer-lab-entrypoint-v2 (v0.17.0). (hyp-lab-realpath-root.md)
+
 ## 0.17.0 (2026-09-08)
 
 ### Added
