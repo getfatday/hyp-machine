@@ -9,8 +9,18 @@ permissions:
   contents: write
 
 # Runs serialize: a second push while a release is in flight waits its turn rather than
-# racing the tag. The release commit is pushed with GITHUB_TOKEN, which does not trigger
-# another run of this workflow; that is the desired behaviour.
+# racing the tag.
+#
+# Token: main carries the ruleset "main: required checks" (.github/rulesets/), which requires
+# the changeset-check status on every push to main and can be bypassed only by repository
+# admins -- a user-owned repository cannot list the GitHub Actions app as a bypass actor. The
+# release commit therefore has to be pushed under an admin's token: the repository secret
+# RELEASE_TOKEN (a fine-grained personal access token of the owner, repository-scoped,
+# Contents: read and write). scripts/repo-settings.sh checks that the secret exists. When the
+# secret is absent the job falls back to GITHUB_TOKEN, whose push the ruleset rejects, so a
+# missing secret fails loudly at the push step instead of releasing silently. A push made with
+# RELEASE_TOKEN re-triggers this workflow once; that run finds no pending changeset and is a
+# no-op (release.py is idempotent), which is the desired behaviour.
 #
 # The job works on the CURRENT tip of main, never on the sha that triggered it: the
 # checkout is `ref: main`, and release.py --publish fetches and hard-resets to origin/main
@@ -29,6 +39,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
       - name: Git identity for the release commit
         run: |
           git config user.name "github-actions[bot]"
@@ -36,4 +47,4 @@ jobs:
       - name: Consume changesets, bump, tag, publish
         run: python3 scripts/release.py --repo . --publish
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
