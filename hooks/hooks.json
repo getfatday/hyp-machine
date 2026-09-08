@@ -68,11 +68,11 @@
     ],
     "SessionStart": [
       {
-        "matcher": "startup|resume|clear|compact",
+        "matcher": "startup",
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/harden-check.sh\"",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run harden-check 'sh \"${CLAUDE_PLUGIN_ROOT}/scripts/harden-check.sh\"'",
             "timeout": 60
           },
           {
@@ -82,22 +82,37 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-recovery-warning.py\"",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run recovery-warning 'python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-recovery-warning.py\"'",
             "timeout": 60
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --check || echo \"hyp: DASHBOARD.md was stale at session start (the next hook refreshes it) — review and commit the refreshed copy.\"",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run dashboard-check 'python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --check || echo \"hyp: DASHBOARD.md was stale at session start (the next hook refreshes it) — review and commit the refreshed copy.\"'",
             "timeout": 60
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session_resolver.py\" \"${CLAUDE_PROJECT_DIR:-.}\" 2>/dev/null | head -40 || true",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run resolver 'python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session_resolver.py\" \"${CLAUDE_PROJECT_DIR:-.}\" 2>/dev/null | head -40 || true'",
             "timeout": 60
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --quiet",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run dashboard-refresh 'python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --quiet'",
+            "timeout": 60
+          }
+        ]
+      },
+      {
+        "matcher": "resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/drift-check.py\"",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" cached harden-check recovery-warning dashboard-check resolver dashboard-refresh",
             "timeout": 60
           }
         ]
