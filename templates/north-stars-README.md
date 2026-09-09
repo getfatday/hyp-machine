@@ -13,7 +13,7 @@ the verdicts — there is nothing in it to drift.
 # North star: <slug>
 
 destination: <= 25 words
-reached-when: C-NN, C-NN          # every listed condition must derive done or retired
+reached-when: C-NN, C-NN          # each listed condition derives done (outcome yes) or retired; at least one done
 
 ## Conditions
 | id | condition | resolver | bound | closes-when | needs |
@@ -44,7 +44,8 @@ reached-when: C-NN, C-NN          # every listed condition must derive done or r
 | hypothesis | `hypothesis-verdict=H-NNN` | the Status word is `kept` OR `discarded` (question answered either way; PROPOSED predicate, evaluated by north-star-check.py; lands in closes_when.py through the plugin ship row) | kept = yes, discarded = no |
 | decision | `decision-resolved=DEC-NNN` | an `accepted` or `denied` `decision-resolution` row exists in `ledger/work-ledger.jsonl` (`commented` leaves it open) | accepted = yes, denied = no |
 | capture | `path-exists=research/raw/<file>` | the capture is committed | yes |
-| probe | `path-exists=experiments/runs/<lane>/VERDICT.json` | the probe's verdict artifact is committed | `verdict` pass/keep = yes, fail/discard = no |
+| probe | `path-exists=experiments/runs/<lane>/VERDICT.json` | the probe's verdict artifact is committed (the question is answered either way) | `verdict` (stripped, case-insensitive) keep/kept/pass/passed/yes/true = yes; fail/failed/discard/discarded/no/false = no; anything else (ambiguous, refine, void, empty, missing key, non-string, unparsable JSON) = UNRESOLVED — no outcome, never a yes; advisory `PROBE-VERDICT-UNRESOLVED` names the row, the lane and the raw verdict |
+| probe | `probe-passed=<lane>` | the verdict artifact is committed AND its verdict is a yes (mirrors `hypothesis-kept`); a no leaves the row open with outcome no — settled, so its `C-NN:yes` dependents retire and its `C-NN:no` dependents proceed — and on the frontier with verb `probe`; an unresolved verdict leaves it open with no outcome | the same verdict words as the row above |
 
 Lineage: a hypothesis whose Status reads `refined-into: H-MMM` hands its condition to H-MMM (the
 EFFECTIVE resolver); the row is not edited.
@@ -54,6 +55,9 @@ EFFECTIVE resolver); the row is not edited.
 - `C-NN` — the prerequisite must derive `done`.
 - `C-NN:yes` / `C-NN:no` — the prerequisite must resolve with that outcome. If it resolves the
   other way, this condition derives `retired:C-NN` (moot), and so does everything that needs it.
+  A prerequisite whose outcome is known while its row is not done — refuted, or settled while
+  still open (a no-value document, a `probe-passed=` row answered no) — meets its `C-NN:no`
+  dependents' need, so a designed `:no` branch proceeds.
 - A condition with unmet needs is still `open`; it is simply not on the frontier yet.
 - `<slug>#C-NN` / `<slug>#C-NN:yes` / `<slug>#C-NN:no` — a CROSS-FILE prerequisite: condition
   `C-NN` of the sibling north-star file `ledger/north-stars/<slug>.md` committed at the same
@@ -75,7 +79,9 @@ EFFECTIVE resolver); the row is not edited.
 | `done` | the bound predicate is satisfied at the commit |
 | `open` | bound, not yet satisfied |
 | `retired:C-NN` | an outcome-conditioned prerequisite resolved the other way (root id carried); retired precedes done |
+| `refuted` | a `reached-when` condition whose predicate is satisfied with outcome no (a discarded, denied or failed answer): never done, never satisfied; hard finding `REACHED-WHEN-REFUTED` names the row and its lane |
 | `unbound` | `closes-when` is `-`; counts in distance, never in the frontier |
+| `abandoned` | file-level, beside `reached`: every `reached-when` condition is retired — each branch went the other way, so the destination was never reached; `reached` is false; advisory `DESTINATION-ABANDONED` |
 
 Derived lists and numbers: **frontier** = open conditions whose every need is satisfied, in
 `C-NN` order, each with a resolver verb (`register` spec absent / `run` spec present / `add`
@@ -83,7 +89,10 @@ decision row absent / `resolve` decision open / `capture` / `probe`); **claimed_
 frontier members whose lane (`experiments/runs/<effective-id>/LANE-STATE.json`) carries a
 heartbeat fresher than `ttl_s` (H-215/H-216; working-tree overlay, never under `--at`);
 **retired**; **distance** = the largest count of open-or-unbound conditions on any `needs` path
-into a `reached-when` condition; **reached** = every `reached-when` condition is done or retired.
+into a `reached-when` condition; **reached** = every `reached-when` condition is satisfied (done
+with outcome yes, or done under a resolver that carries no outcome — a probe done with an
+unresolved verdict is not satisfied) or retired through a designed `:yes`/`:no` branch, AND at
+least one is satisfied (all retired = `abandoned`, never reached).
 
 ## Set (many north-star files read together)
 
@@ -111,9 +120,12 @@ graduation; unknown `<slug>` or unknown sibling `C-NN` in a qualified needs toke
 cycle, over the union of local and cross-file edges), `STATUS-STORED` (an authored `status` column
 — the one thing this file must never carry), `DUPLICATE-SLUG` (two committed paths under
 `ledger/north-stars/`, recursive, share a basename — the slug is the cross-file resolution key, so
-a nested copy such as `team-a/<slug>.md` is a hard finding on the later path, naming both).
-`HORIZON-AGED` (a horizon line older than 60 days without `-> C-NN`) is advisory and never changes
-the exit code.
+a nested copy such as `team-a/<slug>.md` is a hard finding on the later path, naming both),
+`REACHED-WHEN-REFUTED` (a `reached-when` condition answered no — the one hard finding raised after
+derivation: the file still derives, its rows still answer sibling tokens, only `reached` is false).
+Advisory, never changing the exit code: `HORIZON-AGED` (a horizon line older than 60 days without
+`-> C-NN`), `PROBE-VERDICT-UNRESOLVED` (a committed `VERDICT.json` whose verdict is neither a yes
+nor a no), `DESTINATION-ABANDONED` (every `reached-when` condition retired).
 
 ## Reading
 

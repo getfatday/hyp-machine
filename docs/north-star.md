@@ -9,7 +9,7 @@ hypothesis, a decision, a research capture, or a probe — through the same clos
 the rest of hyp uses (`hypothesis-kept=H-NNN`, `hypothesis-verdict=H-NNN`,
 `decision-resolved=DEC-NNN`, `path-exists=...`). The defining constraint is that the file
 stores no status. `scripts/north-star-check.py` derives every condition's state at the commit
-you ask about — done, open, retired, or unbound — from the committed resolver state, so a
+you ask about — done, open, refuted, retired, or unbound — from the committed resolver state, so a
 verdict landing in a spec is all it takes to move the north-star file, and nobody ever edits that
 file to record it. A `needs` column expresses prerequisites, including outcome-conditioned ones
 (`C-03:yes`): when a prerequisite resolves the other way, the dependent condition retires itself,
@@ -48,6 +48,39 @@ every non-seeded commit with zero edits to the north-star file; a cancelled mile
 its dependents and reopened them when the cancellation was reversed on resume; a deleted bound
 file fired `DANGLING-REF` exactly once; and the north-star file's own status-scope lint was
 untouched by the documents' frontmatter (it fired exactly once, on the seeded authored column).
+
+### Verdict rigor: probe verdicts, refuted rows, abandoned destinations
+
+A probe row's committed `VERDICT.json` is read for its `verdict` word, stripped and
+case-insensitive: `keep`, `kept`, `pass`, `passed`, `yes`, `true` are a yes; `fail`, `failed`,
+`discard`, `discarded`, `no`, `false` are a no; anything else — `ambiguous`, `refine`, `void`, an
+empty string, a missing key, a non-string value, unparsable JSON — is UNRESOLVED: no outcome,
+never a yes, and the advisory `PROBE-VERDICT-UNRESOLVED` names the row, the lane and the raw
+verdict. Two predicates bind a probe. `path-exists=experiments/runs/<lane>/VERDICT.json` derives
+`done` the commit the artifact lands (the question is answered either way; the outcome carries
+the verdict). `probe-passed=<lane>` derives `done` only on a yes — the probe counterpart of
+`hypothesis-kept`: a no leaves the row open with outcome no (settled, so its `C-NN:yes`
+dependents retire and its `C-NN:no` dependents proceed) and on the frontier with verb `probe`;
+an unresolved verdict leaves it open with no outcome. `scripts/closes_when.py` carries
+`probe-passed=` with the same yes-set, so an On-keep bracket and a north-star row read one
+verdict the same way.
+
+A `reached-when` condition whose predicate is satisfied with outcome no — a discarded, denied or
+failed answer — derives `refuted`, never `done`: the hard finding `REACHED-WHEN-REFUTED` names
+the row and its lane, `--strict` exits 1, and the file still derives (its rows still answer
+sibling tokens; only `reached` is false). `reached` requires every `reached-when` condition to be
+satisfied — done with outcome yes, or done under a resolver that carries no outcome; a probe done
+with an unresolved verdict is not satisfied — or retired through a designed `:yes`/`:no` branch,
+AND at least one to be satisfied. When every `reached-when` condition is retired the file derives
+`abandoned: true` beside `reached: false` with the advisory `DESTINATION-ABANDONED`: each branch
+went the other way, so the destination was never reached. A prerequisite whose outcome is known
+while its row is not done (refuted, or settled while still open) meets its `C-NN:no` dependents'
+need, so a designed `:no` branch proceeds. The progress page files a `refuted` row — or any status
+word a later checker adds — under a panel of its own, counts only satisfied rows toward
+`reached_count`, and carries the `abandoned` marker and the advisories only when a stop needs
+them, so a page the base vocabulary covers compiles byte-identically. Before this fix every
+verdict word outside pass/fail read as a yes, a discard in a `reached-when` row read as done, and
+an all-retired file read as reached (source lab journal fragments 0452 and 0454).
 
 ### Many north-star files: the set block
 
@@ -112,7 +145,9 @@ Reach for a north-star file when work spans more than one hypothesis and the que
 still between us and the destination?" keeps being answered from memory. Bind each condition as
 you register the spec (one table row), then let verdicts move it. Use `hypothesis-kept` when
 only a keep satisfies the condition and `hypothesis-verdict` when a discard answers the
-question too.
+question too. For a probe, use `probe-passed=<lane>` when only a passing verdict satisfies the
+condition and `path-exists=experiments/runs/<lane>/VERDICT.json` when its answer either way
+does.
 
 The boundary against its siblings:
 
@@ -165,6 +200,13 @@ which the file exists (`git log --format=%H -- ledger/north-stars/<slug>.md` is 
 HEAD is always appended. The lab's own first page was compiled this way. In set mode
 (`--all`) a default stop that predates a file is skipped for that file's page; the single-file
 path keeps the explicit `--stops` rule.
+
+**A `reached-when` row is `done` but the count reads 1/2.** The count is satisfied rows, not
+done rows: a probe whose committed `VERDICT.json` carries an unresolved verdict (`ambiguous`,
+`refine`, `void`, a missing or non-string `verdict`) is done under `path-exists=` but has no
+outcome, so it is not satisfied and `reached` stays false; the advisory `PROBE-VERDICT-UNRESOLVED`
+names the lane. Land a verdict word the reader knows (`pass`/`fail`, `keep`/`discard`, `yes`/`no`,
+`true`/`false`), or bind the row with `probe-passed=<lane>`, which closes only on a yes.
 
 **Two destinations both need the same hypothesis. Do I add the row twice?** Add it once, in
 the file that owns it, and let the other file's `needs` cell name it as `<slug>#C-NN` (or
@@ -227,9 +269,14 @@ when there is a real destination to point at.
   `retired:C-NN` the commit it says `cancelled` and reopen when it is changed back, and
   `--strict` exits 1 with `DANGLING-REF` the commit the file is deleted — with no edit to the
   north-star file at any step.
-- `python3 scripts/north-star-check.py --selftest` (115 checks), `compile-run-checkpoint.py
-  --selftest`, `compile-north-star-progress.py --selftest` (23 checks) and `closes_when.py
-  --selftest` (19 checks) all exit 0 on the installed copy.
+- A `reached-when` row bound `path-exists=experiments/runs/<lane>/VERDICT.json` reads `refuted`
+  the commit a `discard` verdict lands (`--strict` exits 1 with `REACHED-WHEN-REFUTED`, `reached`
+  stays false), a verdict of `ambiguous` leaves it `done` but unsatisfied with
+  `PROBE-VERDICT-UNRESOLVED`, a row bound `probe-passed=<lane>` stays open on that same
+  `discard`, and a file whose every `reached-when` row retired reads `abandoned`, never reached.
+- `python3 scripts/north-star-check.py --selftest` (128 checks), `compile-run-checkpoint.py
+  --selftest`, `compile-north-star-progress.py --selftest` (31 checks) and `closes_when.py
+  --selftest` (30 checks) all exit 0 on the installed copy.
 
 Provenance: the three keeps of the source lab's destination-map wave (2026-09-04, journal
 fragments 0259 and 0260): `H-DRAFT-2cae0933-derived-condition-status` (kept 2x 5/5),

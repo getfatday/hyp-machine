@@ -26,14 +26,17 @@ Column rules (ledger/north-stars/README.md is canonical; scripts/north-star-chec
   bound       the resolver's item id: H-NNN / DEC-NNN / research/raw/<file> / <probe lane>.
   closes-when the shipped closes-when grammar binding that item: hypothesis-kept=H-NNN,
               hypothesis-verdict=H-NNN (kept OR discarded), decision-resolved=DEC-NNN,
-              path-exists=research/raw/<file>, path-exists=experiments/runs/<lane>/VERDICT.json;
+              path-exists=research/raw/<file>, path-exists=experiments/runs/<lane>/VERDICT.json
+              (answered either way), probe-passed=<lane> (done only on a yes verdict; a no stays
+              open with outcome no, an ambiguous / missing verdict stays open with none);
               `-` = unbound (counts in distance, never in the frontier).
   needs       `-`, or comma-separated C-NN (must be done) and C-NN:yes | C-NN:no
               (must resolve that way; the other outcome retires this row and its dependents);
               <slug>#C-NN[:yes|no] names a condition in the sibling file
               ledger/north-stars/<slug>.md at the same commit -- write a shared prerequisite
               once there, never copy its row here; retire root reads retired:<slug>#C-NN.
-Derived at read time: done / open / retired:C-NN / unbound; frontier with verbs
-(register / run / add / resolve / capture / probe); distance; reached. Delete this comment
+Derived at read time: done / open / refuted / retired:C-NN / unbound; frontier with verbs
+(register / run / add / resolve / capture / probe); distance; reached (every reached-when row
+done with a yes or retired, at least one done; all retired = abandoned). Delete this comment
 in a real file.
 -->
