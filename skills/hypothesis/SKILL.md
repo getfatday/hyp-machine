@@ -80,6 +80,11 @@ Run `/hyp:init --profile experiments` once per repository to scaffold everything
 - One variable changes; everything else matches the baseline.
 - Save run artifacts (transcripts, outputs, measurements) to `experiments/runs/<id>/run-<k>/`;
   pinned inputs both arms share live in `experiments/runs/<id>/fixture/`.
+- A session that works the backlog is a dispatch participant: the Stop-boundary dispatcher
+  re-presents open work only to sessions that said so — launch drivers with `HYP_DISPATCH=1`,
+  or join the current session with the `touch .claude/stop-driver/participants/<session_id>`
+  command the dispatcher prints on its first Stop; a session opened for something else is
+  released untouched (see `docs/workgraph.md`, "Who gets dispatched").
 - If a headless child dies at startup with `Not logged in · Please run /login` (error at zero
   cost), don't reflexively re-login — that is the credential-flap signature. Classify the
   surface first (`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/doctor-classify.py" --live`), then

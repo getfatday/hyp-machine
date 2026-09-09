@@ -110,6 +110,27 @@ lineage, then it allows with `cap-headroom-exhausted`. Kill-switch: `touch
 error allows the stop and logs a traceback; every invocation appends one JSON line to
 `.claude/stop-driver/hook-log.jsonl` (the exit-honesty audit trail).
 
+**Who gets dispatched (participation).** The dispatcher re-presents open work only to
+sessions that declared themselves backlog participants — decided before the dispatch
+read, from bytes the session itself carries, never the transcript and never git. In
+precedence order: `HYP_DISPATCH=0` in the session's environment (explicit opt-out,
+wins) → `HYP_DISPATCH=1` (participant — the plugin's own drivers, the resume-timer
+plist and the portable runner's children, launch with it) → a marker file
+`.claude/stop-driver/participants/<session_id>` (this session only) → `.claude/hyp.json`
+`"dispatch": "all"` (every experiments-profile session in the repository; the pre-gate
+behaviour, opted into) → otherwise not a participant (the default,
+`"dispatch": "participants"`). A non-participant Stop is allowed under the typed reason
+`not-a-participant`, performs no dispatch read, spends no cycle, and receives one
+`systemMessage` per session lineage naming the three ways to join, with the marker
+path for its own session id filled in; every later log record carries
+`participation.decision` and `participation.source` (`env`, `env-off`, `marker`,
+`config`, `none`). Why: the directive this dispatcher implements named every boundary
+at which the backlog is re-derived — session start, prompt, wrap-up, compaction — but
+never which sessions are its workers, and a session opened to debug an unrelated
+failure was held at Stop for a verdict on a draft spec it had never seen. Consent, not
+inference: relevance heuristics (what the session touched) release a driver that just
+landed a clean commit. Regression test: `scripts/selftest-participant-dispatch.py`.
+
 ## The claim door
 
 ```

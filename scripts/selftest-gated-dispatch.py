@@ -96,6 +96,11 @@ def run_hook(root, session_id, plugin_root=PLUGIN):
     env = dict(GIT_ENV)
     env["CLAUDE_PLUGIN_ROOT"] = plugin_root
     env["CLAUDE_PROJECT_DIR"] = root
+    # This suite tests dispatch grading, so the simulated session is a dispatch
+    # PARTICIPANT (participation gate: a session with no join signal is released
+    # with not-a-participant before the read; scripts/selftest-participant-dispatch.py
+    # covers that side).
+    env["HYP_DISPATCH"] = "1"
     payload = {"session_id": session_id, "cwd": root, "hook_event_name": "Stop",
                "stop_hook_active": False}
     p = subprocess.run([sys.executable, os.path.join(PLUGIN, "hooks", "scripts", "stop-dispatch.py")],

@@ -75,6 +75,10 @@ def add_open_spec(tree):
 def run_hook(rel, payload, env_root):
     env = dict(GIT_ENV)
     env["CLAUDE_PLUGIN_ROOT"] = PLUGIN
+    # The simulated session is a dispatch PARTICIPANT: this suite tests root
+    # resolution of the dispatch, not the participation gate (see
+    # scripts/selftest-participant-dispatch.py for that side).
+    env["HYP_DISPATCH"] = "1"
     if env_root:
         env["CLAUDE_PROJECT_DIR"] = env_root
     p = subprocess.run([sys.executable, os.path.join(PLUGIN, rel)], input=json.dumps(payload),
