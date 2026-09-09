@@ -56,7 +56,32 @@ Usage
                      multi-file repository: --all twice byte-identical, --check --all 0 clean,
                      1 naming a truncated page, 0 after recompile, a not-derived index row, 1
                      naming the index and the flipped page after one seeded status flip, 2 on a
-                     repository without ledger/north-stars/. Exit 0 iff every check passes.
+                     repository without ledger/north-stars/; then a verdict-rigor repository
+                     (the checker's refuted / abandoned / unresolved vocabulary): a refuted
+                     reached-when row compiles into a panel of its own with the count
+                     excluding it, an all-retired file carries the abandoned marker at 0/N, a
+                     done probe row with an unresolved verdict is not counted, a cross-file
+                     needs token whose sibling id collides with a local id walks as a leaf
+                     (no recursion), a synthetic status word lands in its own panel, pages the
+                     base vocabulary covers carry none of the conditional keys, the satisfied
+                     mirror agrees with the checker's reached on every file, and --all over
+                     the set plus --check --all exit 0. Exit 0 iff every check passes.
+
+Verdict-rigor vocabulary (checker fix 2026-09-08; consumed here, never re-derived): a
+condition's panel is keyed by its derived status word -- done / open / unbound / retired
+(`retired:<root>` collapses) -- and ANY other word (refuted, or a word a later checker adds)
+gets a panel of its own, so no status word can fail a compile. `reached_count` counts SATISFIED
+reached-when rows only: done with outcome yes, or done under a resolver that carries no outcome
+(a probe done with an unresolved verdict is not satisfied; retired, refuted and open rows never
+count) -- the checker's own reached rule, so 0/N reads beside `reached: false` for an abandoned
+file. A stop the checker derives `abandoned` carries `abandoned: true`; its
+PROBE-VERDICT-UNRESOLVED / DESTINATION-ABANDONED advisories ride along as `advisories`. Those
+keys, the extra panels and the style+script addendum that renders them are emitted ONLY when a
+stop needs them (or a reached-when row is retired, so the count no longer reads "done or
+retired"): a page the base vocabulary covers is byte-identical to the pre-rigor compile. A
+cross-file needs token (`<slug>#C-NN`) is a leaf of weight 1 on the distance path, as in the
+checker's single-file derivation (it used to be read as the local id, which recursed forever
+when the ids collided).
 
 Drift classes (HEAD-contradictions, disjoint from spec 1's --strict lint):
   BANKS-ACTIVE          an Excluded banks: target H-NNN whose committed spec's Status word is
@@ -158,9 +183,14 @@ def distance_path(doc):
         w = 1 if c["status"] in ("open", "unbound") else 0
         best, best_path = 0, []
         for n in c["needs"]:
-            if n["id"] not in by_id:
+            if "slug" in n:
+                # a cross-file token is a leaf of weight 1 in the single-file derivation this
+                # page runs (the checker's far() without siblings); never the local id
+                l, p = 1, ["%s#%s" % (n["slug"], n["id"])]
+            elif n["id"] not in by_id:
                 continue
-            l, p = longest(n["id"])
+            else:
+                l, p = longest(n["id"])
             if l > best:
                 best, best_path = l, p
         path = best_path + ([cid] if w else [])
@@ -175,6 +205,72 @@ def distance_path(doc):
         if l > best:
             best, path = l, p
     return path, best
+
+
+BASE_PANELS = ("done", "open", "unbound", "retired")
+LIST_PANELS = ("horizon", "excluded")
+RIGOR_ADVISORIES = ("PROBE-VERDICT-UNRESOLVED", "DESTINATION-ABANDONED")
+
+
+def panel_key(status):
+    """The panel a derived status word files under: `retired:<root>` collapses to retired;
+    done, open, unbound and every other word (refuted, or one a later checker adds) are their
+    own key, so no status word can raise here."""
+    s = str(status or "")
+    return "retired" if s.startswith("retired:") else s
+
+
+def build_panels(doc):
+    panels = {k: [] for k in BASE_PANELS}
+    for c in doc["conditions"]:
+        panels.setdefault(panel_key(c["status"]), []).append(c["id"])
+    panels["horizon"] = [h["id"] for h in doc["horizon"]]
+    panels["excluded"] = [x["id"] for x in doc["excluded"]]
+    return panels
+
+
+def satisfied(c):
+    """The checker's reached rule for one reached-when row (north-star-check.py derive():
+    satisfied): done with outcome yes, or done under a resolver that carries no outcome; a
+    probe done with an unresolved verdict (outcome None) is not satisfied; retired, refuted and
+    open rows never are. Mirrored because the checker exposes the rule only through the
+    file-level `reached`; the selftest asserts the mirror agrees with that flag."""
+    return c.get("status") == "done" and (
+        c.get("outcome") == "yes"
+        or (c.get("outcome") is None and c.get("resolver") != "probe"))
+
+
+def satisfied_count(doc):
+    by_id = {c["id"]: c for c in doc["conditions"]}
+    return sum(1 for t in doc["reached_when"] if t in by_id and satisfied(by_id[t]))
+
+
+def rigor_keys(doc):
+    """The conditional per-stop keys -- absent means false / empty, so a page the base
+    vocabulary covers is byte-identical to the pre-rigor compile."""
+    out = {}
+    if doc.get("abandoned"):
+        out["abandoned"] = True
+    adv = [{"class": a["class"], "line": a["line"], "message": a["message"]}
+           for a in doc.get("advisories") or [] if a["class"] in RIGOR_ADVISORIES]
+    if adv:
+        out["advisories"] = adv
+    return out
+
+
+def needs_addendum(block):
+    """True when any stop carries a key or a status word the base renderer does not cover, or
+    a retired reached-when row (the base label 'done or retired' no longer describes the
+    count)."""
+    for e in block["stops"]:
+        if e.get("abandoned") or e.get("advisories"):
+            return True
+        if any(k not in BASE_PANELS + LIST_PANELS for k in e.get("panels") or {}):
+            return True
+        if any(str(s or "").startswith("retired:")
+               for s in (e.get("reached_when") or {}).values()):
+            return True
+    return False
 
 
 def entry_for(ncs, repo, sha, path, index, subject, is_head, live_root, now, ttl_s, today):
@@ -201,16 +297,10 @@ def entry_for(ncs, repo, sha, path, index, subject, is_head, live_root, now, ttl
         return entry
     conds = doc["conditions"]
     statuses = {c["id"]: c["status"] for c in conds}
-    panels = {"done": [], "open": [], "unbound": [], "retired": [],
-              "horizon": [h["id"] for h in doc["horizon"]],
-              "excluded": [x["id"] for x in doc["excluded"]]}
-    for c in conds:
-        key = "retired" if c["status"].startswith("retired:") else c["status"]
-        panels[key].append(c["id"])
+    panels = build_panels(doc)
     path_ids, dist = distance_path(doc)
     rw = {t: statuses.get(t) for t in doc["reached_when"]}
-    reached_count = sum(1 for t, s in rw.items()
-                        if s == "done" or (s or "").startswith("retired:"))
+    reached_count = satisfied_count(doc)
     entry.update({
         "statuses": statuses,
         "effective": {c["id"]: c["effective"] for c in conds if c["resolver"] == "hypothesis"},
@@ -235,6 +325,7 @@ def entry_for(ncs, repo, sha, path, index, subject, is_head, live_root, now, ttl
                   for c in conds for n in c["needs"]],
         "panels": panels,
     })
+    entry.update(rigor_keys(doc))
     if dist != doc["distance"]:
         # the path walk and spec 1's DP disagree only if the file has dangling needs; surface it
         entry["distance_path_note"] = "path length %d != distance %s" % (dist, doc["distance"])
@@ -419,6 +510,50 @@ render(stops.length-1);
 """
 
 
+ADDENDUM_MARK = "<!-- verdict-rigor addendum: refuted / abandoned / advisories -->"
+
+RIGOR_CSS = """
+.chip.refuted{border-color:var(--drift);color:var(--drift);font-weight:600}
+.chip.abandoned{border-color:var(--drift);color:var(--drift);font-weight:600}
+.chip.advisory{border-color:var(--unbound);color:var(--unbound)}
+.status-refuted .id{color:var(--drift)}.panel.extra h3{color:var(--drift)}
+"""
+
+# runs after the base script (same data block, second 'input' listener on the slider, so it
+# always paints after the base render): extra panels for every status word outside the base
+# vocabulary, the satisfied-only label, the abandoned marker, the checker's advisories
+RIGOR_JS = r"""
+(function(){
+var data=JSON.parse(document.getElementById('north-star-data').textContent);
+var stops=data.stops;var BASE={done:1,open:1,unbound:1,retired:1,horizon:1,excluded:1};
+var el=function(id){return document.getElementById(id)};
+function mk(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;
+ if(text!==undefined&&text!==null)e.textContent=String(text);return e}
+function chip(text,cls){return mk('span','chip '+(cls||''),text)}
+function card(c){var d=mk('div','card status-'+c.status);var line=mk('div');
+ line.appendChild(mk('span','id',c.id));line.appendChild(mk('span','',c.text));d.appendChild(line);
+ var m=mk('div','meta');m.appendChild(mk('span','',c.resolver+' '+c.bound+' | '+c.status));
+ if(c.needs&&c.needs.length){m.appendChild(mk('span','',' | needs '+c.needs.map(function(n){
+  return (n.slug?(n.slug+'#'):'')+n.id+(n.outcome?(':'+n.outcome):'')}).join(', ')))}
+ d.appendChild(m);return d}
+function extra(i){var e=stops[i];var byId={};(e.conditions||[]).forEach(function(c){byId[c.id]=c});
+ var n=(e.reached_when_ids||[]).length;var stat=el('reached');
+ stat.textContent=e.reached_count+'/'+n+(e.abandoned?' abandoned':'');
+ if(stat.nextSibling)stat.nextSibling.textContent='reached-when satisfied (retired, refuted and unresolved rows do not count)';
+ if(e.abandoned&&!(e.frontier||[]).length&&!(e.claimed_fresh||[]).length)el('next').textContent='abandoned';
+ if(e.abandoned)el('reachedwhen').appendChild(chip('abandoned: every reached-when row retired','abandoned'));
+ var fi=el('findings');(e.advisories||[]).forEach(function(a){fi.appendChild(chip('advisory '+a.class+' L'+a.line+' '+a.message,'advisory'))});
+ var pn=el('panels');var P=e.panels||{};
+ Object.keys(P).filter(function(k){return !BASE[k]}).sort().forEach(function(k){
+  var p=mk('div','panel extra');var h=mk('h3',null,k+' ');h.appendChild(mk('small',null,'('+P[k].length+')'));
+  p.appendChild(h);P[k].forEach(function(id){if(byId[id])p.appendChild(card(byId[id]))});pn.appendChild(p)});
+}
+var slider=el('replay');slider.addEventListener('input',function(){extra(parseInt(slider.value,10))});
+extra(stops.length-1);
+})();
+"""
+
+
 def render_html(block, data_json, check_target=OUTPUT_NAME):
     meta = block["meta"]
     header = "\n".join([
@@ -459,8 +594,11 @@ def render_html(block, data_json, check_target=OUTPUT_NAME):
                                  meta["n_stops"], html.escape(meta["compiler"])),
         '<script type="application/json" id="north-star-data">%s</script>' % data_json,
         "<script>%s</script>" % JS,
-        "</main></body></html>\n",
     ]
+    if needs_addendum(block):
+        parts.extend([ADDENDUM_MARK, "<style>%s</style>" % RIGOR_CSS,
+                      "<script>%s</script>" % RIGOR_JS])
+    parts.append("</main></body></html>\n")
     return "\n".join(parts)
 
 
@@ -609,12 +747,12 @@ def build_index_block(ncs, repo, root, head, targets, now, ttl_s, today, today_l
     for p, slug, page in targets:
         s = by_slug[slug]
         derived = bool(s.get("derived"))
-        statuses = {c["id"]: c.get("status") for c in s["conditions"]} if derived else {}
+        by_cid = {c["id"]: c for c in s["conditions"]} if derived else {}
         reached_count = sum(1 for t in s["reached_when"]
-                            if statuses.get(t) == "done"
-                            or str(statuses.get(t) or "").startswith("retired:"))
+                            if t in by_cid and satisfied(by_cid[t]))
+        refuted_n = sum(1 for c in by_cid.values() if c.get("status") == "refuted")
         frontier = s.get("frontier") or []
-        rows.append({
+        row = {
             "slug": slug, "source": p, "page": page, "derived": derived,
             "not_derived": (slug in not_derived) or not derived,
             "distance": s.get("distance") if derived else None,
@@ -627,7 +765,13 @@ def build_index_block(ncs, repo, root, head, targets, now, ttl_s, today, today_l
             "shared_lanes": sorted(k for k, v in shared.items()
                                    if any(x.rsplit("#", 1)[0] == slug for x in v)),
             "findings": sorted(set(f["class"] for f in s.get("findings") or [])),
-        })
+        }
+        # conditional keys (absent = false / 0): rows the base vocabulary covers are unchanged
+        if derived and s.get("abandoned"):
+            row["abandoned"] = True
+        if refuted_n:
+            row["refuted_n"] = refuted_n
+        rows.append(row)
     meta = {"compiler": COMPILER_PATH, "index": index_rel(ncs), "page_suffix": PAGE_SUFFIX,
             "head": head, "now": int(now), "ttl_s": int(ttl_s), "today": today_label,
             "n_pages": len(rows), "stop_rule": "KEPT|DISCARDED|decision: plus HEAD"}
@@ -666,8 +810,10 @@ def render_index_html(block, data_json):
         else:
             dist = str(r["distance"])
             fr = "%d%s" % (r["frontier_n"], (" (%s)" % r["next"]) if r["next"] else "")
-            rw = "%d/%d%s" % (r["reached_count"], r["reached_when_n"],
-                              " reached" if r["reached"] else "")
+            rw = "%d/%d%s%s%s" % (r["reached_count"], r["reached_when_n"],
+                                  " reached" if r["reached"] else "",
+                                  " abandoned" if r.get("abandoned") else "",
+                                  (" %d refuted" % r["refuted_n"]) if r.get("refuted_n") else "")
             cl = str(r["claimed_n"])
         rows.append('<tr class="%s"><td><a href="%s">%s</a></td><td class="n">%s</td>'
                     '<td class="n">%s</td><td class="n">%s</td><td class="n">%s</td>'
@@ -824,10 +970,54 @@ def _extract_block(page_path):
 def _partition_ok(entry):
     P = entry["panels"]
     seen = []
-    for k in ("done", "open", "unbound", "retired", "horizon", "excluded"):
+    for k in sorted(P):
         seen.extend(P[k])
     ids = set(entry["statuses"]) | set(entry["horizon"]) | set(entry["excluded"])
     return sorted(seen) == sorted(ids) and len(seen) == len(set(seen))
+
+
+def _rig_north_star(slug, reached, rows):
+    out = ["# North star: %s" % slug, "",
+           "destination: verdict-rigor selftest placeholder for %s." % slug,
+           "reached-when: " + reached, "", "## Conditions", "",
+           "| id | condition | resolver | bound | closes-when | needs |",
+           "|---|---|---|---|---|---|"]
+    out.extend("| %s |" % " | ".join(cells) for cells in rows)
+    return "\n".join(out) + "\n"
+
+
+_PE = "path-exists=experiments/runs/%s/VERDICT.json"
+# Verdict-rigor fixtures (compiled against spec 1's scenario after its nine events plus two
+# seeded verdicts: P-903 'ambiguous', P-904 'discard'; P-901 'pass' lands at event 8, H-903 is
+# discarded at event 2). Each file isolates one word of the checker's vocabulary.
+RIGOR_FILES = {
+    # C-02 done with outcome no in reached-when -> refuted (hard REACHED-WHEN-REFUTED); its
+    # :yes dependent retires, its :no dependent proceeds to the frontier
+    "rig-refuted": _rig_north_star("rig-refuted", "C-01, C-02", [
+        ("C-01", "alpha probe answered", "probe", "P-901", _PE % "P-901", "-"),
+        ("C-02", "discard probe answered either way", "probe", "P-904", _PE % "P-904", "-"),
+        ("C-03", "follows a yes on the discard", "probe", "P-999", "probe-passed=P-999",
+         "C-02:yes"),
+        ("C-04", "follows a no on the discard", "probe", "P-998", "probe-passed=P-998",
+         "C-02:no")]),
+    # every reached-when row retired through the C-01:yes branch -> abandoned, never reached
+    "rig-abandoned": _rig_north_star("rig-abandoned", "C-02, C-03", [
+        ("C-01", "premise answered either way", "hypothesis", "H-903",
+         "hypothesis-verdict=H-903", "-"),
+        ("C-02", "follows a yes on the premise", "probe", "P-999", "probe-passed=P-999",
+         "C-01:yes"),
+        ("C-03", "follows the follow-up", "capture", "research/raw/2026-09-04-never.md",
+         "path-exists=research/raw/2026-09-04-never.md", "C-02")]),
+    # C-02 done (VERDICT.json committed) with an unresolved verdict -> not satisfied
+    "rig-unresolved": _rig_north_star("rig-unresolved", "C-01, C-02", [
+        ("C-01", "alpha probe answered", "probe", "P-901", _PE % "P-901", "-"),
+        ("C-02", "ambiguous probe answered either way", "probe", "P-903", _PE % "P-903",
+         "-")]),
+    # a qualified token whose sibling id equals the local id: read as local it self-loops
+    "rig-crossfile": _rig_north_star("rig-crossfile", "C-01", [
+        ("C-01", "needs the sibling row that shares this id", "probe", "P-997",
+         "probe-passed=P-997", "rig-unresolved#C-01")]),
+}
 
 
 def selftest():
@@ -982,6 +1172,130 @@ def selftest():
            and any("fixture-destination.progress.html" in l for l in lines), " | ".join(lines))
         compile_all(ncs, lab3, now, 1800, today3, "2026-09-04")
         ok("--check --all exits 0 after the post-flip recompile", check_all(ncs, lab3)[0] == 0)
+        # verdict rigor (checker vocabulary 2026-09-08): one more throwaway lab seeds two more
+        # probe verdicts after the nine events, then the four RIGOR_FILES -- born after every
+        # verdict commit, so each page takes compile_all's per-page stop skip (the default
+        # stop rule is repo-wide and would read the files as absent at the earlier stops)
+        lab6 = os.path.join(tmp, "lab6")
+        ncs.scenario_build(lab6, north_star_override=base_text)
+        for n in range(1, 10):
+            ncs.scenario_play(lab6, n)
+        minute = 10
+        for lane, verdict in (("P-903", "ambiguous"), ("P-904", "discard")):
+            _commit_file(ncs, lab6, "experiments/runs/%s/VERDICT.json" % lane,
+                         json.dumps({"lane": lane, "verdict": verdict}, sort_keys=True) + "\n",
+                         "probe %s: VERDICT.json lands (selftest rigor seed)" % lane, minute)
+            minute += 1
+        for slug in sorted(RIGOR_FILES):
+            _commit_file(ncs, lab6, "ledger/north-stars/%s.md" % slug, RIGOR_FILES[slug],
+                         "north-star %s added (selftest rigor seed)" % slug, minute)
+            minute += 1
+        repo6 = ncs.Repo(lab6)
+        head6 = repo6.resolve("HEAD")
+        stops6, _ = load_stops(repo6, None)
+        rig, rig_page = {}, {}
+        for slug in sorted(RIGOR_FILES):
+            rel6 = "ledger/north-stars/%s.md" % slug
+            outp = os.path.join(tmp, "%s.html" % slug)
+            page6 = [(s, subj) for s, subj in stops6 if s == head6 or repo6.exists(s, rel6)]
+            try:
+                compile_page(ncs, lab6, rel6, None, now, 1800, today3, "2026-09-04", outp,
+                             repo=repo6, stops_head=(page6, head6))
+                rig[slug] = _extract_block(outp)["stops"][-1]
+                with open(outp, encoding="utf-8") as fh:
+                    rig_page[slug] = fh.read()
+            except Exception as e:   # the pre-fix failures: KeyError / RecursionError
+                ok("rigor %s compiles" % slug, False, repr(e))
+                rig[slug], rig_page[slug] = {}, ""
+        r = rig["rig-refuted"]
+        ok("rigor refuted: the refuted reached-when row files under its own panel, the "
+           "partition stays exact, the count excludes it (1/2, reached False), the hard finding "
+           "and the addendum are on the page",
+           r.get("panels", {}).get("refuted") == ["C-02"] and r and _partition_ok(r)
+           and r.get("reached_count") == 1 and r.get("reached") is False
+           and r.get("statuses", {}).get("C-03") == "retired:C-02"
+           and "REACHED-WHEN-REFUTED" in [f["class"] for f in r.get("findings", [])]
+           and "abandoned" not in r and ADDENDUM_MARK in rig_page["rig-refuted"],
+           json.dumps({"panels": r.get("panels"), "reached_count": r.get("reached_count"),
+                       "reached": r.get("reached")}))
+        a = rig["rig-abandoned"]
+        ok("rigor abandoned: every reached-when row retired -> abandoned marker, 0/2, reached "
+           "False, DESTINATION-ABANDONED carried, addendum on the page",
+           a.get("abandoned") is True and a.get("reached_count") == 0
+           and a.get("reached") is False and a.get("retired") == ["C-02", "C-03"]
+           and [x["class"] for x in a.get("advisories", [])] == ["DESTINATION-ABANDONED"]
+           and ADDENDUM_MARK in rig_page["rig-abandoned"],
+           json.dumps({"abandoned": a.get("abandoned"), "reached_count": a.get("reached_count"),
+                       "advisories": a.get("advisories")}))
+        u = rig["rig-unresolved"]
+        ok("rigor unresolved: a done probe row with an unresolved verdict is not counted as "
+           "satisfied (1/2, reached False) and PROBE-VERDICT-UNRESOLVED names it",
+           u.get("statuses", {}).get("C-02") == "done" and u.get("reached_count") == 1
+           and u.get("reached") is False and u.get("panels", {}).get("done") == ["C-01", "C-02"]
+           and any(x["class"] == "PROBE-VERDICT-UNRESOLVED" and "C-02" in x["message"]
+                   and "P-903" in x["message"] for x in u.get("advisories", []))
+           and ADDENDUM_MARK in rig_page["rig-unresolved"],
+           json.dumps({"statuses": u.get("statuses"), "reached_count": u.get("reached_count"),
+                       "advisories": u.get("advisories")}))
+        x = rig["rig-crossfile"]
+        ok("rigor cross-file: a qualified token whose sibling id equals a local id compiles "
+           "(no recursion) and the path walk agrees with the checker's distance",
+           x.get("derived") is True and x.get("distance") == 2 and "distance_path_note" not in x
+           and x.get("distance_path") == ["rig-unresolved#C-01", "C-01"],
+           json.dumps({"distance": x.get("distance"), "path": x.get("distance_path"),
+                       "note": x.get("distance_path_note")}))
+        with open(out, encoding="utf-8") as fh:
+            clean_page = fh.read()
+        ok("rigor: a page the base vocabulary covers carries no addendum and no conditional key",
+           ADDENDUM_MARK not in clean_page
+           and all(set(e["panels"]) == set(BASE_PANELS + LIST_PANELS)
+                   and "abandoned" not in e and "advisories" not in e for e in stops))
+        fake = {"conditions": [{"id": "C-01", "status": "quarantined"},
+                               {"id": "C-02", "status": "retired:C-01"},
+                               {"id": "C-03", "status": "done"}], "horizon": [], "excluded": []}
+        fp = build_panels(fake)
+        ok("rigor: a status word outside the vocabulary lands in a panel of its own, never a "
+           "KeyError",
+           fp.get("quarantined") == ["C-01"] and fp["retired"] == ["C-02"]
+           and fp["done"] == ["C-03"] and _partition_ok(
+               {"panels": fp, "statuses": {c["id"]: c["status"] for c in fake["conditions"]},
+                "horizon": [], "excluded": []}))
+        agree = []
+        for p in ncs.north_star_paths(repo6, head6):
+            d = ncs.parse_north_star(repo6.show(head6, p), p)
+            ncs.derive(d, repo6, head6, today=today3)
+            by = {c["id"]: c for c in d["conditions"]}
+            rows6 = [by[t] for t in d["reached_when"]]
+            mine = (all(satisfied(c) or c["status"].startswith("retired:") for c in rows6)
+                    and any(satisfied(c) for c in rows6))
+            agree.append(bool(d["reached"]) == mine
+                         and satisfied_count(d) == sum(1 for c in rows6 if satisfied(c)))
+        ok("rigor: the satisfied mirror agrees with the checker's reached on every file (%d)"
+           % len(agree), agree and all(agree), str(agree))
+        all_label = ("rigor --all: every page plus the index compiles, the abandoned row reads "
+                     "0/2 abandoned, the refuted row 1/2 1 refuted, rows the vocabulary covers "
+                     "carry no conditional key, and --check --all exits 0")
+        try:
+            w6, ib6 = compile_all(ncs, lab6, now, 1800, today3, "2026-09-04")
+            rows_by = {r6["slug"]: r6 for r6 in ib6["rows"]}
+            with open(os.path.join(lab6, "ledger", "north-stars", INDEX_NAME),
+                      encoding="utf-8") as fh:
+                ipage6 = fh.read()
+            ok(all_label,
+               len(w6) == len(RIGOR_FILES) + 2
+               and rows_by["rig-abandoned"].get("abandoned") is True
+               and rows_by["rig-abandoned"]["reached_count"] == 0
+               and rows_by["rig-refuted"].get("refuted_n") == 1
+               and rows_by["rig-refuted"]["reached_count"] == 1
+               and not rows_by["rig-refuted"]["not_derived"]
+               and "0/2 abandoned" in ipage6 and "1/2 1 refuted" in ipage6
+               and "abandoned" not in rows_by["fixture-destination"]
+               and "refuted_n" not in rows_by["fixture-destination"]
+               and check_all(ncs, lab6)[0] == 0,
+               json.dumps({k: rows_by[k] for k in ("rig-abandoned", "rig-refuted")
+                           if k in rows_by}))
+        except Exception as e:   # the pre-fix failure: the first refuted row KeyErrors the set
+            ok(all_label, False, repr(e))
         empty = os.path.join(tmp, "empty")
         os.makedirs(empty)
         env0 = ncs.scenario_env("%sT02:00:00Z" % ncs.SCENARIO_DATE)

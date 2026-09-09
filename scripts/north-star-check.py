@@ -14,7 +14,15 @@ from the committed resolver state at one commit (HEAD by default, `--at <sha>` f
   decision    decision-resolved=DEC-NNN  done iff an accepted|denied decision-resolution row
                                          for the id exists in ledger/work-ledger.jsonl
   capture     path-exists=research/raw/<file>            done iff committed at the commit
-  probe       path-exists=experiments/runs/<lane>/VERDICT.json   done iff committed
+  probe       path-exists=experiments/runs/<lane>/VERDICT.json   done iff committed (the
+                                         question is answered either way; outcome per the
+                                         verdict, below)
+              probe-passed=<lane>        done iff VERDICT.json is committed AND its verdict is
+                                         a yes (mirrors hypothesis-kept); a no leaves the row
+                                         open with outcome no -- settled, so its C-NN:yes
+                                         dependents retire and C-NN:no dependents proceed --
+                                         and on the frontier with verb probe; an unresolved
+                                         verdict leaves it open with no outcome
   document    frontmatter-status=<repo path>:<done-values>[!<no-values>]
                                          a typed document committed at <repo path> (the row's
                                          `bound` cell is that same path); the path is everything
@@ -29,16 +37,25 @@ from the committed resolver state at one commit (HEAD by default, `--at <sha>` f
                                          lane; the predicate lands in scripts/closes_when.py too)
 
 Outcome (for outcome-conditioned `needs` tokens `C-NN:yes` / `C-NN:no`): hypothesis kept=yes,
-discarded=no; decision accepted=yes, denied=no; probe VERDICT.json verdict pass|keep=yes,
-fail|discard=no; capture=yes; document done-value=yes, no-value=no (a no-value SETTLES the
-outcome without resolving the row: the row stays open, its `C-NN:yes` dependents retire).
+discarded=no; decision accepted=yes, denied=no; probe VERDICT.json `verdict` (stripped,
+case-insensitive) keep|kept|pass|passed|yes|true=yes, fail|failed|discard|discarded|no|false=no,
+ANYTHING ELSE (ambiguous, void, refine, empty, missing key, non-string, unparsable JSON) is
+UNRESOLVED: no outcome, never a yes (advisory PROBE-VERDICT-UNRESOLVED names the condition, the
+lane and the raw verdict); capture=yes; document done-value=yes, no-value=no (a no-value SETTLES
+the outcome without resolving the row: the row stays open, its `C-NN:yes` dependents retire). An
+outcome-conditioned need is met by a prerequisite that is done or settled with that outcome.
 
 Derived-status vocabulary (never stored):
   done            the bound predicate is satisfied at the commit
   open            bound, not yet satisfied (whether or not its needs are met)
   retired:C-NN    an outcome-conditioned prerequisite C-NN resolved the other way, or a
                   prerequisite is itself retired (root id carried); retired precedes done
+  refuted         a reached-when row whose predicate is satisfied with outcome no (a discarded,
+                  denied or failed answer): never done, never satisfied; hard finding
+                  REACHED-WHEN-REFUTED names the row and its lane
   unbound         the closes-when cell is `-` (counts in distance, never in the frontier)
+  abandoned       (file-level, beside reached) every reached-when row is retired: reached is
+                  false, advisory DESTINATION-ABANDONED
 
 frontier      open conditions whose every `needs` token is satisfied, in C-NN order, each
               with a resolver verb: register (hypothesis spec absent) / run (spec present) /
@@ -50,7 +67,10 @@ claimed_fresh frontier members filtered by a fresh experiments/runs/<lane>/LANE-
 retired       the retired ids in order
 distance      max over reached-when conditions of the count of open-or-unbound conditions
               on any `needs` path into it (longest-path DP, weight 1 per open/unbound node)
-reached       every reached-when condition is done or retired
+reached       every reached-when condition is satisfied (done with outcome yes, or done under a
+              resolver that carries no outcome -- a probe done with an unresolved verdict is NOT
+              satisfied) or retired through a designed :yes/:no branch, AND at least one is
+              satisfied (all retired = abandoned, never reached)
 set           (--json top-level key; text: a trailing `set:` block) the cross-file reduction
               over every block read: destinations, reached, not_derived, union_frontier (one
               entry per distinct effective lane across all frontiers + claimed_fresh lists,
@@ -60,8 +80,11 @@ set           (--json top-level key; text: a trailing `set:` block) the cross-fi
 
 Lint classes (hard; `--strict` exits 1 when any fires): SCHEMA, DANGLING-REF, CYCLE,
 STATUS-STORED, DUPLICATE-SLUG (two committed paths under ledger/north-stars/, recursive, share
-a basename: the slug is the cross-file resolution key). Advisory (never affects exit):
-HORIZON-AGED (a `## Horizon` line older than %d days without a `-> C-NN` graduation).
+a basename: the slug is the cross-file resolution key), REACHED-WHEN-REFUTED (raised AFTER
+derivation: the file still derives and its rows still answer sibling tokens; only reached is
+false). Advisory (never affects exit): HORIZON-AGED (a `## Horizon` line older than %d days
+without a `-> C-NN` graduation), PROBE-VERDICT-UNRESOLVED (a committed VERDICT.json whose
+verdict is neither a yes nor a no), DESTINATION-ABANDONED (every reached-when row retired).
 
 Cross-file `needs` (north-star-set-cross-file-needs lane): a token `<slug>#C-NN[:yes|no]`
 resolves against the sibling north-star file `ledger/north-stars/<slug>.md` committed at the
@@ -83,8 +106,9 @@ Usage
 lints a working-tree file and derives against the repo at `--at`; without `--file`/`--slug`
 every ledger/north-stars/*.md (README.md excluded) committed at the commit is read.
 `--selftest` builds a throwaway git repo, plays the nine seeded verdict events, and asserts
-vector, replay, zero-edit, lineage, retire, no-over-retire, claim-join, and SCHEMA-lint
-checks against the embedded key (or `--selftest-key`, a harness override); exits 0 only when
+vector, replay, zero-edit, lineage, retire, no-over-retire, claim-join, SCHEMA-lint, and
+verdict-rigor (unresolved verdict, refuted and abandoned reached-when, probe-passed) checks
+against the embedded key (or `--selftest-key`, a harness override); exits 0 only when
 every check passes. Stdlib + git only; no network; writes nothing outside the selftest tempdir.
 """
 import argparse
@@ -103,6 +127,9 @@ DEFAULT_TTL_S = 1800
 NORTH_STARS_DIR = "ledger/north-stars"
 RESOLVER_KINDS = ("hypothesis", "decision", "capture", "probe", "document")
 VERB_BY_KIND = {"capture": "capture", "probe": "probe", "document": "sync"}
+# probe VERDICT.json `verdict` words (stripped, lower-cased); anything else is UNRESOLVED
+PROBE_YES = ("keep", "kept", "pass", "passed", "yes", "true")
+PROBE_NO = ("fail", "failed", "discard", "discarded", "no", "false")
 COLUMNS = ["id", "condition", "resolver", "bound", "closes-when", "needs"]
 GIT_TIMEOUT = 30
 
@@ -116,7 +143,7 @@ DEC_RE = re.compile(r"^DEC-\d{3,}$")
 LANE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
 PRED_RE = re.compile(
     r"^(path-exists|commit-grep|hypothesis-kept|hypothesis-verdict|maintainer-ruling"
-    r"|decision-resolved|frontmatter-status)=(.+)$")
+    r"|decision-resolved|frontmatter-status|probe-passed)=(.+)$")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 STATUS_HEADING_RE = re.compile(r"(?m)^##\s*Status\s*$")
 NEXT_HEADING_RE = re.compile(r"(?m)^##\s")
@@ -432,12 +459,12 @@ def parse_north_star(text, path):
                              % (pred, kind, bound))
                 elif kind in RESOLVER_KINDS:
                     pname, parg = m.group(1), m.group(2).strip()
-                    want = {"hypothesis": (("hypothesis-kept", "hypothesis-verdict"), bound),
-                            "decision": (("decision-resolved",), bound),
-                            "capture": (("path-exists",), bound),
-                            "probe": (("path-exists",),
-                                      "experiments/runs/%s/VERDICT.json" % bound)}[kind]
-                    if pname not in want[0] or parg != want[1]:
+                    want = {"hypothesis": {"hypothesis-kept": bound, "hypothesis-verdict": bound},
+                            "decision": {"decision-resolved": bound},
+                            "capture": {"path-exists": bound},
+                            "probe": {"path-exists": "experiments/runs/%s/VERDICT.json" % bound,
+                                      "probe-passed": bound}}[kind]
+                    if want.get(pname) != parg:
                         find("SCHEMA", i, "closes-when %r does not bind resolver %s %s"
                              % (pred, kind, bound))
             if needs != "-":
@@ -574,17 +601,38 @@ def decision_state(repo, sha, dec):
     return {"present": present, "disposition": disposition}
 
 
-def probe_outcome(repo, sha, lane):
-    raw = repo.show(sha, "experiments/runs/%s/VERDICT.json" % lane)
-    if raw is None:
-        return None
+def probe_verdict(repo, sha, lane):
+    """-> (outcome, detail) for experiments/runs/<lane>/VERDICT.json at sha. outcome is 'yes'
+    when the stripped, lower-cased `verdict` string is in PROBE_YES, 'no' when in PROBE_NO, else
+    None = UNRESOLVED (ambiguous, void, refine, empty, missing key, non-string, unparsable JSON:
+    never a yes). detail names what was read for the advisory: "verdict 'ambiguous'" (the string
+    as committed), 'verdict missing', 'unparsable JSON', 'non-string verdict true'; (None, None)
+    when the file itself is absent."""
+    text = repo.show(sha, "experiments/runs/%s/VERDICT.json" % lane)
+    if text is None:
+        return None, None
     try:
-        v = str(json.loads(raw).get("verdict", "")).lower()
-    except (ValueError, AttributeError):
-        return "yes"
-    if v in ("fail", "failed", "discard", "no"):
-        return "no"
-    return "yes"
+        rec = json.loads(text)
+    except ValueError:
+        return None, "unparsable JSON"
+    if not isinstance(rec, dict):
+        return None, "unparsable JSON"
+    if "verdict" not in rec:
+        return None, "verdict missing"
+    raw = rec["verdict"]
+    if not isinstance(raw, str):
+        return None, "non-string verdict %s" % json.dumps(raw, sort_keys=True)
+    word = raw.strip().lower()
+    detail = "verdict %r" % raw
+    if word in PROBE_YES:
+        return "yes", detail
+    if word in PROBE_NO:
+        return "no", detail
+    return None, detail
+
+
+def probe_outcome(repo, sha, lane):
+    return probe_verdict(repo, sha, lane)[0]
 
 
 def evaluate_condition(repo, sha, cond):
@@ -621,8 +669,15 @@ def evaluate_condition(repo, sha, cond):
         out["outcome"] = "yes" if out["resolved"] else None
         out["verb"] = "capture"
     elif kind == "probe":
-        out["resolved"] = repo.exists(sha, parg)
-        out["outcome"] = probe_outcome(repo, sha, bound) if out["resolved"] else None
+        present = repo.exists(sha, "experiments/runs/%s/VERDICT.json" % bound)
+        out["outcome"] = probe_outcome(repo, sha, bound) if present else None
+        if pname == "probe-passed":
+            # mirrors hypothesis-kept: done only on a yes; a no settles the outcome without
+            # resolving the row (open, verb probe: its :yes dependents retire, :no proceed)
+            out["resolved"] = out["outcome"] == "yes"
+            out["settled"] = out["outcome"] is not None
+        else:
+            out["resolved"] = present   # path-exists: the question is answered either way
         out["verb"] = "probe"
         out["lane"] = bound
     elif kind == "document":
@@ -689,12 +744,21 @@ def derive(doc, repo, sha, live_root=None, ttl_s=DEFAULT_TTL_S, now=None, today=
     doc["derived"] = not hard
     if hard:
         doc["frontier"], doc["claimed_fresh"], doc["retired"] = [], [], []
-        doc["distance"], doc["reached"] = None, None
+        doc["distance"], doc["reached"], doc["abandoned"] = None, None, None
         return doc
 
     by_id = {c["id"]: c for c in doc["conditions"]}
     for c in doc["conditions"]:
         c.update(evaluate_condition(repo, sha, c))
+        # a committed VERDICT.json whose verdict is neither a yes nor a no is UNRESOLVED, never
+        # a yes: advisory naming the condition, the lane and the raw verdict, whichever predicate
+        # binds the lane
+        if c["resolver"] == "probe" and c["ref"] is not None and c["outcome"] is None \
+                and repo.exists(sha, "experiments/runs/%s/VERDICT.json" % c["bound"]):
+            detail = probe_verdict(repo, sha, c["bound"])[1] or "unparsable JSON"
+            doc["advisories"].append({"class": "PROBE-VERDICT-UNRESOLVED", "line": c["line"],
+                                      "message": "%s: probe %s VERDICT.json %s is unresolved "
+                                      "(neither yes nor no)" % (c["id"], c["bound"], detail)})
 
     def pre_of(n):
         """The record a needs token points at: the local condition, or -- qualified token
@@ -743,16 +807,33 @@ def derive(doc, repo, sha, live_root=None, ttl_s=DEFAULT_TTL_S, now=None, today=
         else:
             c["status"] = "open"
 
+    # a reached-when row answered no (a discarded, denied or failed verdict) is refuted, never
+    # done: the destination cannot be reached through it. Hard, but raised after the derivation
+    # gate, so the file still derives and its rows still answer sibling tokens
+    for t in doc["reached_when"]:
+        c = by_id[t]
+        if c["status"] == "done" and c["outcome"] == "no":
+            c["status"] = "refuted"
+            doc["findings"].append({"class": "REACHED-WHEN-REFUTED", "line": c["line"],
+                                    "message": "reached-when %s is refuted: %s %s answered no"
+                                    % (c["id"], c["resolver"], lane_key(c))})
+
     for c in doc["conditions"]:
         for n in c["needs"]:
             if "slug" in n:
                 n["status"] = pre_of(n)["status"]   # the sibling condition's derived status
 
     def need_met(n):
+        """A plain token needs a done prerequisite. An outcome-conditioned token is met by a
+        prerequisite whose outcome is known and matches -- done, refuted, or settled while still
+        open (a no-value document, a probe-passed row answered no) -- so a designed :no branch
+        proceeds; a retired prerequisite meets nothing."""
         pre = pre_of(n)
-        if pre["status"] != "done":
+        if n["outcome"] is None:
+            return pre["status"] == "done"
+        if pre["status"].startswith("retired:"):
             return False
-        return n["outcome"] is None or pre["outcome"] == n["outcome"]
+        return bool(pre["resolved"] or pre.get("settled")) and pre["outcome"] == n["outcome"]
 
     now = time.time() if now is None else now
     frontier, claimed = [], []
@@ -803,8 +884,25 @@ def derive(doc, repo, sha, live_root=None, ttl_s=DEFAULT_TTL_S, now=None, today=
         return memo[cid]
 
     doc["distance"] = max([longest(t) for t in doc["reached_when"]] or [0])
-    doc["reached"] = all(by_id[t]["status"] == "done" or by_id[t]["status"].startswith(
-        "retired:") for t in doc["reached_when"])
+
+    def satisfied(c):
+        """done with outcome yes, or done under a resolver that carries no outcome; a probe done
+        with an unresolved verdict (outcome None) is not satisfied; refuted never is."""
+        return c["status"] == "done" and (c["outcome"] == "yes" or
+                                          (c["outcome"] is None and c["resolver"] != "probe"))
+
+    rows = [by_id[t] for t in doc["reached_when"]]
+    sat = [satisfied(c) for c in rows]
+    ret = [c["status"].startswith("retired:") for c in rows]
+    # reached needs every row satisfied or retired through a designed branch AND at least one
+    # satisfied: a destination whose every reached-when row is retired is abandoned, not reached
+    doc["abandoned"] = all(ret)
+    doc["reached"] = all(s or r for s, r in zip(sat, ret)) and any(sat)
+    if doc["abandoned"]:
+        doc["advisories"].append({"class": "DESTINATION-ABANDONED", "line": 0,
+                                  "message": "every reached-when condition is retired (%s): the "
+                                  "destination is abandoned, not reached"
+                                  % ", ".join("%s %s" % (c["id"], c["status"]) for c in rows)})
     return doc
 
 
@@ -1058,7 +1156,8 @@ def render_text(report):
             out.append("  claimed_fresh: %s" % ", ".join(
                 "%s@%s" % (c["id"], c["lane"]) for c in s["claimed_fresh"]))
         out.append("  retired: %s" % (", ".join(s["retired"]) or "-"))
-        out.append("  distance: %s  reached: %s" % (s["distance"], s["reached"]))
+        out.append("  distance: %s  reached: %s%s" % (
+            s["distance"], s["reached"], "  abandoned: True" if s.get("abandoned") else ""))
     if not report["north_stars"]:
         out.append("no north-star files under %s at %s" % (NORTH_STARS_DIR, report["at"][:12]))
     else:
@@ -1316,7 +1415,8 @@ SET_KEY = {
         "shared_bounds": {"H-901": ["set-a#C-01", "set-b#C-01", "set-c#C-01"],
                           "H-905": ["set-a#C-02", "set-b#C-02"]},
         "not_derived": ["set-bad"], "destinations": 4, "reached": 1,
-        "exit_strict_by_slug": {"set-a": 0, "set-b": 0, "set-c": 0, "set-bad": 1}},
+        # set-a's reached-when C-03 (H-903 discarded) derives refuted: a hard bit, still derived
+        "exit_strict_by_slug": {"set-a": 1, "set-b": 0, "set-c": 0, "set-bad": 1}},
     "claim_lane": "H-905",
 }
 
@@ -1337,7 +1437,8 @@ def compare_set(got, exp):
 # Cross-file scenario (north-star-set-cross-file-needs lane) over the same lab repo: xf-a's
 # C-02 and C-03 depend on xf-b's conditions through qualified tokens; xf-b binds H-903
 # (discarded at event 2) as a premise, so at the tip xf-a's dependents retire with the BOUNDARY
-# token as root while xf-b's own C-02 carries its local root C-01.
+# token as root while xf-b's own C-02 carries its local root C-01; xf-b's own reached-when premise
+# derives refuted (REACHED-WHEN-REFUTED), so xf-b is not reached while xf-a is.
 def _xf_file(slug, rows, reached):
     out = ["# North star: %s" % slug, "", "destination: cross-file scenario placeholder for %s." % slug,
            "reached-when: " + reached, "", "## Conditions", "",
@@ -1372,9 +1473,10 @@ XF_KEY = {
                             "C-03": "retired:xf-b#C-02"},
                  "frontier": [], "retired": ["C-02", "C-03"], "distance": 0, "reached": True,
                  "effective": {"C-02": "H-905"}},
-        "xf-b": {"status": {"C-01": "done", "C-02": "retired:C-01"}, "frontier": [],
-                 "retired": ["C-02"], "distance": 0, "reached": True},
-        "token_status": {"C-02": "done", "C-03": "retired:C-01"}},
+        "xf-b": {"status": {"C-01": "refuted", "C-02": "retired:C-01"}, "frontier": [],
+                 "retired": ["C-02"], "distance": 0, "reached": False},
+        "token_status": {"C-02": "refuted", "C-03": "retired:C-01"},
+        "hard": {"xf-b": ["REACHED-WHEN-REFUTED"]}},
     "sibling_status_stored": {
         "status": {"C-01": "open", "C-02": "open", "C-03": "open"},
         "frontier": [["C-01", "run"]], "retired": [], "distance": 2, "reached": False,
@@ -1382,6 +1484,133 @@ XF_KEY = {
     "violations": {"unknown-slug": ["DANGLING-REF"], "unknown-cid": ["DANGLING-REF"],
                    "cross-cycle": ["CYCLE"], "nested-duplicate": ["DUPLICATE-SLUG"]},
 }
+
+
+# Verdict-rigor scenario (maintainer ruling 2026-09-08, checker defects A/B/C): seeded probe
+# verdicts land in one commit on the lab repo after the nine events; five north-star texts are
+# working-tree targets read against that sha. P-901 ('pass', event 8) is the yes; H-903
+# (discarded, event 2) the hypothesis-verdict no.
+def _pe(lane):
+    return "path-exists=experiments/runs/%s/VERDICT.json" % lane
+
+
+def _rig_file(slug, reached, rows):
+    out = ["# North star: %s" % slug, "", "destination: verdict-rigor placeholder for %s." % slug,
+           "reached-when: " + reached, "", "## Conditions", "",
+           "| id | condition | resolver | bound | closes-when | needs |",
+           "|---|---|---|---|---|---|"]
+    for cells in rows:
+        out.append("| %s |" % " | ".join(cells))
+    return "\n".join(out) + "\n"
+
+
+RIG_VERDICTS = {
+    "P-903": json.dumps({"lane": "P-903", "verdict": "ambiguous"}, sort_keys=True) + "\n",
+    "P-904": json.dumps({"lane": "P-904", "verdict": "discard"}, sort_keys=True) + "\n",
+    "P-905": "{\"lane\": \"P-905\", \"verdict\": \n",                   # unparsable JSON
+    "P-906": json.dumps({"lane": "P-906"}, sort_keys=True) + "\n",         # no verdict key
+    "P-907": json.dumps({"lane": "P-907", "verdict": " Keep "}, sort_keys=True) + "\n",
+    "P-908": json.dumps({"lane": "P-908", "verdict": True}, sort_keys=True) + "\n",
+    "P-909": json.dumps({"lane": "P-909", "verdict": ""}, sort_keys=True) + "\n",
+    "P-910": json.dumps({"lane": "P-910", "verdict": "refine"}, sort_keys=True) + "\n",
+    "P-911": json.dumps({"lane": "P-911", "verdict": "Failed"}, sort_keys=True) + "\n",
+}
+
+_RIG_C_ROWS = [
+    ("C-01", "premise answered either way", "hypothesis", "H-903", "hypothesis-verdict=H-903", "-"),
+    ("C-02", "follows a yes on the premise", "probe", "P-999", "probe-passed=P-999", "C-01:yes"),
+    ("C-03", "follows the follow-up", "capture", "research/raw/2026-09-04-never.md",
+     "path-exists=research/raw/2026-09-04-never.md", "C-02"),
+]
+
+RIG_FILES = {
+    "rig-a": _rig_file("rig-a", "C-01, C-02", [
+        ("C-01", "alpha probe answered", "probe", "P-901", _pe("P-901"), "-"),
+        ("C-02", "ambiguous probe answered either way", "probe", "P-903", _pe("P-903"), "-"),
+        ("C-03", "follows a yes on the ambiguous probe", "probe", "P-999", "probe-passed=P-999",
+         "C-02:yes"),
+        ("C-04", "follows a no on the ambiguous probe", "probe", "P-998", "probe-passed=P-998",
+         "C-02:no"),
+        ("C-05", "unparsable verdict answered either way", "probe", "P-905", _pe("P-905"), "-"),
+        ("C-06", "verdict key missing", "probe", "P-906", _pe("P-906"), "-"),
+        ("C-07", "non-string verdict", "probe", "P-908", _pe("P-908"), "-")]),
+    "rig-b": _rig_file("rig-b", "C-01, C-02", [
+        ("C-01", "alpha probe answered", "probe", "P-901", _pe("P-901"), "-"),
+        ("C-02", "discard probe answered either way", "probe", "P-904", _pe("P-904"), "-"),
+        ("C-03", "failed probe answered either way, not a reached-when row", "probe", "P-911",
+         _pe("P-911"), "-"),
+        ("C-04", "follows a yes on the discard", "probe", "P-999", "probe-passed=P-999",
+         "C-02:yes"),
+        ("C-05", "follows a no on the discard", "probe", "P-998", "probe-passed=P-998",
+         "C-02:no")]),
+    "rig-c": _rig_file("rig-c", "C-02, C-03", _RIG_C_ROWS),
+    "rig-c2": _rig_file("rig-c2", "C-02, C-03, C-04", _RIG_C_ROWS + [
+        ("C-04", "alpha probe answered", "probe", "P-901", _pe("P-901"), "-")]),
+    "rig-d": _rig_file("rig-d", "C-01", [
+        ("C-01", "alpha passes", "probe", "P-901", "probe-passed=P-901", "-"),
+        ("C-02", "discard lane passes", "probe", "P-904", "probe-passed=P-904", "-"),
+        ("C-03", "ambiguous lane passes", "probe", "P-903", "probe-passed=P-903", "-"),
+        ("C-04", "absent lane passes", "probe", "P-999", "probe-passed=P-999", "-"),
+        ("C-05", "follows a yes on the discard lane", "capture", "research/raw/2026-09-04-x.md",
+         "path-exists=research/raw/2026-09-04-x.md", "C-02:yes"),
+        ("C-06", "follows a no on the discard lane", "capture", "research/raw/2026-09-04-y.md",
+         "path-exists=research/raw/2026-09-04-y.md", "C-02:no"),
+        ("C-07", "keep with case and whitespace passes", "probe", "P-907", "probe-passed=P-907",
+         "-"),
+        ("C-08", "Failed lane passes", "probe", "P-911", "probe-passed=P-911", "-")]),
+}
+
+# advisories: [class, words the message must carry...] in emission order
+RIG_KEY = {
+    "outcome": {"P-901": "yes", "P-903": None, "P-904": "no", "P-905": None, "P-906": None,
+                "P-907": "yes", "P-908": None, "P-909": None, "P-910": None, "P-911": "no",
+                "P-999": None},
+    "detail": {"P-903": "'ambiguous'", "P-905": "unparsable", "P-906": "missing",
+               "P-908": "non-string", "P-909": "''", "P-910": "'refine'", "P-999": None},
+    "rig-a": {"status": {"C-01": "done", "C-02": "done", "C-03": "open", "C-04": "open",
+                         "C-05": "done", "C-06": "done", "C-07": "done"},
+              "frontier": [], "retired": [], "distance": 0, "reached": False,
+              "outcome": {"C-01": "yes", "C-02": None, "C-05": None, "C-06": None, "C-07": None},
+              "abandoned": False, "findings": [],
+              "advisories": [["PROBE-VERDICT-UNRESOLVED", "C-02", "P-903", "'ambiguous'"],
+                             ["PROBE-VERDICT-UNRESOLVED", "C-05", "P-905", "unparsable"],
+                             ["PROBE-VERDICT-UNRESOLVED", "C-06", "P-906", "missing"],
+                             ["PROBE-VERDICT-UNRESOLVED", "C-07", "P-908", "non-string"]]},
+    "rig-b": {"status": {"C-01": "done", "C-02": "refuted", "C-03": "done",
+                         "C-04": "retired:C-02", "C-05": "open"},
+              "frontier": [["C-05", "probe"]], "retired": ["C-04"], "distance": 0,
+              "reached": False, "outcome": {"C-02": "no", "C-03": "no"},
+              "resolved": {"C-02": True, "C-03": True}, "abandoned": False,
+              "findings": [["REACHED-WHEN-REFUTED", "C-02", "P-904"]], "advisories": []},
+    "rig-c": {"status": {"C-01": "done", "C-02": "retired:C-01", "C-03": "retired:C-01"},
+              "frontier": [], "retired": ["C-02", "C-03"], "distance": 0, "reached": False,
+              "outcome": {"C-01": "no"}, "abandoned": True, "findings": [],
+              "advisories": [["DESTINATION-ABANDONED", "C-02", "C-03"]]},
+    "rig-c2": {"status": {"C-01": "done", "C-02": "retired:C-01", "C-03": "retired:C-01",
+                          "C-04": "done"},
+               "frontier": [], "retired": ["C-02", "C-03"], "distance": 0, "reached": True,
+               "abandoned": False, "findings": [], "advisories": []},
+    "rig-d": {"status": {"C-01": "done", "C-02": "open", "C-03": "open", "C-04": "open",
+                         "C-05": "retired:C-02", "C-06": "open", "C-07": "done", "C-08": "open"},
+              "frontier": [["C-02", "probe"], ["C-03", "probe"], ["C-04", "probe"],
+                           ["C-06", "capture"], ["C-08", "probe"]],
+              "retired": ["C-05"], "distance": 0, "reached": True,
+              "outcome": {"C-01": "yes", "C-02": "no", "C-03": None, "C-04": None,
+                          "C-07": "yes", "C-08": "no"},
+              "resolved": {"C-01": True, "C-02": False, "C-03": False, "C-04": False,
+                           "C-07": True, "C-08": False},
+              "abandoned": False, "findings": [],
+              "advisories": [["PROBE-VERDICT-UNRESOLVED", "C-03", "P-903", "'ambiguous'"]]},
+    "set": {"destinations": 5, "reached": 2, "not_derived": [],
+            "exit_strict_by_slug": {"rig-a": 0, "rig-b": 1, "rig-c": 0, "rig-c2": 0, "rig-d": 0}},
+}
+
+
+def _classes_match(got, exp):
+    """got: finding/advisory dicts; exp: [[class, word, ...], ...] -- same length, same order,
+    each message carrying its words."""
+    return len(got) == len(exp) and all(
+        g["class"] == e[0] and all(w in g["message"] for w in e[1:]) for g, e in zip(got, exp))
 
 
 # ---------------------------------------------------------------- document case ------------
@@ -1894,9 +2123,12 @@ def selftest(key_path=None):
             rep = xread(xsha)
             xa, xb = xstar(rep, "xf-a"), xstar(rep, "xf-b")
             bad = compare_to_key(xa, xkey[label]["xf-a"]) + compare_to_key(xb, xkey[label]["xf-b"])
+            hard = xkey[label].get("hard", {})
             ok("cross-file %s: both files derive to the key (cross-file retire root = boundary "
-               "token)" % label, rep["exit_strict"] == 0 and xa["derived"] and xb["derived"]
-               and not bad, "; ".join(bad))
+               "token)" % label, rep["exit_strict"] == (1 if hard else 0)
+               and xa["derived"] and xb["derived"] and not bad
+               and all(classes_of(rep, s) == hard.get(s, []) for s in ("xf-a", "xf-b")),
+               "; ".join(bad) + " " + json.dumps(rep["findings"]))
             ok("cross-file %s: qualified need entries carry the sibling condition's status"
                % label, token_statuses(xa) == xkey[label]["token_status"],
                json.dumps(token_statuses(xa)))
@@ -1971,6 +2203,79 @@ def selftest(key_path=None):
         wrong["status"]["C-02"] = "retired:C-01"
         ok("cross-file key comparison detects a sibling-local root",
            bool(compare_to_key(xa_tip, wrong)) and not compare_to_key(xa_tip, xkey["tip"]["xf-a"]))
+
+        # verdict rigor (defects A/B/C): seeded verdicts in one commit, five working-tree targets
+        rkey = key.get("rigor", RIG_KEY)
+        renv = scenario_env(SCENARIO_DATE + "T00:20:00Z")
+        rpaths = ["experiments/runs/%s/VERDICT.json" % lane for lane in sorted(RIG_VERDICTS)]
+        for lane in sorted(RIG_VERDICTS):
+            _write(lab, "experiments/runs/%s/VERDICT.json" % lane, RIG_VERDICTS[lane])
+        _run_git(lab, ["add", "--"] + rpaths, renv)
+        _run_git(lab, ["commit", "-q", "--no-verify", "-m", "rigor: seeded probe verdicts"], renv)
+        rsha = _run_git(lab, ["rev-parse", "HEAD"], renv).strip()
+        got = {lane: probe_outcome(repo, rsha, lane) for lane in rkey["outcome"]}
+        ok("rigor: verdict words -> yes-set / no-set (stripped, case-insensitive); anything else "
+           "unresolved (None), never yes", got == rkey["outcome"], json.dumps(got))
+        details = {lane: probe_verdict(repo, rsha, lane)[1] for lane in rkey["detail"]}
+        ok("rigor: unresolved detail names the raw verdict / missing / unparsable / non-string; "
+           "absent file has none",
+           all((details[l] is None) if w is None else (details[l] is not None and w in details[l])
+               for l, w in rkey["detail"].items()), json.dumps(details))
+        rig_targets = [("ledger/north-stars/%s.md" % s, RIG_FILES[s]) for s in sorted(RIG_FILES)]
+        rrep = check(repo, rsha, rig_targets, today=today)
+        rstar = {s["slug"]: s for s in rrep["north_stars"]}
+
+        def rcheck(slug, label):
+            star, exp = rstar[slug], rkey[slug]
+            bad = compare_to_key(star, exp)
+            if star.get("abandoned") != exp["abandoned"]:
+                bad.append("abandoned: got %s" % star.get("abandoned"))
+            if not _classes_match(star["findings"], exp["findings"]):
+                bad.append("findings: got %s" % json.dumps(star["findings"]))
+            if not _classes_match(star.get("advisories", []), exp["advisories"]):
+                bad.append("advisories: got %s" % json.dumps(star.get("advisories")))
+            ok("rigor %s: %s" % (slug, label), star["derived"] and not bad, "; ".join(bad))
+            return star
+
+        ra = rcheck("rig-a", "ambiguous / unparsable / missing / non-string verdicts -> outcome "
+                    "None + PROBE-VERDICT-UNRESOLVED (advisory), never yes; a reached-when row "
+                    "so answered is not satisfied (reached False)")
+        ok("rigor rig-a: an unresolved outcome neither retires nor advances its :yes / :no "
+           "dependents, and never touches exit",
+           all(c["status"] == "open" and not c["needs_met"] for c in ra["conditions"]
+               if c["id"] in ("C-03", "C-04")) and rrep["set"]["exit_strict_by_slug"]["rig-a"] == 0)
+        rcheck("rig-b", "a reached-when row bound to a discard VERDICT -> refuted + "
+               "REACHED-WHEN-REFUTED (hard), reached False, the file still derives; the same no "
+               "outside reached-when stays done (answered either way); :yes retires, :no proceeds")
+        rcheck("rig-c", "every reached-when row retired -> abandoned + DESTINATION-ABANDONED "
+               "(advisory), reached False")
+        rcheck("rig-c2", "control: the same retired branches plus one satisfied row -> reached, "
+               "not abandoned")
+        rcheck("rig-d", "probe-passed= derives done only on a yes verdict (pass, ' Keep '); no / "
+               "unresolved / absent stay open on the frontier with verb probe; a no settles: :yes "
+               "dependent retires, :no dependent proceeds to the frontier")
+        sblock = rrep["set"]
+        ok("rigor set: the refuted file derives (not in not_derived) and carries its own exit bit",
+           all(sblock[k] == rkey["set"][k] for k in rkey["set"])
+           and "P-998" in [e["lane"] for e in sblock["union_frontier"]]
+           and rrep["exit_strict"] == 1, json.dumps(sblock, sort_keys=True))
+        ok("rigor: --json byte-identical across two reads",
+           render_json(rrep) == render_json(check(repo, rsha, rig_targets, today=today)))
+        rtext = render_text(rrep)
+        ok("rigor: text form carries the refuted and abandoned words",
+           "  C-02 refuted      probe P-904" in rtext
+           and "reached: False  abandoned: True" in rtext
+           and "REACHED-WHEN-REFUTED" in rtext and "DESTINATION-ABANDONED" in rtext
+           and "PROBE-VERDICT-UNRESOLVED" in rtext)
+        for name, text in (
+                ("probe-passed-wrong-lane", RIG_FILES["rig-d"].replace(
+                    "| probe-passed=P-901 |", "| probe-passed=P-902 |")),
+                ("probe-passed-on-capture", RIG_FILES["rig-d"].replace(
+                    "| path-exists=research/raw/2026-09-04-x.md |",
+                    "| probe-passed=research/raw/2026-09-04-x.md |"))):
+            doc = parse_north_star(text, "malformed/%s.md" % name)
+            classes = [f["class"] for f in doc["findings"]]
+            ok("malformed %s -> exactly one SCHEMA" % name, classes == ["SCHEMA"], str(classes))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

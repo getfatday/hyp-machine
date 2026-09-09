@@ -13,21 +13,25 @@ Grammar (at most one bracket per line, appended to the committing line):
 
 parsed by:
 
-    \\[closes-when:\\s*(path-exists|commit-grep|hypothesis-kept|hypothesis-verdict|maintainer-ruling|decision-resolved)=([^\\]]+)\\]
+    \\[closes-when:\\s*(path-exists|commit-grep|hypothesis-kept|hypothesis-verdict|maintainer-ruling|decision-resolved|frontmatter-status|probe-passed)=([^\\]]+)\\]
 
 Unknown predicate or empty argument = malformed. The design treats "malformed" and
 "bracket absent" identically -- both are "no valid closes-when" -- so parse_bracket()
 returns None for both.
 
-All six predicates are evaluated read-only, against committed (HEAD) state ONLY, never
+Every predicate is evaluated read-only, against committed (HEAD) state ONLY, never
 the working tree: "committed at HEAD" (path-exists), "some commit message" (commit-grep),
 "landed as kept ... at HEAD" (hypothesis-kept), "landed as kept OR discarded at HEAD"
 (hypothesis-verdict: the question is answered either way -- a discard closes a condition
 whose question a null settles; added with the destination-map ship, lab lane
 H-DRAFT-2cae0933-derived-condition-status kept 2x 5/5), "some committed filename"
 (maintainer-ruling), "an accepted|denied decision-resolution row in the ledger at HEAD"
-(decision-resolved, decisions-schema.md section 4) -- the Durability invariant
-("uncommitted work effectively does not exist").
+(decision-resolved, decisions-schema.md section 4), "a typed document's frontmatter status is a
+done-value at HEAD" (frontmatter-status), "a committed probe VERDICT.json whose verdict is a
+yes" (probe-passed: hypothesis-kept for probe lanes -- the north-star reader's yes-set
+keep|kept|pass|passed|yes|true, stripped, case-insensitive; a no or an unresolved verdict never
+closes; verdict-rigor lane 2026-09-08) -- the Durability invariant ("uncommitted work
+effectively does not exist").
 
 Stdlib + git only. No network. No writes. `python3 closes_when.py --selftest` builds a
 throwaway repository and proves the two hypothesis predicates on kept / discarded / draft
@@ -42,7 +46,7 @@ from pathlib import Path
 
 CLOSES_WHEN_RE = re.compile(
     r"\[closes-when:\s*(path-exists|commit-grep|hypothesis-kept|hypothesis-verdict"
-    r"|maintainer-ruling|decision-resolved|frontmatter-status)=([^\]]+)\]"
+    r"|maintainer-ruling|decision-resolved|frontmatter-status|probe-passed)=([^\]]+)\]"
 )
 
 # Shared with commitment_lint.py's On-keep-block gating: both need "what word does this
@@ -265,6 +269,37 @@ def _check_frontmatter_status(arg, repo_root):
     return word is not None and word in done
 
 
+# probe VERDICT.json `verdict` words that read yes (stripped, lower-cased): the same set as
+# north-star-check.py's PROBE_YES -- the two readers must agree, or a north-star probe row and
+# the On-keep bracket binding the same lane could split-brain on one verdict
+PROBE_PASSED_YES = ("keep", "kept", "pass", "passed", "yes", "true")
+
+
+def _check_probe_passed(arg, repo_root):
+    """probe-passed=<lane> -- experiments/runs/<lane>/VERDICT.json is committed AT HEAD and its
+    `verdict` is a string whose stripped, lower-cased value is in PROBE_PASSED_YES. Mirrors
+    hypothesis-kept for probe lanes: a no (fail / discard / ...), an unresolved verdict
+    (ambiguous, refine, void, empty, missing key, non-string, unparsable JSON), an absent or
+    uncommitted artifact, or an empty lane all leave the commitment open -- never a yes."""
+    lane = arg.strip()
+    if not lane:
+        return False
+    path = "experiments/runs/%s/VERDICT.json" % lane
+    present, _ = _git(repo_root, ["cat-file", "-e", "HEAD:" + path])
+    if present != 0:
+        return False
+    code, text = _git(repo_root, ["show", "HEAD:" + path])
+    if code != 0:
+        return False
+    try:
+        rec = json.loads(text)
+    except ValueError:
+        return False
+    if not isinstance(rec, dict) or not isinstance(rec.get("verdict"), str):
+        return False
+    return rec["verdict"].strip().lower() in PROBE_PASSED_YES
+
+
 _CHECKERS = {
     "path-exists": _check_path_exists,
     "commit-grep": _check_commit_grep,
@@ -273,6 +308,7 @@ _CHECKERS = {
     "maintainer-ruling": _check_maintainer_ruling,
     "decision-resolved": _check_decision_resolved,
     "frontmatter-status": _check_frontmatter_status,
+    "probe-passed": _check_probe_passed,
 }
 
 
@@ -329,6 +365,20 @@ def _selftest():
             os.makedirs(os.path.join(tmp, os.path.dirname(rel)), exist_ok=True)
             with open(os.path.join(tmp, rel), "w", encoding="utf-8") as f:
                 f.write(text)
+
+        # probe verdict artifacts for probe-passed (one lane per verdict class)
+        def verdict(lane, body):
+            os.makedirs(os.path.join(tmp, "experiments", "runs", lane), exist_ok=True)
+            with open(os.path.join(tmp, "experiments", "runs", lane, "VERDICT.json"), "w",
+                      encoding="utf-8") as f:
+                f.write(body)
+        verdict("P-901", json.dumps({"lane": "P-901", "verdict": "pass"}))
+        verdict("P-902", json.dumps({"lane": "P-902", "verdict": " Keep "}))
+        verdict("P-903", json.dumps({"lane": "P-903", "verdict": "discard"}))
+        verdict("P-904", json.dumps({"lane": "P-904", "verdict": "ambiguous"}))
+        verdict("P-905", "{\"lane\": \"P-905\", \"verdict\": \n")
+        verdict("P-906", json.dumps({"lane": "P-906", "verdict": True}))
+        verdict("P-907", json.dumps({"lane": "P-907"}))
         env = dict(os.environ, GIT_AUTHOR_NAME="selftest", GIT_AUTHOR_EMAIL="s@t",
                    GIT_COMMITTER_NAME="selftest", GIT_COMMITTER_EMAIL="s@t")
         subprocess.run(["git", "-C", tmp, "add", "-A"], check=True, capture_output=True)
@@ -341,8 +391,25 @@ def _selftest():
         # An uncommitted status flip must not count either (committed state only).
         with open(os.path.join(tmp, "docs/Area 1: alpha/other.md"), "w", encoding="utf-8") as f:
             f.write(doc("status: completed"))
+        # An uncommitted passing verdict must not count either.
+        verdict("P-908", json.dumps({"lane": "P-908", "verdict": "pass"}))
         fs_values = ":completed!cancelled,rejected"
         table = [
+            ("probe-passed pass verdict satisfies", check("probe-passed", "P-901", tmp), True),
+            ("probe-passed ' Keep ' (case, whitespace) satisfies",
+             check("probe-passed", "P-902", tmp), True),
+            ("probe-passed discard verdict fails", check("probe-passed", "P-903", tmp), False),
+            ("probe-passed ambiguous verdict fails (unresolved, never yes)",
+             check("probe-passed", "P-904", tmp), False),
+            ("probe-passed unparsable JSON fails", check("probe-passed", "P-905", tmp), False),
+            ("probe-passed non-string verdict fails", check("probe-passed", "P-906", tmp), False),
+            ("probe-passed missing verdict key fails", check("probe-passed", "P-907", tmp), False),
+            ("probe-passed uncommitted verdict fails (HEAD-only)",
+             check("probe-passed", "P-908", tmp), False),
+            ("probe-passed absent lane fails", check("probe-passed", "P-999", tmp), False),
+            ("probe-passed empty lane fails", check("probe-passed", "  ", tmp), False),
+            ("bracket parses probe-passed",
+             parse_bracket("x [closes-when: probe-passed=P-901]"), ("probe-passed", "P-901")),
             ("frontmatter-status done value satisfies",
              check("frontmatter-status", "docs/Area 1: alpha/done.md" + fs_values, tmp), True),
             ("frontmatter-status no value fails",
