@@ -28,6 +28,10 @@ DEFAULTS = {
     "preflight_file": "experiments/preflight.py",
     "model_dir": "operating-model",
     "context": "",
+    # Stop-boundary dispatcher scope: "participants" (default -- only sessions that
+    # carry HYP_DISPATCH=1 or a per-session marker are re-presented open work) or
+    # "all" (every experiments-profile session; the pre-gate behaviour).
+    "dispatch": "participants",
 }
 
 CONFIG_RELPATH = os.path.join(".claude", "hyp.json")

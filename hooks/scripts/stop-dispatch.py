@@ -23,6 +23,36 @@ dispatch no longer lists it at HEAD.
 Decision order at every Stop:
   1. profile below `experiments`, snoozed (.claude/stop-snooze <24h -- the standing
      kill-switch for this surface), or no dispatch surface        -> allow
+  1b. the session is not a DISPATCH PARTICIPANT (lab lane
+     dispatch-participation-gate)                                 -> allow, typed
+     reason not-a-participant, decided AFTER the no-dispatch-surface check (a
+     repository with nothing dispatchable stays silent, as before) and BEFORE the
+     dispatch read (a bystander pays nothing, not even the read), without touching
+     the cycle counter, and without starting the lineage wall clock (the informed
+     flag is persisted with no t0, so a session that joins later gets its full
+     1800 s from its first participant Stop).
+     Participation is decided from bytes the session itself carries -- never
+     inferred from the transcript, never from git:
+       env HYP_DISPATCH=0 / off                  -> not a participant (explicit; wins)
+       env HYP_DISPATCH=1 / on                   -> participant (the plugin's own
+                                                    drivers -- the resume timer, the
+                                                    watch-paths driver, the portable
+                                                    runner -- launch their children
+                                                    with it; any other spelling reads
+                                                    as unset and is logged as
+                                                    participation.env_unrecognized)
+       <root>/.claude/stop-driver/participants/<session_id> exists -> participant
+       .claude/hyp.json "dispatch": "all"        -> every session participates (the
+                                                    pre-gate behaviour, opted into per
+                                                    repository; default "participants")
+       otherwise                                 -> not a participant
+     The first non-participant Stop of a lineage prints ONE systemMessage naming the
+     three ways to join (the marker path for this session id filled in); later Stops
+     in the lineage stay silent. Why: a session opened to debug an unrelated failure
+     was held at Stop for a verdict on a draft spec it had never seen (source lab,
+     2026-09-08). The directive this dispatcher implements named every BOUNDARY at
+     which the backlog is re-derived, never which SESSIONS are backlog workers; this
+     step supplies that missing boundary as explicit consent, not inference.
   2. dispatch read FAILED (timeout, nonzero exit, unparseable output) -- the
      open-work state is UNKNOWN, never graded like a pass (issue #8: a 45 s
      TimeoutExpired on a slow disk used to end the session as allow/hook-error
@@ -142,6 +172,50 @@ def snoozed(root):
         return False
 
 
+PARTICIPANTS_DIRNAME = "participants"   # <root>/.claude/stop-driver/participants/<sid>
+ENV_ON = ("1", "on", "yes", "true", "participant")
+ENV_OFF = ("0", "off", "no", "false")
+
+
+def participation(root, cfg, session_id):
+    """('yes' | 'no', source, env_raw). Decided from bytes the session carries --
+    its environment, a per-session marker file, or the repository's config --
+    never the transcript, never git. Never raises; an unreadable signal reads as
+    absent. Sources, in precedence order: env-off, env, marker, config, none.
+    env_raw is the HYP_DISPATCH value when set (None when unset) so an
+    unrecognised spelling (a typo) is visible in the log instead of silently
+    reading as absent."""
+    env_raw = os.environ.get("HYP_DISPATCH")
+    try:
+        env = (env_raw or "").strip().lower()
+        if env in ENV_OFF:
+            return "no", "env-off", env_raw
+        if env in ENV_ON:
+            return "yes", "env", env_raw
+        sid = re.sub(r"[^A-Za-z0-9._-]", "", session_id or "")
+        if sid and os.path.isfile(os.path.join(
+                root, ".claude", "stop-driver", PARTICIPANTS_DIRNAME, sid)):
+            return "yes", "marker", env_raw
+        if str(cfg.get("dispatch") or "").strip().lower() == "all":
+            return "yes", "config", env_raw
+    except Exception:
+        pass
+    return "no", "none", env_raw
+
+
+def join_message(session_id):
+    sid = re.sub(r"[^A-Za-z0-9._-]", "", session_id or "") or "<session-id>"
+    marker = os.path.join(".claude", "stop-driver", PARTICIPANTS_DIRNAME, sid)
+    return ("Work dispatcher: this session is not a dispatch participant, so open "
+            "lab work is not re-presented here (reason not-a-participant; nothing "
+            "was read). A session that works the backlog joins in one of three "
+            "ways: launch it with HYP_DISPATCH=1 (the plugin's own drivers do); "
+            "`touch %s` to join this session only; or set \"dispatch\": \"all\" "
+            "in .claude/hyp.json to make every session in this repository a "
+            "participant. A bystander (a debugging session, a one-off edit) needs "
+            "to do nothing. Shown once per session." % marker)
+
+
 def dispatch(root, surface):
     p = subprocess.run(
         [sys.executable, surface, "--root", root, "--json"],
@@ -177,6 +251,31 @@ def main():
             base.update(decision="allow", reason="no-dispatch-surface",
                         detail=surface)
             log_line(runtime, base)
+            return 0
+        # Participation gate (step 1b): consent before cost. Decided AFTER the
+        # surface check (a repository with nothing dispatchable stays silent, as
+        # shipped) and BEFORE the dispatch read, so a bystander never pays the
+        # read. It never spends a participant's headroom: the informed flag is
+        # persisted WITHOUT a lineage t0, so the 1800 s wall clock starts at the
+        # first participant Stop, not at a bystander Stop that later joins. Every
+        # record from here on carries the decision and its source.
+        part, source, env_raw = participation(root, cfg, base["session_id"])
+        base.update(participation={"decision": part, "source": source})
+        if env_raw is not None and source not in ("env", "env-off"):
+            base["participation"]["env_unrecognized"] = env_raw
+        if part != "yes":
+            informed = bool(st.get("participation_informed"))
+            if not informed:
+                keep = {"cycles": st.get("cycles", 0), "participation_informed": True}
+                if os.path.isfile(spath):
+                    keep["t0"] = st["t0"]   # a participant lineage already runs
+                os.makedirs(runtime, exist_ok=True)
+                save_state(spath, keep)
+            base.update(decision="allow", reason="not-a-participant",
+                        mechanism="exit0-systemMessage" if not informed else "exit0")
+            log_line(runtime, base)
+            if not informed:
+                print(json.dumps({"systemMessage": join_message(base["session_id"])}))
             return 0
         # Fail-closed-once (H-280, issue #8). The dispatch read is the only
         # call here that can burn the 45 s inner budget, and a hook killed by

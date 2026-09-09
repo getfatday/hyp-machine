@@ -57,7 +57,7 @@ cat > "$PLIST" <<EOF
 		<string>--</string>
 		<string>/bin/bash</string>
 		<string>-c</string>
-		<string>source $OAUTH_ENV &amp;&amp; exec claude -p "\$(sed "s|{{PLUGIN_SCRIPTS}}|$SELF_DIR|g" '$PROMPT')" --model sonnet --max-turns 40 --max-budget-usd 1.50 --output-format stream-json --verbose --allowedTools Read Write Edit Glob Grep Bash --disallowedTools WebFetch WebSearch Task</string>
+		<string>source $OAUTH_ENV &amp;&amp; export HYP_DISPATCH=1 &amp;&amp; exec claude -p "\$(sed "s|{{PLUGIN_SCRIPTS}}|$SELF_DIR|g" '$PROMPT')" --model sonnet --max-turns 40 --max-budget-usd 1.50 --output-format stream-json --verbose --allowedTools Read Write Edit Glob Grep Bash --disallowedTools WebFetch WebSearch Task</string>
 	</array>
 	<key>WorkingDirectory</key>
 	<string>$REPO_ABS</string>

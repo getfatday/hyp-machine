@@ -1248,8 +1248,11 @@ class Run(object):
                      "--strict-mcp-config"]
         else:
             argv += ["--permission-mode", self.o.permission_mode]
+        # A runner child is a dispatch participant: it exists to work the backlog,
+        # so the Stop-boundary dispatcher must keep re-presenting to it.
         p = subprocess.run(argv, capture_output=True, text=True, cwd=self.o.repo,
-                           timeout=self.o.wall)
+                           timeout=self.o.wall,
+                           env=dict(os.environ, HYP_DISPATCH="1"))
         text, cost = "", 0.0
         for line in p.stdout.splitlines():
             try:
