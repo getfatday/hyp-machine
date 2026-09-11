@@ -64,6 +64,20 @@ Claim type: <!-- REQUIRED — fill exactly one: descriptive (measures what is) |
 ## Verdict rule
 <!-- Mechanical: all assertions pass = keep-eligible; any failure = discard or refine. -->
 <!-- e.g. "keep if 4/4 assertions pass in 2 consecutive runs; refine after 1 failed run if the failure is a spec bug; discard after 3 failed runs." -->
+<!-- Rigor-row grammar for this section (report-only rows; kept H-DRAFT-50b0c1da):
+     - Discard banks: A<n> ... — name the assertion id(s) whose failure banks the exclusion, and write the
+       exclusion sentence itself (Platt: what reading a discard rules out, so nobody retries it blind); a keep
+       names the opposite reading it excludes.
+     - Void classes, typed: `ambiguous` (reality unclear — a child died, a stream ended short, the disk filled;
+       re-take the look, never impute) vs `annulled` (the question was unclear — a key or contract two readers
+       parse differently); a void never counts toward the tally; say how many voids force a refine.
+     - Refine clause, three classes: refine only when the recorded root cause is fixture-, manifest- or
+       contract-side (shown by a counterfactual regrade with the variable's bytes unchanged); a variable-side
+       miss is a failed counted run; the lineage stops by the lineage rule, never by a launch count — the
+       frozen policy (rules/lineage-sprt.json, read only through scripts/stopping-rule.py) over the lineage's
+       pooled counted looks, typed voids re-taken without counting, a spend budget derived from the
+       Budget-per-run line as the only other exit, nothing resetting at a refine (kept H-DRAFT-5810517d;
+       docs/lineage-stopping.md). -->
 
 ## On keep
 <!-- Machine-readable follow-ups: one commitment per line, each with a closes-when bracket, so

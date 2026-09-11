@@ -1,0 +1,6 @@
+{
+ "frozen": "stopping-rule",
+ "rule_text": "{\"kind\": \"sprt\", \"alpha\": 0.05, \"beta\": 0.1, \"p0\": 0.5, \"p1\": 0.1, \"max_looks\": 13}\n",
+ "sha256": "8052bda9c051a90c762d3af9b84317941a5a5e9d44db5db90122a61a13aeeae1",
+ "source": "rules/lineage-sprt.json"
+}
