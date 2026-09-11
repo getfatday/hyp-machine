@@ -18,7 +18,10 @@ hooks/scripts/preflight-gate.py (the tree this file lives in) with PreToolUse pa
          flag followed by `mkdir -p` in the next command
   allow  capture-profile consumer (the gate is inert below the experiments profile)
   allow  a non-Bash payload carrying a headless command string
-  pass   the gate's own `--selftest` (regex cases) exits 0
+  deny   (documented residual) a `tee` heredoc whose body spells out the invocation in
+         backticks and names a lane path -- the gate has no quoted-string awareness beyond
+         treating a quoted argument as one token, exactly as the previous pattern
+  pass   the gate's own `--selftest` (regex, residual, bound and timing cases) exits 0
 
 Every allow case that used to be blocked is also checked against the PREVIOUS pattern so
 the suite proves each one is a genuine regression, not a command the old gate ignored too.
@@ -198,6 +201,20 @@ REGRESSIONS = [
 ]
 
 
+# --- documented residuals: not launches, read as one exactly as the previous pattern did --
+# The exact 2026-09-11 `tee` fragment stayed denied after the pattern change because its body
+# quotes the invocation in backticks (a backtick is a command-position character). Pinned so
+# the behavior is explicit; the fix is quoted-string awareness, not a wider pattern.
+RESIDUALS = [
+    ("residual-deny-heredoc-quoting-invocation",
+     "cd /Users/u/src/lab\n"
+     "tee experiments/journal-fragments/0448-x.md >/dev/null <<'FRAGEOF'\n"
+     "Research pack in experiments/runs/H-777/research/. Sessions launch arms with `claude" " -p`\n"
+     "under the job directory; nothing here launches a run.\nFRAGEOF",
+     "no hypothesis spec matches 'H-777'"),
+]
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="hyp-selftest-gate-")
     results = []
@@ -228,6 +245,11 @@ def main():
             rc, decision, reason = run_gate(command, consumer)
             check(name, rc == 0 and decision == "allow",
                   "rc=%d decision=%s %s" % (rc, decision, reason[:110]))
+
+        for name, command, want_reason in RESIDUALS:
+            rc, decision, reason = run_gate(command, consumer)
+            check(name, rc == 0 and decision == "deny" and want_reason in reason,
+                  "rc=%d decision=%s reason=%s" % (rc, decision, (reason or "(none)")[:110]))
 
         rc, decision, reason = run_gate('claude -p "go" hypotheses/H-999-missing.md', capture)
         check("allow-below-experiments-profile", rc == 0 and decision == "allow",

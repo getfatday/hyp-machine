@@ -157,7 +157,7 @@ config files and CLAUDE.md rules blocks in place.
 | `scripts/graph-check.py` | The work-graph checker: report-only (exit 0 always) lint + derived dispatch state over `ledger/graphs/*.md` — recomputed frontier, false-dones against the disk, stale downstream re-run candidates, dangling refs/cycles, stale `next-dispatch` pointers, expired claims — counted H-231; step 0 of `/hyp:durability-check` (see `docs/workgraph.md`) |
 | `scripts/compile-findings-index.py` | The corpus layer, index half: one plain-language line per resolved hypothesis (id, verdict, date, finding, evidence pointer) plus lineage edges — counted H-226/H-228 |
 | `hooks/scripts/hyp_status.py` | The shared status canonicalizer: one tolerant reader of a spec's `## Status` word (synonyms, qualifiers, casing) used by dispatch, stall, and findings scripts; `--lint <root>` lists non-canonical statuses with rewrites; `--selftest` — lab H-DRAFT-4c0dadb8-status-vocabulary-canon |
-| `hooks/scripts/preflight-gate.py` + `scripts/selftest-preflight-gate.py` | The run-shaped PreToolUse gate and its regression test: `--selftest` on the gate proves the headless-invocation rule (26 regex cases: real CLI forms match; a `.claude/…` path followed by an unrelated `-p` does not), and the wrapper drives the gate end to end in a throwaway consumer, including the fixtures the previous pattern blocked in the 2026-09-11 lab session rewritten without a CLI call — changeset preflight-gate-headless-regex |
+| `hooks/scripts/preflight-gate.py` + `scripts/selftest-preflight-gate.py` | The run-shaped PreToolUse gate and its regression test: `--selftest` on the gate proves the headless-invocation rule (32 regex cases: real CLI forms match; a `.claude/…` path followed by an unrelated `-p` does not; the 64-token / 4096-character window; two pinned residuals) and its cost bound (6 timing cases under 0.5 s each, on shapes the unbounded pattern took 3.5-47 s over), and the wrapper drives the gate end to end in a throwaway consumer, including the fixtures the previous pattern blocked in the 2026-09-11 lab session rewritten without a CLI call and the documented residual (a heredoc body that spells out the invocation still gates) — changeset preflight-gate-headless-regex |
 | `scripts/prior-art-sweep.py` | The corpus layer, consult half: typed OVERLAP/LINEAGE flags plus a ready-to-paste Prior-work section for any draft spec, so registration mechanically consults everything already proven or disproven — counted H-227/H-228 |
 | `scripts/parity-check.py` | Byte-parity checker between an installed hyp copy and a published manifest or pinned reference tree (see “Install parity” below) |
 | `scripts/hook-parity-check.py` | Hook-wiring parity: (event, matcher, guard) rows from a settings.json and a hooks.json, one line per one-side-only guard; surfaced as harden ADVISORY-32 — lab H-DRAFT-4c0dadb8-hook-wiring-parity |
@@ -196,7 +196,7 @@ every mechanism ships three ways:
 |---|---|
 | PreToolUse (`Edit\|Write\|NotebookEdit\|Bash`) | Write-once guard: Edit/NotebookEdit under the raw directory is always denied; Write there is denied only when the target already exists (creation stays legal, including shell heredoc creation). Journal fragments get the same shape; the base journal file is fully frozen. The Bash branch is a mistake-net denying plain destructive commands aimed at an existing raw file or fragment. |
 | PreToolUse (same matcher) | Generic policy interpreter: reads `operating-model/*/policies/*.md` as data. `enforcement: hook` nodes with a `mechanism:` block deny; `enforcement: advisory` nodes print one advisory line and never affect the exit code. No model, no effect. |
-| PreToolUse (`Bash`, run-shaped) | Preflight gate (experiments profile): headless agent invocations tied to an experiment are denied when the spec is missing or fails the shipped preflight. Headless means the CLI name as a command word followed by its own `-p`/`--print`; a `.claude/…` path or an unrelated `mkdir -p` elsewhere in the command never counts (regression test: `scripts/selftest-preflight-gate.py`). |
+| PreToolUse (`Bash`, run-shaped) | Preflight gate (experiments profile): headless agent invocations tied to an experiment are denied when the spec is missing or fails the shipped preflight. Headless means the CLI name as a command word followed by its own `-p`/`--print` within 64 argument tokens / 4096 characters; a `.claude/…` path or an unrelated `mkdir -p` in another command never counts, and a command is scanned only when a standalone CLI word and a standalone flag token are both present, so the hook stays cheap on every Bash call (regression test: `scripts/selftest-preflight-gate.py`). |
 | PreToolUse (`Bash`, `git commit`) | Advisory backstop (experiments profile): a tinker-shaped commit with no hypothesis spec staged prints a one-line nudge. Never blocks. |
 | PreToolUse (`Edit\|Write\|MultiEdit`) | License-join advisory on rule-carrier writes (H-250): adding a standing rule without a resolvable license citation prints one `RULE-LICENSE` line and logs the fire. Advisory only — never blocks. |
 | UserPromptSubmit | Capture-intent nudge on phrases like "note this" / "save that". Precision-first; silent otherwise. |
@@ -266,7 +266,15 @@ optional: the plugin renders fully without them.
   headless `-p` runs. Enforcement does not depend on it.
 - The budget halt is procedural (skill prose plus the spec's budget line), not a timer.
 - The preflight gate resolves specs from the command text; a run launched through an
-  indirection it cannot see is gated only by the skill discipline.
+  indirection it cannot see (a variable, a path to the binary, `bash -c "…"`, a quoted
+  command word) is gated only by the skill discipline, as is a launch whose `-p`/`--print`
+  sits more than 64 argument tokens or 4096 characters after the CLI word (the lab's 394
+  recorded launches peak at 20 tokens / 393 characters).
+- The gate has no general quoted-string awareness: a quoted argument is one token, but prose
+  or a heredoc body that spells out an invocation — a commit message or journal fragment
+  naming the CLI and its flag — still reads as headless, exactly as the previous pattern did;
+  only a quote immediately before the command word is excluded. Such a command is denied
+  only if it also names a missing or failing spec or lane path.
 - Source-mining adapters beyond the proven slice (repo tree, git history, session JSONL)
   are a documented seam (`templates/sources.yaml`), not shipped code.
 - The compiler refuses to price flows containing steps with no measured cost — fill the
