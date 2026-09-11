@@ -54,6 +54,11 @@ Claim type: <!-- REQUIRED — fill exactly one: descriptive (measures what is) |
 - Fixture: <!-- Pinned starting state both arms share — task set, repo, commit. e.g. "tasks T1-T3 in repo X at commit abc1234" -->
 - Repetitions per arm: <!-- e.g. 1 per task (note noise limitation) or 3 -->
 - Budget per run: <!-- e.g. 30 min wall-clock or 1 session per task -->
+<!-- Containment is a run-validity VOID class, never a numbered assertion (the run-side counterpart of
+     preflight-rigor row 13): lanes import the plugin's shared instrument scripts/lane_containment.py
+     (lab H-DRAFT-c2b572ab kept 2026-09-11; lane-scoped inventory, declared writes from the driver's own
+     audit, sibling paths and denied probes as covariates; docs/lane-containment.md) and define no
+     containment function of their own. -->
 
 ## Binary assertions
 <!-- 3-5 pass/fail checks. The ONLY basis for the verdict. No subjective scores. -->
