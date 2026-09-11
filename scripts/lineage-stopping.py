@@ -34,8 +34,16 @@ The rule as a decision procedure (spec Method R0-R4):
       substantive assertion is variable-side; (iv) VOID annulled: every failing substantive assertion is
       fixture/manifest/contract-side or instrument-side; (v) COUNTED look refusal 0: everything holds. A
       failing substantive assertion the record leaves unclassed is never typed by guess: `record` parks the
-      look as PENDING until `settle` supplies the root cause (unspecified = variable-side, the Verdict
-      rule's default). A void appends no look and is re-taken at the next launch.
+      look as PENDING until `settle` supplies a root-cause class for EVERY pending id (`--root-cause
+      A#=<class>`); a `settle` that leaves an id unclassed refuses (exit 2, the look stays pending). That is
+      the typing law of the lab fixture's table (cause-n-effect
+      experiments/runs/H-DRAFT-5810517d-verdict-lineage-stopping/fixture/lineage.py, R2 (iv): "a failing
+      assertion the record leaves unclassed ... never typed by guess"): an unclassed root cause is parked
+      pending, never typed by guess -- and never defaulted to variable-side. Every (spec, run) is charged
+      and typed once: `record`, `append-look` and `void` refuse a run already in looks.jsonl or voids.jsonl
+      (`record` also one parked in pending.jsonl) with exit 3 `already-recorded <run>` and one refusals.jsonl
+      row, so a driver retry after a partial failure appends nothing. A void appends no look and is re-taken
+      at the next launch.
   R3  After every counted look: append the row to stream.jsonl, evaluate with `--evaluate --looks all`
       into state.jsonl, assert the prefix invariants on an in-progress file and run `--check` only on a
       terminated one. `evidence-sufficient promote` -> the lineage's current spec is KEPT;
@@ -55,15 +63,16 @@ hypotheses_dir, ledger_file -- with the lab layout as default; <lineage> = <runs
   charge <lane> --wall-s W --cost-usd C --class CLS [--run N] [--run-record P]
   append-look <lane> <refusal 0|1> [--run N] [--clause iii|v] [--run-record P]
   void <lane> --class ambiguous|annulled [--clause i|ii|iv] [--run N] [--run-record P]
-  settle <lane> <run> [--root-cause A#=<class> ...]
+  settle <lane> <run> --root-cause A#=<class> [...]   one class per pending id; an id left unclassed -> exit 2, the look stays pending
   evaluate <lane>                                R3 alone: re-evaluate the stream into state.jsonl
   state <lane>                                   -> promote|hold|insufficient|max-looks|spend-exhausted
   walk <launches.jsonl> --model A|B [--ratios r,..] [--budget-caps N] --out <stream.jsonl>
-  --selftest [--into DIR]                        26 typing + 7 walk/settle cases (lineage.py) + spend / refusal / R3 / R4 cases
+  --selftest [--into DIR]                        26 typing + 7 walk/settle cases (lineage.py) + spend / refusal / R3 / R4 / settle-refusal / already-recorded cases
 Every verb takes --root <repo-root> (default: the nearest ancestor of the cwd carrying .claude/hyp.json or
 .git) and --json (before or after the verb). Exit codes: 0 ok; 1 an invariant or check violated (named);
-2 usage, malformed input, or a lineage not initialised; 3 refused (R1, a pending look, a terminated lineage,
-an R0 byte or truncation mismatch). The words keep and discard never enter a state line (the instrument's
+2 usage, malformed input (a settle that leaves a pending id unclassed), or a lineage not initialised; 3 refused
+(R1, a pending look, a terminated lineage, an R0 byte or truncation mismatch, a run already recorded). The words
+keep and discard never enter a state line (the instrument's
 contract); they appear only in this script's `instruction` field, which belongs to the hypothesis loop.
 Stdlib only, Python 3.9; the work ledger (ledger_file) is resolved and reported by `paths`, never written.
 """
@@ -845,7 +854,30 @@ def evaluate(P, instrument=None):
             "evaluate_rc": r.returncode, "instruction": INSTRUCTIONS.get(tk, CONTINUE)}
 
 
+def recorded_in(P, spec, run_n, include_pending=False):
+    """The lineage file a (spec, run) already occupies -- looks | voids | pending -- or None. A run with no number
+    (run_n None) cannot be identified and is never guarded."""
+    if run_n is None:
+        return None
+    key = (str(spec), str(run_n))
+    for name in (("looks", "voids", "pending") if include_pending else ("looks", "voids")):
+        for r in read_jsonl(P[name]):
+            if (str(r.get("spec")), str(r.get("run"))) == key:
+                return name
+    return None
+
+
+def refuse_if_recorded(P, spec, run_n, verb, include_pending=False):
+    """Every (spec, run) is charged and typed once: a run already in looks.jsonl or voids.jsonl (for `record` also
+    pending.jsonl) is refused -- exit 3 `already-recorded`, one refusals.jsonl row -- so a driver retry appends nothing."""
+    where = recorded_in(P, spec, run_n, include_pending)
+    if where:
+        append_row(P["refusals"], {"at": now(), "reason": "already-recorded", "verb": verb, "spec": spec, "run": run_n, "found_in": "%s.jsonl" % where})
+        raise Refuse("already-recorded %s run-%s -- a row in %s.jsonl; every run is charged and typed once, so this %s appends nothing" % (spec, run_n, where, verb))
+
+
 def append_look(P, spec, run_n, refusal, clause, run_record, root_causes=None, instrument=None):
+    refuse_if_recorded(P, spec, run_n, "append-look")
     tk, _ = last_terminal(P)
     if tk:
         raise Refuse("terminal:%s -- a terminated lineage never launches again, so no look can be appended (R3)" % tk)
@@ -860,6 +892,7 @@ def append_look(P, spec, run_n, refusal, clause, run_record, root_causes=None, i
 
 
 def append_void(P, spec, run_n, cls, clause, run_record, extra=None):
+    refuse_if_recorded(P, spec, run_n, "void")
     row = {"spec": spec, "run": run_n, "class": cls, "clause": clause, "run_record": run_record, "recorded": now(), "re_take": RE_TAKE}
     if extra:
         row.update(extra)
@@ -881,6 +914,7 @@ def record_run(layout, lane, run_dir, run_n=None, run_validity_ids=(), root_caus
     if run_n is None:
         base = os.path.basename(run_dir)
         run_n = int(base.split("-")[-1]) if base.startswith("run-") and base.split("-")[-1].isdigit() else None
+    refuse_if_recorded(P, lane, run_n, "record", include_pending=True)
     run_record = _run_record_rel(layout, run_dir)
     word, typed, rec, meta = type_run_dir(run_dir, run_validity_ids, root_causes)
     pend = pending_ids(rec, typed)
@@ -889,7 +923,8 @@ def record_run(layout, lane, run_dir, run_n=None, run_validity_ids=(), root_caus
         cls = "pending-root-cause"
         row = {"spec": lane, "run": run_n, "run_dir": layout.runs_rel(run_dir), "failing": pend, "settled": False, "recorded": now(),
                "run_validity_ids": sorted(set(str(x) for x in run_validity_ids or []) | set(meta["run_validity_ids"])),
-               "how": "lineage-stopping.py settle %s %s [--root-cause A#=<class> ...]; unspecified = variable-side (the Verdict rule's default: a variable-side miss is a counted refusal)" % (lane, run_n)}
+               "how": "lineage-stopping.py settle %s %s --root-cause %s -- one class per failing id, from %s; an id left unclassed refuses (exit 2) and the look stays pending, never typed by guess" % (
+                   lane, run_n, " ".join("%s=<class>" % a for a in pend), " | ".join(ROOT_CAUSE_CLASSES))}
         append_row(P["pending"], row)
         outcome["pending"] = pend
     elif typed["type"] == "counted":
@@ -919,8 +954,14 @@ def settle(layout, lane, run_n, root_causes, instrument=None):
         raise Refuse("no pending look for %s run-%s" % (lane, run_n))
     p0 = mine[0]
     rc = dict(root_causes or {})
-    for a in p0["failing"]:
-        rc.setdefault(a, VARIABLE_SIDE)
+    bad = sorted("%s=%s" % (a, c) for a, c in rc.items() if c not in ROOT_CAUSE_CLASSES)
+    if bad:
+        raise Usage("settle %s run-%s: unknown root-cause class %s; one of %s" % (lane, run_n, ", ".join(bad), " | ".join(ROOT_CAUSE_CLASSES)))
+    unclassed = [a for a in p0["failing"] if a not in rc]
+    if unclassed:
+        # the fixture's typing law (lineage.py, R2 (iv)): an unclassed root cause is parked pending, never typed by guess
+        raise Usage("settle %s run-%s: no root-cause class for %s -- the look stays pending; pass --root-cause %s with a class from %s (an unclassed root cause is parked pending, never typed by guess)" % (
+            lane, run_n, ", ".join(unclassed), " ".join("%s=<class>" % a for a in unclassed), " | ".join(ROOT_CAUSE_CLASSES)))
     run_dir = os.path.join(layout.rel("runs_dir"), *p0["run_dir"].split("/"))
     word, typed, rec, meta = type_run_dir(run_dir, p0.get("run_validity_ids") or (), rc)
     run_record = _run_record_rel(layout, run_dir)
@@ -1199,10 +1240,18 @@ def selftest(into=None):
               s4["typed"] == ANNULLED_IV and "void_row" in s4 and len(read_jsonl(P6["stream"])) == 1 and not open_pending(P6) and may_launch(P6)[1] == "launch")
         rd5 = _mk_run(layout, lane6, 5, {"A1": {"pass": True}, "A2": {"pass": False}, "A5": {"pass": True}}, wall_s=100.0)
         o5 = record_run(layout, lane6, rd5, run_validity_ids=["A5"])
-        s5 = settle(layout, lane6, 5, {})
-        check("settle with no root cause given defaults to variable-side (the Verdict rule's default): counted look 2 refusal 1 (iii), llr falls",
-              o5.get("pending") == ["A2"] and s5["typed"] == COUNTED_1 and s5["look"] == 2 and s5["evaluation"]["state"] == "evidence-insufficient n=2/13" and abs(s5["evaluation"]["llr"] - (c["inc0"] + c["inc1"])) < 1e-12
-              and read_jsonl(P6["looks"])[1].get("root_causes") == {"A2": VARIABLE_SIDE})
+        try:
+            settle(layout, lane6, 5, {})
+            e5 = None
+        except Usage as e:
+            e5 = str(e)
+        check("settle with no root-cause class REFUSES (exit 2, one line naming the pending look and the four classes) and leaves the look pending -- never defaulted to variable-side, never typed by guess",
+              o5.get("pending") == ["A2"] and e5 is not None and "run-5" in e5 and "A2" in e5 and all(cls in e5 for cls in ROOT_CAUSE_CLASSES)
+              and [p["run"] for p in open_pending(P6)] == [5] and may_launch(P6)[1] == "look-pending" and len(read_jsonl(P6["stream"])) == 1, e5)
+        s5 = settle(layout, lane6, 5, {"A2": VARIABLE_SIDE})
+        check("settle --root-cause A2=variable-side -> counted look 2 refusal 1 (iii), llr falls, root_causes recorded on the look, nothing pending",
+              s5["typed"] == COUNTED_1 and s5["look"] == 2 and s5["evaluation"]["state"] == "evidence-insufficient n=2/13" and abs(s5["evaluation"]["llr"] - (c["inc0"] + c["inc1"])) < 1e-12
+              and read_jsonl(P6["looks"])[1].get("root_causes") == {"A2": VARIABLE_SIDE} and not open_pending(P6))
         # type verb: root cause flags and the three assertion shapes; grader-typed voids
         rd6 = _mk_run(layout, lane6, 6, {"A1": {"pass": False}, "A2": {"pass": False}, "A5": {"pass": True}})
         w6, t6, _, _ = type_run_dir(rd6, ["A5"], {"A1": FIXTURE_SIDE, "A2": VARIABLE_SIDE})
@@ -1287,6 +1336,95 @@ def selftest(into=None):
               and r_r.returncode == 0 and rj.get("look") == 1 and rj.get("spend_row", {}).get("wall_s") == 12.5 and r_s.returncode == 0 and r_s.stdout.splitlines()[0] == "insufficient"
               and r_p.returncode == 0 and json.loads(r_p.stdout)["files"]["spend"].endswith("lineage/spend.jsonl") and r_u.returncode == 2,
               "init %d / may-launch %d %r / type %d %r / record %d / state %d %r / paths %d / uninit %d %s" % (r_i.returncode, r_m.returncode, r_m.stdout.strip(), r_t.returncode, r_t.stdout.strip(), r_r.returncode, r_s.returncode, r_s.stdout.strip(), r_p.returncode, r_u.returncode, r_u.stderr.strip()[:80]))
+        # settle: each accepted class types as before; an id left unclassed refuses and the look stays pending (A2 of the ship refute)
+        lane9 = "H-DRAFT-selftest-settle"
+        cmd_init(layout, lane9, 1800.0, 0.10)
+        P9 = layout.lineage_paths(lane9)
+        settled = {}
+        for n, cls in ((1, HARNESS_SIDE), (2, INSTRUMENT_SIDE), (3, FIXTURE_SIDE), (4, VARIABLE_SIDE)):
+            rd = _mk_run(layout, lane9, n, {"A1": {"pass": True}, "A2": {"pass": False}, "A5": {"pass": True}})
+            o = record_run(layout, lane9, rd, run_validity_ids=["A5"])
+            settled[cls] = (o.get("pending"), settle(layout, lane9, n, {"A2": cls}))
+        check("settle types each accepted class as before: harness/run-validity -> void ambiguous (i); instrument -> void annulled (iv); fixture/manifest/contract-side -> void annulled (iv); variable-side -> counted refusal 1 (iii)",
+              all(v[0] == ["A2"] for v in settled.values()) and settled[HARNESS_SIDE][1]["typed"] == AMBIGUOUS and settled[INSTRUMENT_SIDE][1]["typed"] == ANNULLED_IV
+              and settled[FIXTURE_SIDE][1]["typed"] == ANNULLED_IV and settled[VARIABLE_SIDE][1]["typed"] == COUNTED_1 and settled[VARIABLE_SIDE][1]["look"] == 1
+              and len(read_jsonl(P9["voids"])) == 3 and len(read_jsonl(P9["stream"])) == 1 and not open_pending(P9),
+              json.dumps({k: v[1]["typed"] for k, v in settled.items()}, sort_keys=True))
+        rd95 = _mk_run(layout, lane9, 5, {"A1": {"pass": True}, "A2": {"pass": False}, "A3": {"pass": False}, "A5": {"pass": True}})
+        o95 = record_run(layout, lane9, rd95, run_validity_ids=["A5"])
+        try:
+            settle(layout, lane9, 5, {"A2": VARIABLE_SIDE})
+            e95 = None
+        except Usage as e:
+            e95 = str(e)
+        try:
+            settle(layout, lane9, 5, {"A2": VARIABLE_SIDE, "A3": "spec-side"})
+            e95b = None
+        except Usage as e:
+            e95b = str(e)
+        s95 = settle(layout, lane9, 5, {"A2": VARIABLE_SIDE, "A3": FIXTURE_SIDE})
+        check("settle refuses while ANY pending id is unclassed (A3 named, A2 not) and refuses an unknown class; with both classed, variable-side beside contract-side is counted refusal 1 (iii)",
+              o95.get("pending") == ["A2", "A3"] and e95 is not None and "A3" in e95 and "A2=" not in e95 and e95b is not None and "spec-side" in e95b
+              and s95["typed"] == COUNTED_1 and s95["look"] == 2 and not open_pending(P9), (e95, e95b))
+        rd96 = _mk_run(layout, lane9, 6, {"A1": {"pass": True}, "A2": {"pass": False}, "A5": {"pass": True}})
+        record_run(layout, lane9, rd96, run_validity_ids=["A5"])
+        r_s96 = cli("settle", lane9, "6")
+        still_pending = [p["run"] for p in open_pending(P9)]
+        r_s96b = cli("settle", lane9, "6", "--root-cause", "A2=instrument")
+        check("CLI: settle without --root-cause exits 2 with one usage line naming the pending look and the accepted classes, the look still pending; settle --root-cause A2=instrument exits 0 `annulled`",
+              r_s96.returncode == 2 and r_s96.stdout == "" and len(r_s96.stderr.strip().splitlines()) == 1 and "run-6" in r_s96.stderr and all(cls in r_s96.stderr for cls in ROOT_CAUSE_CLASSES)
+              and still_pending == [6] and r_s96b.returncode == 0 and r_s96b.stdout.splitlines()[0] == "annulled" and not open_pending(P9),
+              "rc %d stderr %r / pending %r / rc %d stdout %r" % (r_s96.returncode, r_s96.stderr.strip()[:160], still_pending, r_s96b.returncode, r_s96b.stdout.strip()[:80]))
+        # idempotency: every (spec, run) is charged and typed once (A3 of the ship refute)
+        lane10 = "H-DRAFT-selftest-idempotent"
+        cmd_init(layout, lane10, 1800.0, 0.10)
+        P10 = layout.lineage_paths(lane10)
+        rd101 = _mk_run(layout, lane10, 1, {"A1": "PASS", "A2": "PASS", "A5": "PASS"}, wall_s=10.0)
+        o101 = record_run(layout, lane10, rd101, run_validity_ids=["A5"])
+        try:
+            record_run(layout, lane10, rd101, run_validity_ids=["A5"])
+            dup1 = None
+        except Refuse as e:
+            dup1 = str(e)
+        ref10 = read_jsonl(P10["refusals"])
+        check("record twice appends ONE look: the second record is refused `already-recorded <lane> run-1` before charging -- one stream row, one looks row, one spend row, one refusals.jsonl row with reason already-recorded",
+              o101["look"] == 1 and dup1 is not None and dup1.startswith("already-recorded %s run-1" % lane10) and len(read_jsonl(P10["stream"])) == 1 and len(read_jsonl(P10["looks"])) == 1
+              and len(read_jsonl(P10["spend"])) == 2 and len(ref10) == 1 and ref10[0]["reason"] == "already-recorded" and ref10[0]["run"] == 1 and ref10[0]["found_in"] == "looks.jsonl" and ref10[0]["verb"] == "record", dup1)
+        dups = {}
+        for verb, fn in (("append-look", lambda: append_look(P10, lane10, 1, 0, "v", "x")), ("void", lambda: append_void(P10, lane10, 1, "ambiguous", "i", "x"))):
+            try:
+                fn()
+                dups[verb] = None
+            except Refuse as e:
+                dups[verb] = str(e)
+        append_void(P10, lane10, 2, "ambiguous", "i", "x")
+        for verb, fn in (("void-again", lambda: append_void(P10, lane10, 2, "ambiguous", "i", "x")), ("look-after-void", lambda: append_look(P10, lane10, 2, 0, "v", "x"))):
+            try:
+                fn()
+                dups[verb] = None
+            except Refuse as e:
+                dups[verb] = str(e)
+        check("append-look and void refuse a run already in looks.jsonl (run 1) or voids.jsonl (run 2) as already-recorded; stream and voids unchanged; each refusal wrote its row",
+              all(v is not None and v.startswith("already-recorded") for v in dups.values()) and len(read_jsonl(P10["stream"])) == 1 and len(read_jsonl(P10["voids"])) == 1
+              and len(read_jsonl(P10["refusals"])) == 5 and sorted(r["found_in"] for r in read_jsonl(P10["refusals"])) == ["looks.jsonl"] * 3 + ["voids.jsonl"] * 2, json.dumps(dups))
+        rd103 = _mk_run(layout, lane10, 3, {"A1": "PASS", "A2": "FAIL", "A5": "PASS"})
+        o103 = record_run(layout, lane10, rd103, run_validity_ids=["A5"])
+        try:
+            record_run(layout, lane10, rd103, run_validity_ids=["A5"])
+            dup3 = None
+        except Refuse as e:
+            dup3 = str(e)
+        check("record refuses a run parked pending (pending.jsonl) as already-recorded too: one pending row, no second charge; settle is the only way forward",
+              o103.get("pending") == ["A2"] and dup3 is not None and "pending.jsonl" in dup3 and len(open_pending(P10)) == 1 and len(read_jsonl(P10["spend"])) == 3, dup3)
+        k_a, _ = append_look(P10, lane10, None, 0, "v", "x")
+        k_b, _ = append_look(P10, lane10, None, 0, "v", "x")
+        check("a look with no run number (run None) is unidentified and never guarded: two such looks append two rows", k_a == 2 and k_b == 3 and len(read_jsonl(P10["stream"])) == 3)
+        r_d1 = cli("record", lane10, rd101, "--run-validity", "A5")
+        r_d2 = cli("append-look", lane10, "0", "--run", "1")
+        r_d3 = cli("void", lane10, "--class", "ambiguous", "--run", "2")
+        check("CLI: record / append-look / void on an already-recorded run exit 3 with `refused: already-recorded <lane> run-N`",
+              r_d1.returncode == 3 and r_d1.stdout.startswith("refused: already-recorded %s run-1" % lane10) and r_d2.returncode == 3 and "already-recorded" in r_d2.stdout
+              and r_d3.returncode == 3 and "already-recorded" in r_d3.stdout, "%d %r / %d / %d" % (r_d1.returncode, r_d1.stdout.strip()[:100], r_d2.returncode, r_d3.returncode))
     finally:
         if into is None:
             shutil.rmtree(scratch, ignore_errors=True)

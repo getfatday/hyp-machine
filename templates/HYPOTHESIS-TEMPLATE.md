@@ -68,7 +68,7 @@ Claim type: <!-- REQUIRED — fill exactly one: descriptive (measures what is) |
 
 ## Verdict rule
 <!-- Mechanical: all assertions pass = keep-eligible; any failure = discard or refine. -->
-<!-- e.g. "keep if 4/4 assertions pass in 2 consecutive runs; refine after 1 failed run if the failure is a spec bug; discard after 3 failed runs." -->
+<!-- e.g. "keep when the lineage's pooled stream of counted looks reads evidence-sufficient promote under the frozen policy, every counted look 5/5; a counted look with any failed assertion is a refusal; refine only on a fixture-, manifest- or contract-side root cause shown by a counterfactual regrade; a void re-takes its look; the lineage ends on the stream's terminal or its spend budget, never on a count." -->
 <!-- Rigor-row grammar for this section (report-only rows; kept H-DRAFT-50b0c1da):
      - Discard banks: A<n> ... — name the assertion id(s) whose failure banks the exclusion, and write the
        exclusion sentence itself (Platt: what reading a discard rules out, so nobody retries it blind); a keep

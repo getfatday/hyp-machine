@@ -79,8 +79,10 @@ other assertion is **substantive**.
 (iii) and (iv) partition every run with a failing substantive assertion by the recorded root cause: one
 variable-side entry -> (iii); none -> (iv). A failing assertion the record leaves **unclassed** is never
 typed by guess: `type` reads it `ambiguous`, and `record` parks it as **pending** (`pending.jsonl`; R1
-refuses `look-pending`) until `settle` supplies the root cause -- an unspecified failing assertion
-defaults to `variable-side`, the Verdict rule's default (a variable-side miss is a counted refusal).
+refuses `look-pending`) until `settle` supplies a root-cause class for every pending id
+(`--root-cause A2=<class>`); a `settle` that leaves an id unclassed refuses (exit 2, one line naming the
+pending look and the four classes) and the look stays pending -- the fixture's typing law: an unclassed
+root cause is parked pending, never typed by guess, never defaulted to `variable-side`.
 A run that ended `budget-exceeded` is reported by that word; it is the `ambiguous` void (charged, no
 look, re-taken). Root-cause classes: `variable-side`, `fixture/manifest/contract-side`,
 `harness/run-validity`, `instrument`.
@@ -100,7 +102,7 @@ Rows are canonical JSON (sorted keys, compact separators), one per line, append-
 | `state.jsonl` | the instrument's state lines, one per look up to the terminal (`look`, `llr`, `n_min`, `rule`, `rule_sha`, `state`, `stream`) |
 | `voids.jsonl` | `{"spec", "run", "class", "clause", "run_record", "recorded", "re_take"}` (+ `terminal: budget-exceeded`, + `root_causes`) |
 | `pending.jsonl` | `{"spec", "run", "run_dir", "failing", "settled", "recorded", "run_validity_ids", "how"}`; rewritten with `settled: true` and the typing at settle |
-| `refusals.jsonl` | R1 `{"at", "terminal": "budget-exhausted", "cum_usd", "cum_wall_s", "budget", "launches_so_far"}` |
+| `refusals.jsonl` | R1 `{"at", "terminal": "budget-exhausted", "cum_usd", "cum_wall_s", "budget", "launches_so_far"}`; a duplicate run `{"at", "reason": "already-recorded", "verb", "spec", "run", "found_in"}` |
 | `inherits.json` | R4 pointer on a successor: `{"lineage_root", "via", "frozen_rule_sha256", "recorded", "r4"}` |
 
 The lab lineage's own files under `experiments/runs/H-DRAFT-5810517d-verdict-lineage-stopping/lineage/`
@@ -119,7 +121,7 @@ lineage-stopping.py record <lane> <run-dir> [--run N] [--run-validity ..] [--roo
 lineage-stopping.py charge <lane> --wall-s W --cost-usd C --class CLS [--run N] [--run-record P]
 lineage-stopping.py append-look <lane> <0|1> [--run N] [--clause iii|v] [--run-record P]
 lineage-stopping.py void <lane> --class ambiguous|annulled [--clause i|ii|iv] [--run N]
-lineage-stopping.py settle <lane> <run> [--root-cause A#=<class> ...]
+lineage-stopping.py settle <lane> <run> --root-cause A#=<class> [...]     one class per pending id; an id left unclassed -> exit 2, the look stays pending
 lineage-stopping.py evaluate <lane>
 lineage-stopping.py state <lane>                               -> promote | hold | insufficient | max-looks | spend-exhausted
 lineage-stopping.py walk <launches.jsonl> --model A|B [--ratios r,..] [--budget-caps N] --out <stream.jsonl>
@@ -132,8 +134,13 @@ look or the void or parks the pending root cause, and evaluates. `charge`, `appe
 same steps for a driver that types its runs itself. `state` is the read-back: the instrument's terminal when
 one exists, else `spend-exhausted` when R1 would refuse the next launch, else `insufficient` (with `n`,
 the llr, spend and remaining budget under `--json`). Exit codes: 0 ok; 1 an invariant or `--check`
-violated (named, files left as written -- a failing run is recorded, not repaired); 2 usage or a lineage
-not initialised; 3 refused (R1, a pending look, a terminated lineage, an R0 byte or truncation mismatch).
+violated (named, files left as written -- a failing run is recorded, not repaired); 2 usage, a lineage
+not initialised, or a `settle` that leaves a pending id unclassed; 3 refused (R1, a pending look, a
+terminated lineage, an R0 byte or truncation mismatch, a run already recorded). Every (spec, run) is
+charged and typed once: `record`, `append-look` and `void` refuse a run already in `looks.jsonl` or
+`voids.jsonl` (`record` also one parked in `pending.jsonl`) with exit 3 `already-recorded <lane> run-N`
+and one `refusals.jsonl` row, so a driver retry after a partial failure appends nothing (a look or void
+given no `--run` number is unidentified and not guarded).
 The instruction field carries the hypothesis-loop words (KEEP / DISCARD / closed without a verdict); the
 state lines never do.
 
@@ -149,8 +156,10 @@ state lines never do.
    from the repository root, once, at the root spec. Commit the lineage directory with the registration.
 3. **Every launch.** `may-launch <id>` (exit 0) -> run and grade into `<runs_dir>/<id>/run-N/` ->
    `record <id> <runs_dir>/<id>/run-N --run-validity A5` -> read the instruction. A pending root cause is
-   settled by whoever records it (the cold verifier, usually): `settle <id> N --root-cause A2=<class>`.
-   Declare the lineage files as writes for the lane's containment instrument.
+   settled by whoever records it (the cold verifier, usually): `settle <id> N --root-cause A2=<class>`,
+   one class per failing id (`settle` refuses without one; the look stays pending). `record` is safe to
+   retry: an already-recorded run is refused, never charged or counted twice. Declare the lineage files
+   as writes for the lane's containment instrument.
 4. **Refine.** A successor with a new id runs `init <successor> --inherit <root>` and continues with the
    same verbs; its runs are charged to the root's ledger and its looks pool into the root's stream.
 5. **Close.** `state <id>` reads `promote` (KEEP the current spec), `hold` (DISCARD, exclusion banked),
@@ -213,3 +222,24 @@ the pooled stream it reads and reads its terminal back. The observation rule dec
 stream; the lineage rule decides a whole lineage from its counted looks. Both are frozen at the gate, both
 speak only `evidence-sufficient` / `evidence-insufficient`, and both refuse to run on a missing or tampered
 frozen copy.
+
+## Known limitations (from the refute)
+
+Found by the adversarial review of the port and left as they are in this pass -- none is fixed here:
+
+- **A4** -- `may-launch` and `state` answer from `state.jsonl` and `spend.jsonl` without re-verifying the
+  frozen copy; a tampered `frozen/rule.json` is caught by `evaluate`, `record`, `append-look` and `settle`
+  (exit 3 `frozen-rule-tampered`) and by the instrument itself (exits 12/13), not by those two read verbs.
+- **A5** -- R0's byte check of the lineage's frozen copy against `rules/frozen/lineage-sprt.json` is skipped
+  silently when that reference file is absent from an install; the inner-rule sha check and the
+  truncation derivation still run, so the docs' "byte-identical, refused otherwise" holds only with the
+  reference present.
+- **A6** -- an `init` refused after the freeze (an R0 byte or truncation mismatch) leaves a stray
+  `lineage/frozen/rule.json` behind with no ledgers opened; a later `init` recovers (the freeze
+  overwrites, the header is opened).
+- **A7** -- every refused `may-launch` appends one `refusals.jsonl` row (parity with the lab fixture's
+  `r1_check`); a polling driver accumulates rows.
+- **A9** -- `record <lane> <run-dir>` resolves a relative run directory against the current working
+  directory, not `--root`; drivers should pass absolute run directories.
+- **A11** -- `charge --class` accepts any string; the four classes this script writes (`counted`,
+  `void:ambiguous`, `void:annulled`, `pending-root-cause`) are not enforced on that verb.
