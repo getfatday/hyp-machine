@@ -101,3 +101,12 @@ no process spawn, no network. The lane's fixture audits every `open()` and scans
 observations` inside the knob node. The On-keep row `checkpoint-gate-n-min-derived` is the
 follow-on where a knob node names `rule: fixed-n` with a `frozen/` copy in place of that constant;
 it is a separate amendment, not part of this evaluator.
+
+## Relation to lineages
+
+The same frozen SPRT, read over a whole lineage's pooled counted looks instead of one lane's observation
+stream, is the **lineage stopping rule** (`scripts/lineage-stopping.py`, `rules/lineage-sprt.json`,
+`docs/lineage-stopping.md`): typed voids re-take a look without counting, a spend budget derived from the
+spec's Budget-per-run line is the only non-evidence exit, and no launch count exists. This evaluator is
+unchanged by it; the lineage script writes the stream and reads the terminal back (lab
+H-DRAFT-5810517d-verdict-lineage-stopping, kept 2026-09-11).
