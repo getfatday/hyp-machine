@@ -281,7 +281,20 @@ def cmd_file(args):
     if door.exit_code == 2:
         raise SystemExit("FATAL: decision row refused by the door lint "
                          "(MALFORMED; nothing appended)")
+    # the door evaluator, as `decisions.py add` runs it after the lint
+    # (decision-door-evaluator): RECORD lands the row with its resolution row and
+    # opens nothing; CARD renders as before; MALFORMED-BATCH appends nothing. A
+    # decision kit that predates the evaluator files as before.
+    verdict = D.door_evaluate_row(row, root) if hasattr(D, "door_evaluate_row") else None
+    if verdict is not None:
+        for line in verdict.stdout_lines:
+            print(line)
+        if verdict.exit_code == 2:
+            raise SystemExit("FATAL: decision row refused by the door evaluator "
+                             "(%s; nothing appended)" % verdict.outcome)
     D.append_line(root, row)
+    if verdict is not None and verdict.outcome == "RECORD":
+        D.append_line(root, D.door_record_row(verdict))
     state = load_state(root)
     state[bucket] = {"times_surfaced": 0, "decision_id": rid,
                      "escalated_at": None, "first_seen": first_seen}

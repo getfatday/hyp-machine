@@ -405,7 +405,22 @@ def cmd_ingest(ctx, lane):
                             "(MALFORMED; nothing appended): %s"
                             % "; ".join("%s %s" % m for m in door.malformed))
             return emit(out, 2)
+        # the door evaluator, as `decisions.py add` runs it after the lint
+        # (decision-door-evaluator): RECORD lands the row with its resolution row
+        # (basis two-way-door, a veto window, a one-line undo) and opens nothing;
+        # CARD renders as before; MALFORMED-BATCH (exit 2) appends nothing.
+        verdict = decisions.door_evaluate_row(row, ctx.root)
+        out["door"]["outcome"] = verdict.outcome
+        out["door"]["evaluator_lines"] = list(verdict.stdout_lines)
+        if verdict.exit_code == 2:
+            out["error"] = ("quarantine row refused by the door evaluator "
+                            "(%s; nothing appended): %s"
+                            % (verdict.outcome,
+                               "; ".join("%s %s" % d for d in verdict.defects)))
+            return emit(out, 2)
         decisions.append_line(ctx.root, row)
+        if verdict.outcome == "RECORD":
+            decisions.append_line(ctx.root, decisions.door_record_row(verdict))
         env = dict(os.environ)
         env.update({"GIT_CONFIG_COUNT": "1",
                     "GIT_CONFIG_KEY_0": "commit.gpgsign",
@@ -422,7 +437,9 @@ def cmd_ingest(ctx, lane):
         out["quarantine_row"] = row
         # The add-path surface behavior: recompile DASHBOARD/decisions.html
         # and open-once + notify (once-per-id guard inside proactive-open.sh).
-        decisions.run_proactive(ctx.root)
+        # A RECORD opens nothing: the row is closed, and the opener skips it too.
+        if verdict.outcome != "RECORD":
+            decisions.run_proactive(ctx.root)
     # ---- END K-STRIKES RULE ----
     return emit(out, 0)
 

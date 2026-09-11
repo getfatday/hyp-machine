@@ -69,6 +69,16 @@ decision_door_legacy_max_id, an int; absent: shape + order -- every row before t
 a door object). `check` re-validates only the fields' shape on the other rows. Every writer of a
 kind:"decision" row passes the lint (door_lint_row) and append_line refuses a row without its door stamp.
 
+door evaluator (decision-door-evaluator lane): after the lint, scripts/decision_door_check.py evaluates
+the candidate between validate and append -- W1-W2, H1, T1-T3, STREAK and the routing -- and either RECORDS
+it (door.outcome RECORD: the row lands with one kind:"decision-resolution" row, basis two-way-door, a
+veto window and a one-line undo; no proactive open; the lane proceeds) or lets it render as a CARD carrying
+the findings (door.outcome CARD; proactive-open runs as today). Anything unverifiable, a stall or a crash
+renders (fail-closed). `resolve --deny` on a recorded id is the veto: the deny wins the join and the
+record's undo line runs as an attributed follow-up. `check` reports DOOR-UNAUDITED (exit-neutral) for a
+non-legacy decision row that carries no door outcome (a side-door row). Every writer passes the evaluator
+too (door_evaluate_row after door_lint_row; on RECORD it appends door_record_row and opens nothing).
+
 Stdlib only. Never touches anything outside the ledger append and the write-once
 ruling capture ADDITIONS under the configured raw dir that `shadows` requires
 (create-only, never edit).
@@ -145,6 +155,87 @@ DOOR_SELFTEST_ARGS = ["--undo", "git-revert", "--undo", "ledger-row", "--staged-
                       "--evidence", "none-exists", "--externality", "none", "--recommended", "none",
                       "--default-on-silence", "nothing-changes"]
 _DOOR_LINT = None
+DOOR_RECORD_BASIS = "two-way-door"
+_DOOR_EVAL = None
+
+
+def _door_evaluator():
+    """scripts/decision_door_check.py imported from beside this file (the door evaluator: RECORD or CARD)."""
+    global _DOOR_EVAL
+    if _DOOR_EVAL is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        try:
+            import decision_door_check  # noqa: the door evaluator
+        except ImportError:
+            raise SystemExit("FATAL: scripts/decision_door_check.py (the door evaluator) is not beside decisions.py")
+        _DOOR_EVAL = decision_door_check
+    return _DOOR_EVAL
+
+
+def door_evaluate_row(rec, root, ledger=None, git_timeout=DOOR_GIT_TIMEOUT, inject_fault=False):
+    """The door evaluator over one lint-stamped candidate -- the second gate every writer of a kind:"decision"
+    row passes after door_lint_row: `add`, and the callers that append through append_line (dispatch-gate.py,
+    reflex-surface). Routes RECORD or CARD, fail-closed; no bypass flag exists. On exit_code 0 the row's door
+    object gains outcome, evaluator, head, clauses (hard + corroborated_by on a hard card) and the evaluator's
+    findings after the lint's; on exit_code 2 (MALFORMED | MALFORMED-BATCH) nothing is stamped and the caller
+    appends nothing. -> the evaluator's Result (.outcome, .exit_code, .stdout_lines, .record, .defects). On
+    RECORD the caller appends door_record_row(result) right after the row and opens nothing."""
+    door = _door_evaluator().run(rec, root, ledger or os.path.join(root, ledger_rel_for(root)),
+                                 git_timeout=git_timeout, inject_fault=inject_fault)
+    if door.exit_code == 2:
+        return door
+    obj = door.door_object()
+    if not isinstance(rec.get("door"), dict):
+        rec["door"] = {}
+    merged = list(rec["door"].get("findings", [])) + list(obj.pop("findings", []))
+    rec["door"].update(obj)
+    if merged:
+        rec["door"]["findings"] = merged
+    else:
+        rec["door"].pop("findings", None)
+    return door
+
+
+def door_record_row(door):
+    """The kind:"decision-resolution" row a RECORD lands beside its decision row (disposition accepted,
+    basis two-way-door, the veto window, the one-line undo); `date` is stamped here -- the evaluator reads
+    no clock."""
+    row = dict(door.record)
+    row["date"] = today_str()
+    return row
+
+
+def _door_record_row(chain):
+    """The latest closing resolution when it is an accepted two-way-door record (a veto target), else None."""
+    closing = [r for r in sorted(chain, key=lambda r: r["order"]) if r["disposition"] in ("accepted", "denied")]
+    if closing and closing[-1]["disposition"] == "accepted" and closing[-1]["rec"].get("basis") == DOOR_RECORD_BASIS:
+        return closing[-1]["rec"]
+    return None
+
+
+def _door_execute_undo(root, dec_id, record_row, committing):
+    """The veto's second half: the deny row has won the join; the record's undo line runs as an attributed
+    follow-up (a ledger-row record's undo IS the superseding deny row, so nothing else runs)."""
+    undo = str(record_row.get("undo") or "")
+    if not undo:
+        print("VETO\t%s\tno undo line on the record" % dec_id)
+        return
+    if undo.startswith("python3 scripts/decisions.py resolve"):
+        print("VETO\t%s\tundo is this superseding row (ledger-row); nothing else to execute" % dec_id)
+        return
+    if not committing:
+        print("VETO\t%s\tundo not executed (--no-commit): %s" % (dec_id, undo))
+        return
+    try:
+        proc = subprocess.run(["sh", "-c", undo], cwd=root, capture_output=True, text=True, timeout=120)
+        rc, tail = proc.returncode, (proc.stderr or proc.stdout).strip()[-300:]
+    except (OSError, subprocess.SubprocessError) as exc:
+        rc, tail = -1, str(exc)
+    print("VETO\t%s\tundo executed rc=%s\t%s" % (dec_id, rc, undo))
+    if rc != 0:
+        print("VETO-UNDO-FAILED\t%s\t%s" % (dec_id, tail))
 
 
 def _door_lint():
@@ -763,10 +854,22 @@ def cmd_add(args, root, ledger):
         print(line)
     if result.exit_code == 2:
         return 2
+    # the door evaluator sits between validate and append: RECORD or CARD, fail-closed (no bypass flag exists)
+    door = door_evaluate_row(rec, root, ledger, git_timeout=getattr(args, "door_git_timeout", DOOR_GIT_TIMEOUT),
+                             inject_fault=bool(getattr(args, "door_inject_fault", False)))
+    for line in door.stdout_lines:
+        print(line)
+    if door.exit_code == 2:
+        return 2
+    ledger_rel = os.path.relpath(ledger or os.path.join(root, ledger_rel_for(root)), root)
     append_line(root, rec, ledger)
+    if door.outcome == "RECORD":
+        append_line(root, door_record_row(door), ledger)
+        print("recorded %s: %s (accepted=%s basis=%s) — two JSONL lines appended to %s; no card opens"
+              % (rec["id"], rec["title"], rec.get("recommended"), DOOR_RECORD_BASIS, ledger_rel))
+        return 1 if result.findings else 0
     print("added %s: %s (urgency %s, class %s) — one JSONL line appended to %s"
-          % (rec["id"], rec["title"], rec["urgency"], rec["class"],
-             os.path.relpath(ledger or os.path.join(root, ledger_rel_for(root)), root)))
+          % (rec["id"], rec["title"], rec["urgency"], rec["class"], ledger_rel))
     print("commit it with the asking lane's next attributed commit; the surface opens now")
     if not args.no_open:
         run_proactive(root)
@@ -839,6 +942,10 @@ def cmd_show(args, root, ledger):
               % (rec.get("externality"), rec.get("recommended"), rec.get("default_on_silence"),
                  ", ".join("%s:%s" % (o.get("label", "?"), o.get("undo", "?")) for o in ask.get("options", []))))
         print("  door-evidence: %s | staged: %s" % (rec.get("evidence"), json.dumps(rec.get("staged_artifact"), ensure_ascii=False)))
+        if rec["door"].get("outcome"):
+            print("  door-outcome: %s | evaluator %s | head %s%s"
+                  % (rec["door"]["outcome"], rec["door"].get("evaluator", "?"), rec["door"].get("head", "?"),
+                     (" | hard %s" % rec["door"]["hard"]) if rec["door"].get("hard") else ""))
         for finding in rec["door"].get("findings", []):
             print("  door-finding: %s" % finding)
     for res in sorted(chain, key=lambda r: r["order"]):
@@ -909,7 +1016,8 @@ def cmd_resolve(args, root, ledger):
         return 1
     status, _chain = join_status([dec], [r for r in parsed["resolutions"]
                                          if r["id"] == args.id])[args.id]
-    if status in ("accepted", "denied") and not args.reopen:
+    record_row = _door_record_row(_chain) if args.deny else None   # a veto: --deny on a two-way-door record
+    if status in ("accepted", "denied") and not args.reopen and record_row is None:
         print("RESOLVE-INVALID\t%s is already %s (latest accepted/denied wins; pass "
               "--reopen to append another closing row anyway)" % (args.id, status))
         return 1
@@ -962,6 +1070,8 @@ def cmd_resolve(args, root, ledger):
               % (msg, res_sha or "?"))
     else:
         print("resolution left uncommitted — it renders as staged until its commit")
+    if record_row is not None:
+        _door_execute_undo(root, args.id, record_row, committing)
 
     if disposition in ("accepted", "denied"):
         for shadow in dec["rec"].get("shadows", []):
@@ -1029,8 +1139,14 @@ def cmd_check(args, root, ledger):
         fields = revisit_unarmed_fields(dec["rec"], st, chain)
         if fields:
             unarmed_lines.append("%s\t%s" % (dec["id"], fields))
+    # exit-neutral (decision-door-evaluator): a non-legacy decision row with no door outcome was filed
+    # outside add (or before the evaluator) -- surfaced, never enforced
+    unaudited = [dec["id"] for dec in parsed["decisions"] if dec["id"] not in legacy
+                 and not (isinstance(dec["rec"].get("door"), dict) and dec["rec"]["door"].get("outcome"))]
     for line in findings:
         print("DECISIONS-CHECK\tFAIL\t%s" % line)
+    for did in unaudited:
+        print("DECISIONS-CHECK\tDOOR-UNAUDITED\t%s\tdecision row carries no door outcome (filed outside add, or before the evaluator)" % did)
     for line in due_lines:
         print("DECISIONS-CHECK\t%s\t%s" % (RETEST_DUE_CLASS, line))
     for line in unarmed_lines:
@@ -1345,6 +1461,91 @@ def selftest():
            and r.stdout.count("ADD-TIMEOUT") == 1, r.stdout.strip()[:120])
         r = cli("check")
         ok("door-check-exempts-legacy-ids", r.returncode == 0, r.stdout.strip()[-140:])
+        # ---- door evaluator (decision-door-evaluator): a two-way card is RECORDED and opens nothing; the veto
+        #      executes the record's undo; a side-door row is DOOR-UNAUDITED; the crash seed renders a card ----
+        subprocess.run(["git", "-C", root, "commit", "-qm", "ledger: door cards land", "--", DEFAULT_LEDGER_REL], check=True)
+        env_rec = env2 if os.path.isfile(proactive_src) else env
+        r = subprocess.run([sys.executable, me, "--root", root, "add", "--title", "Door: two-way record", "--question",
+                            "Adopt the default?", "--header", "Record", "--option", "adopt:flip the README line (one commit)",
+                            "--option", "hold:leave it", "--requested-by", "lane SELFTEST", "--urgency", "low", "--class", "plan",
+                            "--why-only-you", "nothing here is only yours",
+                            "--undo", "git-revert", "--undo", "ledger-row", "--staged-artifact", "README.md",
+                            "--evidence", "none-exists", "--externality", "none", "--recommended", "adopt",
+                            "--default-on-silence", "adopt"], capture_output=True, text=True, env=env_rec)
+        first = r.stdout.splitlines()[0] if r.stdout else ""
+        ok("door-evaluator-records-two-way", r.returncode == 0 and first.startswith("DECISION-DOOR\tDEC-007\tRECORD\t")
+           and "recorded DEC-007:" in r.stdout and "added DEC-007" not in r.stdout
+           and "Proceed now. Do not wait on this row, and never gate a driver on it." in r.stdout,
+           (r.stdout + r.stderr).strip()[:220])
+        rows = [json.loads(l) for l in read_ledger(root).splitlines() if l.strip().startswith("{")]
+        dec_row = next((x for x in rows if x.get("kind") == "decision" and x.get("id") == "DEC-007"), {})
+        res_row = next((x for x in rows if x.get("kind") == "decision-resolution" and x.get("id") == "DEC-007"), {})
+        ok("door-record-pair-on-file", (dec_row.get("door") or {}).get("outcome") == "RECORD"
+           and len((dec_row.get("door") or {}).get("evaluator", "")) == 7
+           and res_row.get("disposition") == "accepted" and res_row.get("basis") == DOOR_RECORD_BASIS
+           and res_row.get("chosen_options") == ["adopt"] and res_row.get("veto_open_until") == "2026-09-04"
+           and res_row.get("date") == "2026-08-28"
+           and str(res_row.get("undo", "")).startswith("git revert --no-edit $(git log -1"),
+           json.dumps(res_row, ensure_ascii=False)[:240])
+        state_path = os.path.join(root, ".claude", "decision-surface-state.json")
+        r = subprocess.run([sys.executable, me, "--root", root, "surface"], capture_output=True, text=True, env=env_rec)
+        seen_now = []
+        try:
+            seen_now = json.load(open(state_path, encoding="utf-8")).get("seen_ids", [])
+        except (OSError, ValueError):
+            pass
+        ok("door-record-never-opens", r.returncode == 0 and "DEC-007" not in seen_now
+           and "DECISION-LEDGER\tDEC-007" not in r.stdout and "DECISION-LEDGER\tDEC-004" in r.stdout,
+           "seen=%s" % seen_now)
+        # the veto: the ledger rows land, the effect lands as a self-declaring landing commit, resolve --deny
+        # wins the join and runs the record's undo (the revert of that landing commit)
+        subprocess.run(["git", "-C", root, "commit", "-qm", "ledger: DEC-007 recorded", "--", DEFAULT_LEDGER_REL], check=True)
+        readme = os.path.join(root, "README.md")
+        readme_before = open(readme, encoding="utf-8").read()
+        with open(readme, "a", encoding="utf-8") as fh:
+            fh.write("adopted by DEC-007\n")
+        subprocess.run(["git", "-C", root, "commit", "-qm", "landing: decision-record=DEC-007 adopt the default",
+                        "--", "README.md"], check=True)
+        r = cli("resolve", "DEC-007", "--deny", "--comment", "veto", "--no-recompile")
+        ok("door-veto-executes-undo", r.returncode == 0 and "appended DEC-007 denied" in r.stdout
+           and "VETO\tDEC-007\tundo executed rc=0\tgit revert --no-edit" in r.stdout
+           and open(readme, encoding="utf-8").read() == readme_before, (r.stdout + r.stderr).strip()[-260:])
+        subj = subprocess.run(["git", "-C", root, "log", "-1", "--format=%s"], capture_output=True, text=True).stdout.strip()
+        r = cli("list")
+        ok("door-veto-deny-wins-join", r.returncode == 0 and subj.startswith('Revert "landing: decision-record=DEC-007')
+           and any(l.startswith("DEC-007 ") and " denied " in l for l in r.stdout.splitlines()),
+           subj + " | " + r.stdout.strip()[:120])
+        r = cli("show", "DEC-007")
+        ok("door-show-renders-outcome", r.returncode == 0 and "  door-outcome: RECORD | evaluator " in r.stdout
+           and "  resolution: denied [] " in r.stdout, r.stdout.strip()[-200:])
+        # a side-door row: lint-stamped, appended outside add -> DOOR-UNAUDITED, exit-neutral
+        side = {"kind": "decision", "id": "DEC-008", "date": "2026-08-28", "requested_at": "2026-08-28",
+                "requested_by": "lane SIDE-DOOR", "title": "side-door row (no evaluator)",
+                "ask": {"question": "q?", "header": "Side", "multiSelect": False,
+                        "options": [{"label": "a", "description": "first", "undo": "ledger-row"},
+                                    {"label": "b", "description": "second", "undo": "ledger-row"}]},
+                "context_pointers": [], "blocks": [], "urgency": "low", "class": "plan", "why_only_you": "side door",
+                "staged_artifact": "none", "evidence": "none-exists", "externality": "none", "recommended": "none",
+                "default_on_silence": "nothing-changes", "door": {"fields_sha": "0" * 64}}
+        append_line(root, side)
+        r = cli("check")
+        unaud = [l for l in r.stdout.splitlines() if l.startswith("DECISIONS-CHECK\tDOOR-UNAUDITED\t")]
+        ok("door-check-reports-side-door-row", r.returncode == 0 and len(unaud) == 1
+           and unaud[0].startswith("DECISIONS-CHECK\tDOOR-UNAUDITED\tDEC-008\t") and "0 finding(s)" in r.stdout,
+           " | ".join(unaud)[:200] + " " + r.stdout.strip()[-120:])
+        # the crash seed: an exception inside the evaluator renders a card (fail-closed), never a record
+        r = cli("add", "--title", "Door: crash seed", "--question", "Renders?", "--header", "Crash",
+                "--option", "adopt:flip", "--option", "hold:leave", "--requested-by", "x", "--urgency", "low",
+                "--class", "plan", "--why-only-you", "the crash seed", "--no-open", "--door-inject-fault",
+                "--undo", "git-revert", "--undo", "ledger-row", "--staged-artifact", "README.md", "--evidence", "none-exists",
+                "--externality", "none", "--recommended", "adopt", "--default-on-silence", "adopt")
+        last = json.loads(read_ledger(root).strip().splitlines()[-1])
+        first = r.stdout.splitlines()[0] if r.stdout else ""
+        ok("door-crash-seed-renders-a-card", r.returncode == 0 and first.startswith("DECISION-DOOR\tDEC-009\tCARD\tfail-closed\t")
+           and "added DEC-009:" in r.stdout and last.get("id") == "DEC-009" and last.get("kind") == "decision"
+           and last["door"].get("outcome") == "CARD"
+           and any(f.startswith("EVALUATOR-FAIL-CLOSED") for f in last["door"].get("findings", [])),
+           (r.stdout + r.stderr).strip()[:220])
         # ---- the legacy boundary in both modes, and the writer gate (a second scratch repository) ----
         root2 = tempfile.mkdtemp(prefix="decisions-selftest-legacy-")
         try:
@@ -1469,6 +1670,8 @@ def main(argv=None):
     p.add_argument("--amount-usd", dest="amount_usd", metavar="NUMBER", help="required when --class spend")
     p.add_argument("--door-git-timeout", dest="door_git_timeout", type=int, default=DOOR_GIT_TIMEOUT,
                    help="seconds per git read in the door lint (tests: 0 seeds a stall)")
+    p.add_argument("--door-inject-fault", dest="door_inject_fault", action="store_true",
+                   help="harness fault injection inside the door evaluator (tests: the crash seed must render a card)")
 
     p = sub.add_parser("list", help="all decisions with derived status")
     p.add_argument("--json", action="store_true")

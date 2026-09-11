@@ -166,7 +166,7 @@ decision-card-door-fields). Every other shipped script is byte-identical to its 
   span is not an authority; `D9`: the `blocks` dedup key beside revertible options) surface as
   `# door <rule-id>: ...` commentary and the row counts as filed — exit 1 is ESCALATE, appended;
   only exit 2 files nothing. The selftest's scratch `scripts/` carries `decision_card_lint.py`
-  beside `decisions.py`.
+  and `decision_door_check.py` beside `decisions.py`.
 - `python3 scripts/rule-lint.py --selftest` exits 0: of a date-less evidence-armed row, a
   date-less predicate-less row, a past-date row, and a malformed-predicate row, exactly the
   last three are `RULE-EXPIRED`.
@@ -178,7 +178,24 @@ decision-card-door-fields). Every other shipped script is byte-identical to its 
   lines, `--door-git-timeout 0` yielding one `ADD-TIMEOUT` line and exit 0, `check` exempting
   legacy ids, the legacy boundary in both modes — `.claude/hyp.json` `decision_door_legacy_max_id`
   and, absent the key, shape and order — gating only post-upgrade door-less rows, and `append_line`
-  refusing a decision row that never passed `door_lint_row()`).
+  refusing a decision row that never passed `door_lint_row()`); and its door-evaluator cases pass (a
+  zero-information two-way card RECORDS — one `DECISION-DOOR ... RECORD` line, `recorded <id>:`, the
+  decision row with `door.outcome RECORD` and a `basis: two-way-door` resolution row whose
+  `veto_open_until` is `requested_at` + 7 days — and never enters `.claude/decision-surface-state.json`;
+  `resolve --deny --comment veto` flips it to denied and runs the undo, the revert of the self-declaring
+  `landing: decision-record=<id> ` commit restoring the tree byte for byte; `show` prints `door-outcome:`;
+  a lint-stamped row appended outside `add` is `DOOR-UNAUDITED` at exit 0; `add --door-inject-fault`
+  renders a card carrying `EVALUATOR-FAIL-CLOSED` and no resolution row).
+- `python3 scripts/decision_door_check.py --selftest` exits 0: every clause routes its seeded card the
+  frozen way (the six hard classes card with `hard`, the five two-way shapes record, a declared-but-
+  uncorroborated class records carrying its finding, `undo none` on a tracked path is `UNDO-MISDECLARED`,
+  a revertible undo on a command line fails closed, the amendment guard cards a touched frozen span and
+  records an edit outside it, W2 refuses the third of a batch, the crash, the stall and an unparseable
+  denial row all card, ten records then a card at the eleventh, a veto breaks the streak, two runs are
+  identical, the sha7 stamp rides every row, the CLI contract holds, and the consumer's ledger through
+  `.claude/hyp.json` corroborates a `ledger-row` undo while the lab path does not);
+  `python3 scripts/selftest-decision-door-evaluator.py` runs it and the kit's door-evaluator cases
+  together (`docs/decisions.md`, "Records vs cards").
 - `python3 scripts/decision_card_lint.py --selftest` exits 0 (every rule D0-D9 fires on its seeded
   defect, the clean card passes, a malformed card suppresses the corroboration rules, the seeded
   stall is exit-neutral, two passes are identical); `python3 scripts/selftest-decision-door-fields.py`
@@ -186,9 +203,10 @@ decision-card-door-fields). Every other shipped script is byte-identical to its 
 - `python3 scripts/knob-observe.py --selftest` exits 0 (24 checks): 0 rows filed at n=29, exactly
   1 at n=30 — a row that recommends `apply-plan`, stages the knob node (undo `git-revert`;
   `hold-advisory` undo `ledger-row`), cites `none-exists`, declares `externality` `none` and
-  `default_on_silence` `nothing-changes`, and carries a `door` object with no finding (the
-  mini-lab is a git repository, so D2 corroborates the staged node) — and each of the four seeded
-  violations makes `check` exit 1.
+  `default_on_silence` `nothing-changes`, and carries a `door` object with no lint finding and
+  `door.outcome` `CARD` (the mini-lab is a git repository, so D2 corroborates the staged node; the
+  evaluator renders the card because its evidence is `none-exists` and its default is not its
+  recommendation) — and each of the four seeded violations makes `check` exit 1.
 - `python3 scripts/hyp-evidence-export.py --selftest` and `python3 scripts/evidence-ingest.py
   --selftest` exit 0: every bait row refuses the write; a flipped byte and a replayed pointer
   write nothing.

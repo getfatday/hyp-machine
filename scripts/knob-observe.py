@@ -622,12 +622,14 @@ def packet_args(knob, knob_rel, n, n_min, per_class, signal_rel, signal_sha, dat
 
 
 def file_decision(root, args):
-    """-> (id or None, rc, tail). The id is read from the `added <id>:` line: the door lint's exit 1
-    (ESCALATE) is a filed row carrying door.findings; only exit 2 (MALFORMED) files nothing."""
+    """-> (id or None, rc, tail). The id is read from the `added <id>:` line -- or `recorded <id>:` when the
+    door evaluator recorded the card as a two-way decision (the row landed with its resolution row and no
+    card opened): the door lint's exit 1 (ESCALATE) is a filed row carrying door.findings; only exit 2
+    (MALFORMED) files nothing."""
     script = os.path.join(root, "scripts", "decisions.py")
     cmd = [sys.executable, script, "--root", root, "add"] + args
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=root)
-    m = re.search(r"^added (DEC-\d+):", p.stdout, re.M)
+    m = re.search(r"^(?:added|recorded) (DEC-\d+):", p.stdout, re.M)
     return (m.group(1) if m else None), p.returncode, (p.stdout + p.stderr)[-600:]
 
 
@@ -967,6 +969,7 @@ def build_minilab(root, mode="recommend", license_node=True):
     os.makedirs(os.path.join(root, "scripts"), exist_ok=True)
     shutil.copyfile(os.path.join(HERE, "decisions.py"), os.path.join(root, "scripts", "decisions.py"))
     shutil.copyfile(os.path.join(HERE, "decision_card_lint.py"), os.path.join(root, "scripts", "decision_card_lint.py"))
+    shutil.copyfile(os.path.join(HERE, "decision_door_check.py"), os.path.join(root, "scripts", "decision_door_check.py"))
     # every consumer is a git repository: the door lint corroborates the staged knob node against git ls-files
     for cmd in (["git", "init", "-q", root],
                 ["git", "-C", root, "add", "-A"],
@@ -1020,7 +1023,9 @@ def selftest():
         filed_dec = [json.loads(l) for l in read_text(os.path.join(root, "ledger", "work-ledger.jsonl")).splitlines()
                      if l.strip() and json.loads(l).get("kind") == "decision"]
         ok("clean-30-filed-row-carries-door-fields", len(filed_dec) == 1
-           and len((filed_dec[0].get("door") or {}).get("fields_sha", "")) == 64 and "findings" not in filed_dec[0]["door"]
+           and len((filed_dec[0].get("door") or {}).get("fields_sha", "")) == 64
+           and not any(re.match(r"^D\d+:", f) for f in filed_dec[0]["door"].get("findings", []))  # no lint finding
+           and filed_dec[0]["door"].get("outcome") == "CARD"  # the evaluator renders it: evidence none-exists, default != recommendation
            and filed_dec[0].get("recommended") == "apply-plan" and filed_dec[0].get("staged_artifact") == [res["knob_node"]]
            and [o.get("undo") for o in filed_dec[0]["ask"]["options"]] == ["git-revert", "ledger-row"]
            and filed_dec[0].get("evidence") == "none-exists" and filed_dec[0].get("externality") == "none"
