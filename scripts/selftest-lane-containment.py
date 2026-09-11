@@ -34,11 +34,17 @@ line:
                                     child_env, ingest_transcript, event, close; law `lane-scoped`;
                                     exits 0/10/11/2; the five registered key basenames
 
-Usage: python3 scripts/selftest-lane-containment.py [--into DIR]    exit 0 = PASS, 1 = FAIL
+Usage: python3 scripts/selftest-lane-containment.py [--into DIR]    exit 0 = PASS, 1 = FAIL, 2 = usage
+       DIR must not resolve under /tmp/ (exit 2 with the usage line, nothing written): the instrument
+       rewrites `/tmp/...` to `/private/tmp/...` on event, probe and scratch paths but never on the lane
+       root it is given, so wherever /tmp is a real directory (Linux) a lane under a /tmp-spelled base
+       reads its own writes as out-of-lane. On macOS realpath turns /tmp/DIR into /private/tmp/DIR and
+       the run passes.
 Provenance: cause-n-effect H-DRAFT-c2b572ab-lane-containment-instrument-v2 (kept 2026-09-11, 5/5 in
 two counted runs, the second by a cold executor; fragment 0488). Standard library, Python 3.9;
-writes only under DIR (kept when given) or a temp dir it creates and removes; real paths throughout
-(the instrument maps `/tmp` to `/private/tmp` on event paths, not on the lane root it is given).
+writes only under DIR (kept when given) or a temp dir it creates and removes under the first of
+tempfile.gettempdir() and /var/tmp whose real path lies outside /tmp/ (on Linux with TMPDIR unset
+gettempdir() is /tmp itself); real paths throughout.
 """
 import hashlib
 import io
@@ -60,10 +66,32 @@ LANE = "H-SELFTEST-lane-containment"
 LANE_DIR = "experiments/runs/" + LANE
 RECORD_FILES = ("before.json", "config.json", "events.jsonl")
 KEY_MARKERS = ("holdout-key", "expected-live-echo", "judge-referent", "seed-manifest", "expected-historical")
+TMP_ROOT = "/tmp"
+USAGE = ("usage: selftest-lane-containment.py [--into DIR]\n"
+         "       DIR must not resolve under /tmp/: the instrument rewrites /tmp/ to /private/tmp/ on event paths\n"
+         "       but not on the lane root, so a lane under /tmp reads its own writes as out-of-lane wherever /tmp\n"
+         "       is a real directory (Linux); give a directory outside /tmp, e.g. under /var/tmp\n")
 
 
 def _run(*args):
     return subprocess.run([sys.executable, "-B", INSTRUMENT] + list(args), capture_output=True, text=True)
+
+
+def _under_tmp(real):
+    """True iff `real` (an os.path.realpath result) is /tmp or lies beneath it -- the one spelling the
+    instrument rewrites on event paths but not on the lane root, so a base there fails 4 live checks."""
+    return real == TMP_ROOT or real.startswith(TMP_ROOT + "/")
+
+
+def _default_base():
+    """A fresh directory whose real path lies outside /tmp/: tempfile.gettempdir() first (macOS
+    /var/folders/...; Linux honours TMPDIR), then /var/tmp (Linux with TMPDIR unset resolves the
+    first to /tmp itself). None when no candidate qualifies; nothing is created before the check."""
+    for root in (tempfile.gettempdir(), "/var/tmp"):
+        real = os.path.realpath(root)
+        if not _under_tmp(real) and os.path.isdir(real) and os.access(real, os.W_OK):
+            return os.path.realpath(tempfile.mkdtemp(prefix="lc-selftest-", dir=real))
+    return None
 
 
 def _fresh_lane(base, tag):
@@ -247,9 +275,18 @@ def main(argv=None):
     if argv[:1] == ["--into"] and len(argv) == 2:
         into = argv[1]
     elif argv:
-        sys.stderr.write("usage: selftest-lane-containment.py [--into DIR]\n")
+        sys.stderr.write(USAGE)
         return 2
-    base = os.path.realpath(into) if into else os.path.realpath(tempfile.mkdtemp(prefix="lc-selftest-"))
+    if into is not None:
+        base = os.path.realpath(into)
+        if _under_tmp(base):                 # Linux: /tmp is a real directory and realpath keeps it
+            sys.stderr.write(USAGE)
+            return 2
+    else:
+        base = _default_base()
+        if base is None:
+            sys.stderr.write(USAGE)
+            return 2
     os.makedirs(base, exist_ok=True)
     sys.path.insert(0, HERE)
     import lane_containment as lc  # the adopter's import, from the tree this file lives in

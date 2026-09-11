@@ -57,7 +57,10 @@ names the run-validity type the reading induces:
 
 Sibling paths and denied probes never change any clause or the class; the exit code and the
 `class` field never encode a covariate, so a downstream grader cannot re-create the whole-tree
-defect one layer up. `not_evaluable[]` lists the clauses without evidence.
+defect one layer up. `not_evaluable[]` lists the clauses without evidence. Live mode never types
+`void` at `close()`: `required_missing` is empty once `before.json` and `after.json` exist and
+`events.jsonl` parsed, which holds for every `close()` that ran to completion, so a crash-lost live
+record (no `after.json`) surfaces only through `replay` over the committed record.
 
 ## Declared writes come from the audit, never from a list
 
@@ -66,10 +69,10 @@ source, not typed by a person. A path is declared only by a record the run itsel
 
 - `Session.open_w(path, mode)` -- an audited write, declared by construction (the `write` event is
   appended and fsync'd before the file is opened; parent directories are created);
-- `Session.note_dir(path)` -- declares a directory: every path beneath it is declared. Accepted only
-  for a directory whose creation this session audited through `Session.makedirs`; on the lane
-  root, the scratch root, or an existing directory the session did not create it is a usage error
-  (`SystemExit(2)`);
+- `Session.note_dir(path)` -- declares a directory: every path beneath it is declared. It refuses
+  (`SystemExit(2)`) the lane root, the scratch root and an existing directory this session did not
+  create through `Session.makedirs`; a path that does not yet exist is accepted as given, so create
+  the directory through `makedirs` first and note the path it returns;
 - an ingested transcript (`Session.ingest_transcript`): a child session's `Write`, `Edit`,
   `MultiEdit`, `NotebookEdit` paths become declared writes (`declared_by: transcript`) and its
   `Read`, `Glob`, `Grep`, `LS` paths become read probes, denied when the same tool and path appear
@@ -146,7 +149,9 @@ import os, subprocess, sys
 sys.path.insert(0, os.path.join(os.environ["CLAUDE_PLUGIN_ROOT"], "scripts"))
 import lane_containment as lc
 
+repo_root = os.path.realpath(".")                                   # the driver runs from the repository root
 lane = os.path.realpath("experiments/runs/H-NNN-slug")
+if not os.path.relpath(lane, repo_root).startswith("experiments/runs/"): sys.exit(2)   # Layout: the pin reads no runs_dir
 scratch = os.path.realpath("/private/tmp/<scratch-root>/H-NNN-slug")
 s = lc.Session(lane, scratch, os.path.join(lane, "run-1", "self"),
                forbid_read=("fixture/keys/",),
@@ -179,14 +184,29 @@ appending a `note_dir` event for the record directory through `event()` (that by
 audited-creation rule). Live mode is proven at the first adopter (the keep's On-keep row 3); a
 change to the instrument's bytes ships as its own changeset with new evidence and moves the pin.
 
-**Paths.** Give the instrument real paths (`os.path.realpath`): event paths spelled `/tmp/...` are
-normalised to `/private/tmp/...` on macOS but the lane root is taken as given, so a lane reached
-through the `/tmp` symlink reads its own writes as out-of-lane.
+**Paths.** Give the instrument real paths (`os.path.realpath`) for the lane root, the scratch root
+and the record directory. The instrument rewrites `/tmp/...` to `/private/tmp/...` unconditionally
+and on every platform, but only on the paths it audits -- event, probe and scratch paths
+(`_norm_rel`, `_under`) -- never on the lane root it is given or the repository root it derives
+from it. A lane or repository spelled under `/tmp/` therefore reads every one of its own writes as
+out-of-lane (absolute, the repository root never stripped); a scratch root under `/tmp/` is
+rewritten on both sides of the comparison and is not affected. On macOS realpath repairs the
+spelling (`/tmp` is a symlink to `/private/tmp`); on Linux `/tmp` is a real directory and realpath
+changes nothing, so spell the lane and the scratch roots outside `/tmp` there (the repository's own
+tree, `/var/tmp`). `scripts/selftest-lane-containment.py` refuses a `--into DIR` that resolves
+under `/tmp/` with exit 2 and chooses its default base outside `/tmp/` for the same reason.
 
-**Layout.** The instrument names the lane `experiments/runs/<lane>` in every report, derives the
-repository root as three directories above the lane, and classifies sibling paths by that prefix
--- the plugin's default `runs_dir`. A consumer with another `runs_dir` is outside the kept
-evidence.
+**Layout.** The pinned bytes read no configuration -- not `.claude/hyp.json`, not `runs_dir`. The
+instrument spells the lane `experiments/runs/<lane>` in every report and in every lane-relative
+`forbid_read`, derives the repository root as three directories above the lane, and classifies
+sibling paths by that prefix, while the writes it audits are normalised against the lane's real
+repository-relative path. Under any other `runs_dir` (`labs/runs`, `runs`) the two spellings never
+meet (a denied probe of a forbidden path is even recorded `allowed: true`) and the instrument is
+wrong in both directions: a clean pass reads violation/ambiguous on its own writes; a successful
+read under a lane-relative forbid_read is not detected; do not adopt with a non-default runs_dir
+at this pin. The guard line in the snippet above refuses such a lane before the session begins;
+reading `runs_dir` in the instrument is a byte change and ships as a successor lane with new
+evidence that moves the pin.
 
 **Budget.** Standard library, Python 3.9, one file, zero LLM calls; a live pass costs one hash walk
 of the two roots before and after.
@@ -203,7 +223,10 @@ from a throwaway `experiments/runs/<lane>` tree: the byte pin, the D2 covariate 
 with the record inside the lane, `clean` with it outside, an out-of-lane `open_w` typed
 `ambiguous`, an ingested transcript's successful forbidden read typed `annulled` and its denied
 twin recorded as a probe, `note_dir` refusing the roots, the CLI round trip (exit 0/10/2/2) and the
-frozen interface names. Exit 0 only when every check passes.
+frozen interface names. Exit 0 only when every check passes. `--into DIR` must not resolve under
+`/tmp/` (exit 2 with the usage line, nothing written; see Paths); with no `--into` the wrapper
+builds and removes a base under the first of `tempfile.gettempdir()` and `/var/tmp` whose real
+path lies outside `/tmp/`.
 
 ## Provenance
 
