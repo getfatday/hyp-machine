@@ -176,9 +176,13 @@ a refine, so a successor cannot buy fresh launches by renaming; a spec never car
 decision card asks for one ("I will not sit here and tell you how many tests to run", the 2026-09-10
 ruling). `max_looks` is not a hidden cap: it is Wald's truncation, derived from the four policy numbers,
 reached only by a mechanism in the indifference zone, and read as `evidence-insufficient`, never a
-promote. The preflight-rigor `LINEAGE-CAP` row (a depth-3 `lineage-decision:` predicate) is the count
-request this rule retires; its successor is a maintainer ruling recorded in the source lab, and until then
-the row stays report-only.
+promote. The preflight-rigor `LINEAGE-CAP` row, once a depth-3 `lineage-decision:` count request, now
+reads this rule first: at depth >= 3 it resolves the lineage root (the successor's `inherits.json` chain,
+then the `refined-into:` root, then the spec's own run directory), verifies the frozen copy against the
+policy sha and reports the stream and spend ledger (`lineage-rule:<state> looks= voids= spend=`), reads
+`FAIL lineage-rule:tampered` on a frozen copy that does not hash to the policy, and falls back to the
+`lineage-decision:` path only for lineages with no lineage directory (`docs/preflight-rigor.md`, "Row 8
+under the lineage stopping rule"). The row stays report-only.
 
 ## Evidence (lab H-DRAFT-5810517d-verdict-lineage-stopping, kept 2026-09-11)
 

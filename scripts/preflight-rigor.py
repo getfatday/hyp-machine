@@ -36,7 +36,12 @@ sabotage hook is removed and the repository paths resolve through `.claude/hyp.j
   VOID-CLASS, WHO-CARES, PREMORTEM-PRESENT, BLIND-SEEDS, SUBSTANTIVE-ASSERTIONS
 A slashed row name is ONE row with two legs; the detail names each leg's finding and the row
 FAILs when any leg fails. SKIP owns absence (no trigger, no artifact); one FAIL per defect
-class. Forward-only law (H-132): no row is flipped here; a later flip to ESCALATE is a
+class. Row 8 (LINEAGE-CAP) reads the kept lineage stopping rule FIRST (lab
+H-DRAFT-5810517d-verdict-lineage-stopping, kept 2026-09-11, fragment 0490; docs/lineage-stopping.md
+R0-R4): at depth >= 3 a lineage whose root carries a verified frozen copy is reported from its stream
+and spend ledger (PASS lineage-rule:<state> looks= voids= spend=), a frozen copy that does not hash to
+the policy reads FAIL lineage-rule:tampered, and only a lineage with no lineage directory falls through
+to the legacy `lineage-decision:` path, unchanged. Forward-only law (H-132): no row is flipped here; a later flip to ESCALATE is a
 maintainer decision per row on the recorded fire rate and applies to specs registered after the
 flip commit only. `--census` evaluates the same predicates over every spec for that measurement.
 
@@ -52,6 +57,9 @@ Read surfaces of the rigor rows (root-relative; <id> = `H-NNN` when the spec ste
   artifacts         <runs_dir>/<id>/{VERDICT.json,grade.json,run.json,SHIP.md,REFUTE.md,AMENDMENTS.md,
                     frozen/span.sha,fixture/README.md,stage1/}, the work ledger (kind:decision and
                     kind:decision-resolution rows), <model_dir>/*/actors/*.md, <raw_dir>/<file>.md
+  lineage files     <runs_dir>/<lineage root>/lineage/{frozen/rule.json,state.jsonl,looks.jsonl,voids.jsonl,
+                    spend.jsonl} and a successor's <runs_dir>/<id>/lineage/inherits.json (row 8 under the
+                    lineage stopping rule; the root resolves through the pointer chain, then refined-into)
 Paths come from <repo-root>/.claude/hyp.json when present (hypotheses_dir, runs_dir, raw_dir,
 model_dir, ledger_file) and default to the lab layout (hypotheses, experiments/runs, research/raw,
 operating-model). Decision rows are read from the configured `ledger_file` (plugin default
@@ -362,6 +370,16 @@ HARD_CANDIDATES = ("FROZEN-SPAN-SHA", "LINEAGE-CAP")  # proposed for a later ESC
 
 # Row 8 contract cell "SKIP when: depth < 3" (the contract cell is canon; the v2 key lists depth 0/1 as must-SKIP).
 LINEAGE_UNDER_CAP_STATUS = "SKIP"
+
+# Row 8 under the lineage stopping rule (docs/lineage-stopping.md R0-R4; lab keep H-DRAFT-5810517d-verdict-lineage-stopping,
+# 2026-09-11, fragment 0490): at depth >= 3 the row reads the lineage's stream and spend ledger BEFORE the legacy
+# `lineage-decision:` path -- a lineage under the rule is never asked for a count. A frozen copy
+# <runs_dir>/<root>/lineage/frozen/rule.json is under the rule only when its `rule_text` bytes hash to the policy sha
+# (sha256 of rules/lineage-sprt.json) and its `sha256` field agrees; anything else at that path reads FAIL lineage-rule:tampered.
+LINEAGE_POLICY_SHA256 = "8052bda9c051a90c762d3af9b84317941a5a5e9d44db5db90122a61a13aeeae1"
+LINEAGE_R1_TOL = 1e-9          # R1: cum + one per-run cap > budget + tol on either component refuses the next launch
+LINEAGE_INHERIT_HOPS = 16      # R4 pointer-chain bound (lineage-stopping.py resolve_lineage)
+LINEAGE_TRUNCATION_DEFAULT = 13
 
 NULL_CLASSES = ("refuted-claim", "threshold-miss", "instrument", "ambiguous", "annulled")
 VOID_CLASSES = ("ambiguous", "annulled")
@@ -901,6 +919,140 @@ def row_refute_review(ctx):
     return "PASS", trig + " REFUTE.md:blocking-findings=0 refuter-distinct"
 
 
+def _read_jsonl(path):
+    """Dict rows of a JSONL file (blank and unparseable lines skipped); [] when absent."""
+    out = []
+    for line in (read_text(path) or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict):
+            out.append(r)
+    return out
+
+
+def _num(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _int_or_none(x):
+    if isinstance(x, bool) or not isinstance(x, (int, float)) or float(x) != int(x):
+        return None
+    return int(x)
+
+
+def _fmt(x, places):
+    """Canonical decimal for the detail line: trailing zeros dropped, at least one decimal digit kept (0.0, 1.3, 5753.6)."""
+    s = ("%." + str(places) + "f") % x
+    s = s.rstrip("0").rstrip(".")
+    return s if "." in s else s + ".0"
+
+
+def _stem_id(stem):
+    """The run-directory id of a spec stem (spec_id's rule applied to a stem)."""
+    m = re.match(r"^(H-[0-9]+)", stem)
+    return m.group(1) if m else stem
+
+
+def _lineage_dir(root, lane):
+    return os.path.join(root.rundir(lane), "lineage")
+
+
+def _follow_inherits(root, lane):
+    """R4: follow <runs_dir>/<lane>/lineage/inherits.json `lineage_root` pointers -> (root lane, hops). A missing,
+    unreadable, cyclic or over-long pointer ends the walk at the last lane reached (report-only: nothing raises)."""
+    hops = [lane]
+    cur = lane
+    while True:
+        inh = read_json(os.path.join(_lineage_dir(root, cur), "inherits.json"))
+        nxt = inh.get("lineage_root") if isinstance(inh, dict) else None
+        if (not isinstance(nxt, str) or not nxt or "/" in nxt or os.sep in nxt or nxt in (".", "..")
+                or nxt in hops or len(hops) > LINEAGE_INHERIT_HOPS):
+            return cur, hops
+        hops.append(nxt)
+        cur = nxt
+
+
+def _lineage_under_rule(root, sid, rootstem):
+    """(lane, lineage dir) of the lineage a depth>=3 spec is under, or (None, None). Resolution order: the successor's
+    own inherits.json chain (R4 -- the pointer names the root), then the refined-into root's run directory, then the
+    spec's own; the first that carries frozen/rule.json wins."""
+    lane, hops = _follow_inherits(root, sid)
+    cands = ([lane] if len(hops) > 1 else []) + [_stem_id(rootstem), sid]
+    seen = set()
+    for lane in cands:
+        if lane in seen:
+            continue
+        seen.add(lane)
+        d = _lineage_dir(root, lane)
+        if os.path.isfile(os.path.join(d, "frozen", "rule.json")):
+            return lane, d
+    return None, None
+
+
+def _frozen_rule_ok(path):
+    """(verified, parsed rule): the frozen copy's `rule_text` bytes hash to the policy sha AND its `sha256` field agrees."""
+    doc = read_json(path)
+    if not isinstance(doc, dict) or not isinstance(doc.get("rule_text"), str):
+        return False, None
+    if (hashlib.sha256(doc["rule_text"].encode("utf-8")).hexdigest() != LINEAGE_POLICY_SHA256
+            or doc.get("sha256") != LINEAGE_POLICY_SHA256):
+        return False, None
+    try:
+        rule = json.loads(doc["rule_text"])
+    except ValueError:
+        rule = None
+    return True, (rule if isinstance(rule, dict) else None)
+
+
+def _r1_permits(header, cum_usd, cum_wall):
+    """lineage-stopping.py r1_predicate: the next launch is permitted while cum + one per-run cap stays within BOTH budget
+    components; a header without budget/per_run_cap never refuses."""
+    b, cap = header.get("budget"), header.get("per_run_cap")
+    if not isinstance(b, dict) or not isinstance(cap, dict):
+        return True
+    return not (cum_usd + _num(cap.get("usd")) > _num(b.get("usd")) + LINEAGE_R1_TOL
+                or cum_wall + _num(cap.get("wall_s")) > _num(b.get("wall_s")) + LINEAGE_R1_TOL)
+
+
+def _lineage_rule_state(ldir, rule):
+    """(state token, looks, voids, cum_usd, cum_wall_s) of a lineage whose frozen copy verified. The token follows
+    lineage-stopping.py `state`: the instrument's terminal from the last state.jsonl line (promote | hold | max-looks),
+    else spend-exhausted when R1 would refuse the next launch, else no-looks-yet | insufficient n=<looks>/<truncation>."""
+    looks = _read_jsonl(os.path.join(ldir, "looks.jsonl"))
+    voids = _read_jsonl(os.path.join(ldir, "voids.jsonl"))
+    spend = _read_jsonl(os.path.join(ldir, "spend.jsonl"))
+    header = spend[0] if spend and spend[0].get("header") is True else {}
+    charges = spend[1:] if header else spend
+    cum_usd = sum(_num(r.get("cost_usd")) for r in charges)
+    cum_wall = sum(_num(r.get("wall_s")) for r in charges)
+    states = _read_jsonl(os.path.join(ldir, "state.jsonl"))
+    last = str(states[-1].get("state", "")) if states else ""
+    if last == "evidence-sufficient promote":
+        tok = "promote"
+    elif last == "evidence-sufficient hold":
+        tok = "hold"
+    elif last.startswith("evidence-insufficient max-looks"):
+        tok = "max-looks"
+    elif header and not _r1_permits(header, cum_usd, cum_wall):
+        tok = "spend-exhausted"
+    elif not looks:
+        tok = "no-looks-yet"
+    else:
+        n_max = _int_or_none(header.get("truncation_length"))
+        if n_max is None and isinstance(rule, dict):
+            n_max = _int_or_none(rule.get("max_looks"))
+        tok = "insufficient n=%d/%d" % (len(looks), n_max if n_max is not None else LINEAGE_TRUNCATION_DEFAULT)
+    return tok, len(looks), len(voids), cum_usd, cum_wall
+
+
 def row_lineage_cap(ctx):
     t, root = ctx["text"], ctx["root"]
     stem = ctx["stem"]
@@ -909,9 +1061,21 @@ def row_lineage_cap(ctx):
     cur = frozen_span_sha(t) or ""
     rsha = shas.get(rootstem) or ""
     ctx["meta"]["lineage_depth"] = depth
+    ctx["meta"]["lineage_rule"] = None
     base = "depth=%d root=%s root-span-sha=%s current-span-sha=%s" % (depth, rootstem, rsha[:12], cur[:12])
     if depth < 3:
         return LINEAGE_UNDER_CAP_STATUS, base + " cap-not-reached"
+    # the lineage stopping rule first (R0-R4): a lineage under the rule is read from its stream and spend ledger and is
+    # never asked for a count; only a lineage with no lineage directory falls through to the legacy decision path
+    _, ldir = _lineage_under_rule(root, ctx["id"], rootstem)
+    if ldir:
+        ok, rule = _frozen_rule_ok(os.path.join(ldir, "frozen", "rule.json"))
+        if not ok:
+            ctx["meta"]["lineage_rule"] = "tampered"
+            return "FAIL", base + " lineage-rule:tampered"
+        tok, looks, voids, usd, wall = _lineage_rule_state(ldir, rule)
+        ctx["meta"]["lineage_rule"] = tok
+        return "PASS", base + " lineage-rule:%s looks=%d voids=%d spend=%s/%s" % (tok, looks, voids, _fmt(usd, 6), _fmt(wall, 1))
     sp = ctx["spans"]["status"]
     block = rr_strip_comments(slice_(t, sp)) if sp else ""
     m = LINEAGE_DECISION_RE.search(block)
@@ -1614,6 +1778,109 @@ _NEGATIVES = [
                           "5. Determinism: every pass's second execution is byte-identical to its first; both runs.\n", "")]})]),
 ]
 
+# Row 8 under the lineage stopping rule: the seed lineage's root (H-SEED-101-lineage-a) carrying the lineage files in
+# lineage-stopping.py's layout. The frozen copy is byte-identical to the plugin's rules/frozen/lineage-sprt.json
+# (sha256 ce73163a...; inner rule_text 8052bda9...); the llr trajectories are the policy's increments (docs/lineage-stopping.md).
+_LINEAGE_POLICY_TEXT = '{"kind": "sprt", "alpha": 0.05, "beta": 0.1, "p0": 0.5, "p1": 0.1, "max_looks": 13}\n'
+_LINEAGE_FROZEN = json.dumps({"frozen": "stopping-rule", "rule_text": _LINEAGE_POLICY_TEXT, "sha256": LINEAGE_POLICY_SHA256,
+                              "source": "rules/lineage-sprt.json"}, indent=1, sort_keys=True) + "\n"
+_LINEAGE_FROZEN_TAMPERED_RULE = _LINEAGE_FROZEN.replace('\\"p1\\": 0.1', '\\"p1\\": 0.2')      # rule_text no longer hashes to the policy
+_LINEAGE_FROZEN_TAMPERED_SHA = _LINEAGE_FROZEN.replace('"sha256": "8052bda9', '"sha256": "0052bda9')  # the field disagrees
+_LAB_LLR = [0.5877866649021191, 1.1755733298042381, 1.7633599947063572, 2.3511466596084762, 2.9389333245105953]  # five refusal-0 looks
+_HOLD_LLR = [-1.6094379124341003, -3.2188758248682006]  # two refusal-1 looks
+_ROOT_LANE = "H-SEED-101-lineage-a"
+_BASE_S1 = "depth=3 root=H-SEED-101-lineage-a root-span-sha=937859d8566d current-span-sha=cb72d8f7b627"
+_INSUFF_3 = _BASE_S1 + " lineage-rule:insufficient n=3/13 looks=3 voids=0 spend=0.0/300.0"
+
+
+def _canon_row(obj):
+    return json.dumps(obj, sort_keys=True, separators=(",", ":")) + "\n"
+
+
+def _lineage_ops(lane, looks=3, terminal=None, voids=0, frozen=None, budget_wall=23400.0, cap_wall=1800.0, wall_s=100.0):
+    """Ops creating <runs_dir>/<lane>/lineage/: the frozen copy, spend.jsonl (header + one row per launch), stream/looks/
+    state.jsonl for `looks` counted looks (refusal 0; refusal 1 when terminal == 'hold'), voids.jsonl for `voids` ambiguous
+    voids (charged half a run, no look). terminal in {None, 'promote', 'hold'} names the last state line."""
+    rd = "experiments/runs/%s/lineage/" % lane
+    header = {"budget": {"usd": 1.3, "wall_s": budget_wall}, "derivation": "R0: the spec's Budget-per-run caps x the frozen rule's truncation length (seed fixture)",
+              "frozen_copy": "lineage/frozen/rule.json", "frozen_rule_sha256": LINEAGE_POLICY_SHA256, "header": True, "lineage": lane,
+              "opened": "2026-09-02T00:00:00Z", "per_run_cap": {"usd": 0.1, "wall_s": cap_wall}, "truncation_length": 13}
+    spend, stream, lk, st, vd = [header], [], [], [], []
+    cum, run = 0.0, 0
+    for _ in range(voids):
+        run += 1
+        cum += wall_s / 2
+        spend.append({"charged": "2026-09-02T00:00:00Z", "class": "void:ambiguous", "cost_usd": 0.0, "cum_usd": 0.0, "cum_wall_s": cum,
+                      "run": run, "run_record": "run-%d/RUN-RECORD.json" % run, "spec": lane, "wall_s": wall_s / 2})
+        vd.append({"class": "ambiguous", "clause": "i", "re_take": "the next launch re-takes this look while the budget allows (R2)",
+                   "recorded": "2026-09-02T00:00:00Z", "run": run, "run_record": "run-%d/RUN-RECORD.json" % run, "spec": lane})
+    refusal = 1 if terminal == "hold" else 0
+    llrs = _HOLD_LLR if terminal == "hold" else _LAB_LLR
+    for k in range(1, looks + 1):
+        run += 1
+        cum += wall_s
+        spend.append({"charged": "2026-09-02T00:00:00Z", "class": "counted", "cost_usd": 0.0, "cum_usd": 0.0, "cum_wall_s": cum,
+                      "run": run, "run_record": "run-%d/RUN-RECORD.json" % run, "spec": lane, "wall_s": wall_s})
+        stream.append({"class": "lineage", "look": k, "refusal": refusal})
+        lk.append({"appended": "2026-09-02T00:00:00Z", "clause": "iii" if refusal else "v", "look": k, "refusal": refusal, "run": run,
+                   "run_record": "run-%d/RUN-RECORD.json" % run, "spec": lane})
+        state = ("evidence-sufficient %s" % terminal) if (k == looks and terminal) else "evidence-insufficient n=%d/13" % k
+        st.append({"llr": llrs[k - 1], "look": k, "n_min": 13, "rule": "sprt", "rule_sha": LINEAGE_POLICY_SHA256, "state": state, "stream": "stream"})
+    return [(rd + "frozen/rule.json", {"create": _LINEAGE_FROZEN if frozen is None else frozen}),
+            (rd + "spend.jsonl", {"create": "".join(_canon_row(r) for r in spend)}),
+            (rd + "stream.jsonl", {"create": "".join(_canon_row(r) for r in stream)}),
+            (rd + "looks.jsonl", {"create": "".join(_canon_row(r) for r in lk)}),
+            (rd + "state.jsonl", {"create": "".join(_canon_row(r) for r in st)}),
+            (rd + "voids.jsonl", {"create": "".join(_canon_row(r) for r in vd)})]
+
+
+def _inherits_op(lane, root_lane):
+    """R4 pointer on a successor: <runs_dir>/<lane>/lineage/inherits.json -> root_lane."""
+    return ("experiments/runs/%s/lineage/inherits.json" % lane,
+            {"create": json.dumps({"frozen_rule_sha256": LINEAGE_POLICY_SHA256, "lineage_root": root_lane,
+                                   "r4": "a refine successor inherits R0's artifacts unchanged -- the frozen copy, the stream, the looks, the ledger, the spend budget; nothing resets, no count exists to reset",
+                                   "recorded": "2026-09-02T00:00:00Z", "via": "init --inherit"}, indent=1, sort_keys=True) + "\n"})
+
+
+_S1_SUCCESSOR = "H-SEED-001-normative-complete"
+_NO_DECISION_LINE = (_S1, {"edits": [("lineage-decision: DEC-901\n", "")]})
+# (name, spec rel, expected status, expected detail, expected META lineage_rule, ops)
+_LINEAGE_RULE_CASES = [
+    ("root lineage dir: clean frozen copy + a 3-look stream", _S1, "PASS", _INSUFF_3, "insufficient n=3/13", _lineage_ops(_ROOT_LANE, looks=3)),
+    ("root lineage dir: the lineage-decision line removed -- the rule is read, no count is requested", _S1, "PASS", _INSUFF_3, "insufficient n=3/13",
+     [_NO_DECISION_LINE] + _lineage_ops(_ROOT_LANE, looks=3)),
+    ("root lineage dir: 3 looks + 1 ambiguous void (charged, no look)", _S1, "PASS",
+     _BASE_S1 + " lineage-rule:insufficient n=3/13 looks=3 voids=1 spend=0.0/350.0", "insufficient n=3/13", _lineage_ops(_ROOT_LANE, looks=3, voids=1)),
+    ("root lineage dir: promote terminal at look 5", _S1, "PASS", _BASE_S1 + " lineage-rule:promote looks=5 voids=0 spend=0.0/500.0", "promote",
+     _lineage_ops(_ROOT_LANE, looks=5, terminal="promote")),
+    ("root lineage dir: hold terminal at look 2", _S1, "PASS", _BASE_S1 + " lineage-rule:hold looks=2 voids=0 spend=0.0/200.0", "hold",
+     _lineage_ops(_ROOT_LANE, looks=2, terminal="hold")),
+    ("root lineage dir: spend exhausted (3 x 100 s charged against a 300 s budget with a 100 s cap; R1 refuses the 4th)", _S1, "PASS",
+     _BASE_S1 + " lineage-rule:spend-exhausted looks=3 voids=0 spend=0.0/300.0", "spend-exhausted", _lineage_ops(_ROOT_LANE, looks=3, budget_wall=300.0, cap_wall=100.0)),
+    ("root lineage dir: frozen copy, nothing launched", _S1, "PASS", _BASE_S1 + " lineage-rule:no-looks-yet looks=0 voids=0 spend=0.0/0.0", "no-looks-yet",
+     _lineage_ops(_ROOT_LANE, looks=0)),
+    ("root lineage dir: tampered rule_text (p1 0.1 -> 0.2; sha256 field unchanged)", _S1, "FAIL", _BASE_S1 + " lineage-rule:tampered", "tampered",
+     _lineage_ops(_ROOT_LANE, looks=3, frozen=_LINEAGE_FROZEN_TAMPERED_RULE)),
+    ("root lineage dir: sha256 field disagrees (rule_text intact)", _S1, "FAIL", _BASE_S1 + " lineage-rule:tampered", "tampered",
+     _lineage_ops(_ROOT_LANE, looks=3, frozen=_LINEAGE_FROZEN_TAMPERED_SHA)),
+    ("root lineage dir: frozen copy unparseable", _S1, "FAIL", _BASE_S1 + " lineage-rule:tampered", "tampered",
+     _lineage_ops(_ROOT_LANE, looks=3, frozen="{not json\n")),
+    ("successor inherits.json -> the root (files at the root)", _S1, "PASS", _INSUFF_3, "insufficient n=3/13",
+     [_inherits_op(_S1_SUCCESSOR, _ROOT_LANE)] + _lineage_ops(_ROOT_LANE, looks=3)),
+    ("successor inherits.json -> a lane the refined-into walk would not pick (files there only)", _S1, "PASS", _INSUFF_3, "insufficient n=3/13",
+     [_inherits_op(_S1_SUCCESSOR, "H-SEED-102-lineage-b")] + _lineage_ops("H-SEED-102-lineage-b", looks=3)),
+    ("successor inherits.json chain of two hops (001 -> 103 -> 102; files at 102)", _S1, "PASS", _INSUFF_3, "insufficient n=3/13",
+     [_inherits_op(_S1_SUCCESSOR, "H-SEED-103-lineage-c"), _inherits_op("H-SEED-103-lineage-c", "H-SEED-102-lineage-b")] + _lineage_ops("H-SEED-102-lineage-b", looks=3)),
+    ("the spec's own lineage dir (registered under the rule at depth 3, no pointer)", _S1, "PASS", _INSUFF_3, "insufficient n=3/13",
+     _lineage_ops(_S1_SUCCESSOR, looks=3)),
+    ("depth 0 with a lineage dir stays SKIP cap-not-reached (unchanged)", _S2, "SKIP",
+     "depth=0 root=H-SEED-002-lint-lane root-span-sha=7d5634e0895c current-span-sha=7d5634e0895c cap-not-reached", None, _lineage_ops("H-SEED-002-lint-lane", looks=3)),
+    ("legacy: no lineage dir + lineage-decision line resolving to DEC-901 (unchanged)", _S1, "PASS", _BASE_S1 + " lineage-decision:DEC-901", None, []),
+    ("legacy: no lineage dir + no line (unchanged)", _S1, "FAIL", _BASE_S1 + " lineage-decision:absent", None, [_NO_DECISION_LINE]),
+    ("legacy: no lineage dir + an id with no ledger row (unchanged)", _S1, "FAIL", _BASE_S1 + " lineage-decision:unresolved", None,
+     [(_S1, {"edits": [("lineage-decision: DEC-901", "lineage-decision: DEC-777")]})]),
+]
+
 # The lane's sentinel: one spec on which every rigor row must FAIL (the manipulation check of the counted fixture).
 _SENTINEL_SPEC = """# H-SENTINEL-001-fires-everything: sentinel
 
@@ -1768,6 +2035,32 @@ def selftest(out):
             st, dt = _rigor_map(Root(nroot), spec_rel)[row]
             check("clean negative %s -> %s" % (name, expected), st == expected, "got %s %s" % (st, dt))
 
+        # --- row 8 under the lineage stopping rule (lab keep H-DRAFT-5810517d, fragment 0490): the rule is read before the
+        #     legacy decision path; a tampered frozen copy FAILs; legacy lineages and depth < 3 read exactly as before
+        check("the seed lineage's frozen copy hashes to the plugin's frozen reference (ce73163a...) and its rule_text to the policy (8052bda9...)",
+              hashlib.sha256(_LINEAGE_FROZEN.encode("utf-8")).hexdigest() == "ce73163aeda7147edfc0d6fab1fbca9e5dac6ad4bb37ff9ca1c86cf64f85b027"
+              and hashlib.sha256(_LINEAGE_POLICY_TEXT.encode("utf-8")).hexdigest() == LINEAGE_POLICY_SHA256)
+        plugin_frozen = read_text(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rules", "frozen", "lineage-sprt.json"))
+        check("the plugin's rules/frozen/lineage-sprt.json is present and byte-identical to the seed lineage's frozen copy", plugin_frozen == _LINEAGE_FROZEN)
+        check("the two tampered frozen copies each differ from the clean copy in exactly the intended bytes",
+              _LINEAGE_FROZEN_TAMPERED_RULE != _LINEAGE_FROZEN and _LINEAGE_FROZEN_TAMPERED_SHA != _LINEAGE_FROZEN
+              and _LINEAGE_FROZEN_TAMPERED_RULE.count('0.2') == 1 and _LINEAGE_FROZEN_TAMPERED_SHA.count('0052bda9') == 1)
+        for name, spec_rel, est, edt, emeta, ops in _LINEAGE_RULE_CASES:
+            lroot = os.path.join(base, "l")
+            if os.path.isdir(lroot):
+                shutil.rmtree(lroot)
+            shutil.copytree(seed, lroot)
+            for path_rel, op in ops:
+                _apply(lroot, path_rel, op)
+            rows, meta = evaluate_rigor(Root(lroot), os.path.join(lroot, *spec_rel.split("/")))
+            got = {rw: (st, dt) for rw, st, dt in rows}
+            st, dt = got["LINEAGE-CAP"]
+            check("lineage rule: %s -> %s %s" % (name, est, edt.split("current-span-sha=", 1)[-1].split(" ", 1)[-1]),
+                  (st, dt) == (est, edt), "got %s %s" % (st, dt))
+            check("lineage rule: %s -> META lineage_rule=%r" % (name, emeta), meta.get("lineage_rule") == emeta, meta.get("lineage_rule"))
+            check("lineage rule: %s -> the other twelve rows are byte-identical to the seed" % name,
+                  {rw: v for rw, v in got.items() if rw != "LINEAGE-CAP"} == {rw: v for rw, v in seed_rows[spec_rel].items() if rw != "LINEAGE-CAP"})
+
         # --- the sentinel fires every row; the exit code never moves; the grammar holds; two passes are byte-identical
         sroot = os.path.join(base, "sentinel")
         sentinel = _sentinel_root(sroot)
@@ -1796,6 +2089,8 @@ def selftest(out):
             mj = {}
         check("META carries the ethics keys and a rigor block with fails/skips/id",
               {"signals", "section_present", "subjects", "route", "rigor"} <= set(mj) and {"fails", "skips", "id"} <= set(mj.get("rigor", {})))
+        check("META rigor block carries lineage_rule (null on the seed's legacy lineage)",
+              "lineage_rule" in mj.get("rigor", {}) and mj["rigor"]["lineage_rule"] is None and mj["rigor"].get("lineage_depth") == 3)
         c1 = subprocess.run([sys.executable, me, "--census", seed], capture_output=True, text=True, env=env)
         c2 = subprocess.run([sys.executable, me, "--census", seed], capture_output=True, text=True, env=env)
         check("--census exits 0", c1.returncode == 0 and c2.returncode == 0, (c1.returncode, c2.returncode))
