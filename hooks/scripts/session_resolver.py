@@ -329,30 +329,60 @@ def _decision_age_days(rec):
         return 0
 
 
+def _decisions_today():
+    pin = os.environ.get('DECISIONS_TODAY')
+    if pin:
+        return pin[:10]
+    return datetime.date.today().isoformat()
+
+
 def surface_decisions(decisions, resolutions):
     """v5: print the open-decision surface (docs/decisions.md section 6). One
     DECISION-LEDGER line per open decision (urgency then oldest ask then id), then the
     DECISIONS-OPEN count + oldest-age summary. Prints NOTHING when no decision rows
-    exist (v4 byte-identical regression lock for decision-free ledgers)."""
+    exist (v4 byte-identical regression lock for decision-free ledgers).
+    Door evaluator: after the open cards, one DECISION-RECORD line per two-way decision
+    the door recorded (basis two-way-door, not vetoed) --
+        DECISION-RECORD\t<id>\tveto-until <date> (open|closed)\t<title>\tundo=<line>
+    then ONE summary line DECISION-RECORDS-OPEN\t<open windows>\toldest <id> <age>d."""
     if not decisions:
         return
-    closed = set()
+    closed, records, vetoed = set(), {}, set()
     for rec in resolutions:
-        if rec.get('disposition') in ('accepted', 'denied'):
+        disp = rec.get('disposition')
+        if disp in ('accepted', 'denied'):
             closed.add(rec.get('id'))
+        if disp == 'accepted' and rec.get('basis') == 'two-way-door':
+            records[rec.get('id')] = rec
+        if disp == 'denied':
+            vetoed.add(rec.get('id'))
     open_rows = [rec for rid, rec in decisions.items() if rid not in closed]
-    if not open_rows:
+    if open_rows:
+        open_rows.sort(key=lambda r: (DECISION_URGENCY_ORDER.get(r.get('urgency'), 1),
+                                      -_decision_age_days(r), str(r.get('id'))))
+        for rec in open_rows:
+            blocks = rec.get('blocks') or []
+            print('DECISION-LEDGER\t{}\t{}\t{}\t{}'.format(
+                rec.get('id'), rec.get('urgency', 'normal'), rec.get('title', ''),
+                ', '.join(str(b) for b in blocks) if blocks else '-'))
+        oldest = max(open_rows, key=_decision_age_days)
+        print('DECISIONS-OPEN\t{}\toldest {} {}d'.format(
+            len(open_rows), oldest.get('id'), _decision_age_days(oldest)))
+    live = [(rid, res) for rid, res in records.items() if rid in decisions and rid not in vetoed]
+    if not live:
         return
-    open_rows.sort(key=lambda r: (DECISION_URGENCY_ORDER.get(r.get('urgency'), 1),
-                                  -_decision_age_days(r), str(r.get('id'))))
-    for rec in open_rows:
-        blocks = rec.get('blocks') or []
-        print('DECISION-LEDGER\t{}\t{}\t{}\t{}'.format(
-            rec.get('id'), rec.get('urgency', 'normal'), rec.get('title', ''),
-            ', '.join(str(b) for b in blocks) if blocks else '-'))
-    oldest = max(open_rows, key=_decision_age_days)
-    print('DECISIONS-OPEN\t{}\toldest {} {}d'.format(
-        len(open_rows), oldest.get('id'), _decision_age_days(oldest)))
+    today = _decisions_today()
+    live.sort(key=lambda t: (str(t[1].get('veto_open_until') or ''), str(t[0])))
+    n_open = 0
+    for rid, res in live:
+        until = str(res.get('veto_open_until') or '?')
+        window = 'open' if until >= today else 'closed'
+        n_open += 1 if window == 'open' else 0
+        print('DECISION-RECORD\t{}\tveto-until {} ({})\t{}\tundo={}'.format(
+            rid, until, window, decisions[rid].get('title', ''), res.get('undo', '?')))
+    oldest_id = max(live, key=lambda t: _decision_age_days(decisions[t[0]]))[0]
+    print('DECISION-RECORDS-OPEN\t{}\toldest {} {}d'.format(
+        n_open, oldest_id, _decision_age_days(decisions[oldest_id])))
 
 
 def run(ledger_path, hyp_dir, om_dir, repo_root):

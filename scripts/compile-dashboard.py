@@ -281,6 +281,8 @@ def join_decisions(decisions, resolutions):
             "staged": r.get("staged", True),
             "decided_by": r.get("decided_by"), "decided_at": r.get("decided_at"),
             "resolution_commit": r.get("resolution_commit"),
+            "basis": r["rec"].get("basis"), "undo": r["rec"].get("undo"),
+            "veto_open_until": r["rec"].get("veto_open_until"),
         } for r in chain]
         logical.append(rec)
     return logical
@@ -458,7 +460,76 @@ def render_decision_section(stamp, head_short, ledger_rel, ledger_missing,
     return lines
 
 
-def render_decisions_html(template, stamp, head_short, ledger_rel, open_cards):
+def door_records(decisions_logical):
+    """-> (records, vetoed, cards_with_findings): the two-way decisions the door recorded (latest closing resolution
+    accepted with basis two-way-door), the recorded ids later vetoed (a deny after the record), and the open cards
+    carrying door findings."""
+    records, vetoed, with_findings = [], [], []
+    for row in decisions_logical or []:
+        chain = row.get("resolutions") or []
+        closing = [r for r in chain if r.get("disposition") in ("accepted", "denied")]
+        was_recorded = any(r.get("disposition") == "accepted" and r.get("basis") == "two-way-door" for r in chain)
+        if closing and closing[-1].get("disposition") == "accepted" and closing[-1].get("basis") == "two-way-door":
+            records.append((row, closing[-1]))
+        elif was_recorded and closing and closing[-1].get("disposition") == "denied":
+            vetoed.append(row)
+        door = row.get("door") if isinstance(row.get("door"), dict) else {}
+        if row.get("status") in ("open", "commented") and door.get("findings"):
+            with_findings.append(row)
+    return records, vetoed, with_findings
+
+
+def render_decision_records_section(decisions_logical, stamp):
+    """Section 1b -- DECIDED FOR YOU (veto open): one block per two-way decision the door recorded, plain English,
+    impact first, one command to undo, one word to veto. Ages and windows derive from the header stamp."""
+    records, vetoed, with_findings = door_records(decisions_logical)
+    stamp_day = str(stamp)[:10]
+    n_open = sum(1 for _row, res in records if str(res.get("veto_open_until") or "") >= stamp_day)
+    lines = ["## 1b. DECIDED FOR YOU (veto open: %d · recorded: %d · vetoed: %d · cards with findings: %d)"
+             % (n_open, len(records), len(vetoed), len(with_findings)), ""]
+    if not records:
+        lines.append("(none — no two-way decision has been recorded; a record appears the moment the door records one)")
+        return lines
+    blocks = []
+    for row, res in records:
+        ask = row.get("ask", {}) if isinstance(row.get("ask"), dict) else {}
+        chosen = (res.get("chosen_options") or ["?"])[0]
+        desc = next((o.get("description", "") for o in ask.get("options", []) if o.get("label") == chosen), "")
+        until = str(res.get("veto_open_until") or "?")
+        window = "open" if until >= stamp_day else "closed"
+        block = ["- [%s | recorded %s | veto until %s (%s) | class %s | asked by %s]"
+                 % (row["id"], res.get("date", "?"), until, window, row.get("class", "?"), row.get("requested_by", "?"))]
+        block.append("  decided:  %s — %s" % (chosen, desc or row.get("title", "")))
+        block.append("  because:  %s" % (res.get("comment") or "(no comment)"))
+        block.append("  undo:     %s  (one command; still works after the window)" % (res.get("undo") or "?"))
+        block.append("  veto:     %s %s --deny --comment veto   (runs the undo; nothing else changes)" % (RESOLVE_CLI, row["id"]))
+        door = row.get("door") if isinstance(row.get("door"), dict) else {}
+        if door.get("findings"):
+            block.append("  the lab's note: %s" % "; ".join(str(f) for f in door["findings"]))
+        block.append("")
+        blocks.append(block)
+    for block in blocks:          # every record appears (a glance-through list; the veto is one word per line)
+        lines.extend(block)
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def records_html_block(decisions_logical, stamp):
+    records, vetoed, with_findings = door_records(decisions_logical)
+    stamp_day = str(stamp)[:10]
+    esc = lambda s: str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    items = []
+    for row, res in records:
+        chosen = (res.get("chosen_options") or ["?"])[0]
+        items.append("<li class=\"record\" data-id=\"%s\"><b>%s</b> decided: %s · veto until %s · undo: <code>%s</code> · veto: <code>%s %s --deny --comment veto</code></li>"
+                     % (esc(row["id"]), esc(row["id"]), esc(chosen), esc(res.get("veto_open_until") or "?"), esc(res.get("undo") or "?"), esc(RESOLVE_CLI), esc(row["id"])))
+    n_open = sum(1 for _row, res in records if str(res.get("veto_open_until") or "") >= stamp_day)
+    return ("<section class=\"decided-for-you\"><h2>1b. DECIDED FOR YOU (veto open: %d · recorded: %d · vetoed: %d)</h2><ul>%s</ul></section>"
+            % (n_open, len(records), len(vetoed), "".join(items) or "<li>(none)</li>"))
+
+
+def render_decisions_html(template, stamp, head_short, ledger_rel, open_cards, decisions_logical=None):
     """decisions.html: the template re-emitted whole with SNAPSHOT / REPO / DECISIONS
     / stamp injected. REPO injects empty (repo-relative hrefs: the file lives at the
     repo root, next to DASHBOARD.md). Raises on a malformed template; the caller
@@ -493,6 +564,11 @@ def render_decisions_html(template, stamp, head_short, ledger_rel, open_cards):
                   % (snapshot_date, head_short or "worktree", ledger_rel))
     out = re.sub(r'<p class="stamp">.*?</p>', stamp_html, out, count=1,
                  flags=re.DOTALL)
+    # door evaluator: the records block rides decisions.html too (before </body>)
+    if decisions_logical is not None:
+        idx = out.rfind("</body>")
+        if idx >= 0:
+            out = out[:idx] + records_html_block(decisions_logical, stamp) + "\n" + out[idx:]
     return out
 
 
@@ -754,12 +830,16 @@ def compile_text(root):
                                        ledger_text is None, template is not None,
                                        routes, open_cards, compat))
     out.append("")
+    # door evaluator: section 1b -- DECIDED FOR YOU (records with an open veto window; never a pop-up)
+    out.extend(render_decision_records_section(decisions_logical, stamp))
+    out.append("")
 
     decisions_html = None
     if template is not None:
         try:
             decisions_html = render_decisions_html(template, stamp, head_short,
-                                                   ledger_rel, open_cards)
+                                                   ledger_rel, open_cards,
+                                                   decisions_logical)
         except (ValueError, KeyError, TypeError):
             decisions_html = None
 

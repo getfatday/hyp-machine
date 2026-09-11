@@ -9,11 +9,12 @@ because the shipped code cites them). The kit's parts:
 |---|---|
 | `scripts/decisions.py` | The CLI: add / list / show / resolve / check / surface / open (+ `--selftest`, the port's own end-to-end proof in a throwaway git repo) |
 | `scripts/decision_card_lint.py` | The door-field lint, rules D0-D9 with the corroboration table, called by `decisions.py add` after the shape check (standard library; `--selftest`, synthetic cards in a throwaway git repo); see "The six door fields" below |
-| `scripts/compile-dashboard.py` | Renders `DASHBOARD.md` section 1 (DECISIONS WAITING) and regenerates `decisions.html` from the template at every compile |
+| `scripts/decision_door_check.py` | The door evaluator, called by `decisions.py add` after the lint: every candidate is RECORDED as a two-way decision (with a veto window and a one-line undo) or RENDERED as a card carrying the findings, fail-closed (standard library; `--selftest`; a stdin/argv CLI); see "Records vs cards" below |
+| `scripts/compile-dashboard.py` | Renders `DASHBOARD.md` sections 1 (DECISIONS WAITING) and 1b (DECIDED FOR YOU: the door's records with their veto windows) and regenerates `decisions.html` (the cards, plus the records block) from the template at every compile |
 | `scripts/decisions-template.html` | The decision-surface template (cards, gloss tooltips, keyboard handling, resolution tray); the compiler injects SNAPSHOT / REPO / DECISIONS / stamp |
-| `scripts/proactive-open.sh` | Opens `decisions.html` front-and-center ONCE per new decision id (state: `.claude/decision-surface-state.json`); called by `decisions.py add`/`surface` only — the compiler never opens anything |
+| `scripts/proactive-open.sh` | Opens `decisions.html` front-and-center ONCE per new decision id (state: `.claude/decision-surface-state.json`); a recorded id — one joined to a closing resolution — never opens and never notifies; called by `decisions.py add`/`surface` only — the compiler never opens anything |
 | `scripts/closes_when.py` | The shared closes-when predicate evaluator, including `decision-resolved` (section 4) |
-| `hooks/scripts/session_resolver.py` | SessionStart surfacing: open decisions print first, then unresolved ledger rows (section 6) |
+| `hooks/scripts/session_resolver.py` | SessionStart surfacing: open decisions print first, then the door's records (`DECISION-RECORD` lines), then unresolved ledger rows (section 6) |
 
 One store: the configured work ledger (`.claude/hyp.json` `ledger_file`, default
 `ledger/ledger.jsonl`), append-only. No second file, no parallel queue.
@@ -74,7 +75,11 @@ max-on-file + 1):
  "recommended": "<one option label>|none",
  "default_on_silence": "<one option label>|nothing-changes",
  "amount_usd": <number >= 0, required iff class is spend>,
- "door": {"fields_sha": "<sha256 of the six fields as canonical JSON>", "findings": ["D8:...", ...]}}
+ "door": {"fields_sha": "<sha256 of the six fields as canonical JSON>",
+          "outcome": "RECORD|CARD", "evaluator": "<sha7 of decision_door_check.py>", "head": "<sha7>",
+          "clauses": {"W1": "yes", "W2": "no", "H1": "...", "T1": "...", "T2": "...", "T3": "...", "STREAK": "no"},
+          "hard": "<class, on a hard card>", "corroborated_by": "<its observable>",
+          "findings": ["D8:...", "NOT-EVIDENCE-DECIDED: ...", ...]}}
 ```
 
 Validation (`decisions.py check`, also run at `add`): id matches `DEC-NNN`; date, title,
@@ -97,6 +102,11 @@ Resolving appends one row and commits JUST that line under the invoker's git ide
  "chosen_options": ["<label or free text>", ...],
  "comment": "<optional>"}
 ```
+
+A record's resolution row — appended by `add` itself when the door routes RECORD, never by a human —
+carries three more keys: `basis: "two-way-door"`, `undo` (one executable line) and `veto_open_until`
+(`requested_at` + 7 days); its `comment` names the evidence, the undo and the veto command ("Records vs
+cards" below).
 
 Status is DERIVED at read time by joining resolutions on id: no resolution = `open`; a
 latest `commented` row = `commented` (STAYS OPEN); the latest `accepted`/`denied` wins.
@@ -141,16 +151,21 @@ unparseable JSON or none of the three:
 
 - `DASHBOARD.md` section 1 — DECISIONS WAITING, first thing a cold reader sees; ages
   derive from the header stamp (HEAD commit date), never the wall clock, so the render
-  stays deterministic and committable.
+  stays deterministic and committable. Section 1b — DECIDED FOR YOU — lists the door's
+  records with their veto windows, undo and veto commands ("Records vs cards" below).
 - `decisions.html` — regenerated whole at every compile; answering on the page stages
   the exact `decisions.py resolve` command in a visible tray (the ledger row is the
   record; the page is its shadow).
 - SessionStart — the resolver prints one line per open decision FIRST (the hook pipes
   through `head -20`), then the summary, then unresolved ledger rows:
-  `DECISION-LEDGER\t<id>\t<urgency>\t<title>\t<blocks>` … `DECISIONS-OPEN\t<count>\toldest <id> <age>d`.
+  `DECISION-LEDGER\t<id>\t<urgency>\t<title>\t<blocks>` … `DECISIONS-OPEN\t<count>\toldest <id> <age>d`,
+  then one `DECISION-RECORD\t<id>\tveto-until <date> (open|closed)\t<title>\tundo=<line>` per live record
+  and `DECISION-RECORDS-OPEN\t<open windows>\toldest <id> <age>d`.
 - Proactive open — `decisions.py add`/`surface` run `proactive-open.sh`: recompile,
   open `decisions.html` once per NEW id, notify; a crash before the state write re-fires
-  safely; a surface with no new ids does nothing (no re-open spam).
+  safely; a surface with no new ids does nothing (no re-open spam). A recorded id is never
+  new: `add` skips the opener for a RECORD and the script skips every id joined to a
+  closing resolution.
 
 ## 7. The `retest_when` evidence trigger (optional)
 
@@ -180,18 +195,18 @@ story is `docs/decision-durability.md`.
 
 | Command | Effect |
 |---|---|
-| `add --title ... --question ... --header ... --option L:D --option L:D --requested-by ... --class ... --why-only-you ... --undo U --undo U --staged-artifact P\|CMD\|none --evidence PTR\|none-exists --externality CLASS --recommended LABEL\|none --default-on-silence LABEL\|nothing-changes [--amount-usd N] [--urgency high] [--pointer P] [--blocks "a, b"] [--shadows maintainer-ruling=slug] [--multi] [--no-open] [--door-git-timeout S]` | Validate (shape, then the door lint D0-D9) + append one decision row (id race-checked), then proactive-open. Exit 0 PASS; 1 ESCALATE (appended with `door.findings`, one `ADD-FINDING` line first); 2 MALFORMED (`ADD-REFUSED` lines, nothing appended) |
+| `add --title ... --question ... --header ... --option L:D --option L:D --requested-by ... --class ... --why-only-you ... --undo U --undo U --staged-artifact P\|CMD\|none --evidence PTR\|none-exists --externality CLASS --recommended LABEL\|none --default-on-silence LABEL\|nothing-changes [--amount-usd N] [--urgency high] [--pointer P] [--blocks "a, b"] [--shadows maintainer-ruling=slug] [--multi] [--no-open] [--door-git-timeout S] [--door-inject-fault]` | Validate (shape, then the door lint D0-D9, then the door evaluator) + append one decision row (id race-checked) — and, when the evaluator RECORDS it, its resolution row right after (`recorded <id>:`, no card opens) — then proactive-open for a CARD (`added <id>:`). Exit 0 PASS; 1 ESCALATE (appended with `door.findings`, one `ADD-FINDING` line first); 2 MALFORMED / MALFORMED-BATCH (`ADD-REFUSED` lines, nothing appended) |
 | `list [--json]` | One line per decision with derived status (join, no git) |
-| `show <id>` | The full card with git-derived resolution provenance |
+| `show <id>` | The full card with git-derived resolution provenance and, on an evaluated row, the `door-outcome:` line |
 | `resolve <id> --accept "<label-or-free-text>" [--comment "..."]` | Accept (repeat `--accept` when multiSelect); commits JUST the resolution line |
-| `resolve <id> --deny [--comment "..."]` | Deny and close |
+| `resolve <id> --deny [--comment "..."]` | Deny and close. On a recorded id (`basis: two-way-door`) this is the veto: accepted without `--reopen`, the deny wins the join, and the record's undo runs as an attributed follow-up (`VETO` line) |
 | `resolve <id> --comment "..."` | Comment — the decision STAYS OPEN |
 | `resolve <id> ... --reopen` | Append another closing row over an already-closed id |
 | `resolve --legacy <slug> --accept "done"` | Compat shim: answer a legacy maintainer-ruling bracket with no decision row (emits + commits the raw-dir ruling capture) |
-| `check` | Schema + join validation over every row; exit 1 on findings; also prints the exit-neutral `RETEST-DUE` / `REVISIT-UNARMED` lines (section 7) |
+| `check` | Schema + join validation over every row; exit 1 on findings; also prints the exit-neutral `RETEST-DUE` / `REVISIT-UNARMED` lines (section 7) and `DOOR-UNAUDITED` for a non-legacy decision row with no door outcome |
 | `surface [--no-open]` | Print the open-decision lines + summary; proactive-open (once-per-id guard) |
 | `open [--all]` | Open `decisions.html` (`--all` also opens `DASHBOARD.md`) |
-| `--selftest` | The full loop in a throwaway git repo, plus the `retest_when` scenario (unknown predicate refused; an armed row fires `RETEST-DUE` only after its evidence commit; a "later" option with no trigger is `REVISIT-UNARMED`); exits 0 only if every assertion passes; plus the door wiring (a field-less card refused with exit 2, a self-declared two-way card appended with a D8 finding and exit 1, `show` rendering the door lines, the seeded git stall exit-neutral, `check` exempting legacy ids). `python3 scripts/selftest-decision-door-fields.py` runs this and the lint's own `--selftest` together |
+| `--selftest` | The full loop in a throwaway git repo, plus the `retest_when` scenario (unknown predicate refused; an armed row fires `RETEST-DUE` only after its evidence commit; a "later" option with no trigger is `REVISIT-UNARMED`); exits 0 only if every assertion passes; plus the door wiring (a field-less card refused with exit 2, a self-declared two-way card appended with a D8 finding and exit 1, `show` rendering the door lines, the seeded git stall exit-neutral, `check` exempting legacy ids); plus the door evaluator (a zero-information two-way card RECORDED with its resolution pair and a 7-day veto window, never entering the surface state file, `resolve --deny --comment veto` flipping it to denied and running the undo that restores the tree, `show` rendering the outcome, a side-door row `DOOR-UNAUDITED` at exit 0, the crash seed rendering a card). `python3 scripts/selftest-decision-door-fields.py` runs this and the lint's own `--selftest` together; `python3 scripts/selftest-decision-door-evaluator.py` runs this and the evaluator's |
 
 Flags `--no-commit` (stage the resolution uncommitted) and `--no-recompile` exist for
 tests. `resolve` refuses to run while the ledger has unrelated uncommitted changes — the
@@ -315,3 +330,133 @@ unchanged; the lab keeps its path because its `hyp.json` says `ledger/work-ledge
 lab-shaped by the sealed treatment and left for a refine lane: the refusal sentence's
 `research/raw/...-grant.md` citation, `ledger/hook-denials.jsonl`, `research/raw/`, `program.md`,
 `experiments/runs/`, `hypotheses/` and the owned-repository set `LAB_OWNED_REPOS`.
+
+### Records vs cards
+
+Ported from the source lab's H-DRAFT-73404199-decision-door-evaluator (kept 2026-09-11, 5/5 in two
+counted runs, the second by a cold README-only executor, two independent cold verifiers agreeing:
+0/300 false refusals over the keyed one-way cards -- the maintainer's own three choices included --
+55/55 planted two-way cards recorded, 86/86 undos restoring the pre-record state byte for byte, 5/5
+seeded vetoes denied and undone, the control `add` on the same fields base admitting 204/204 two-way
+cards; journal fragment 0489). The six fields say what a card is; the evaluator acts on it. Between
+the lint and the append, `scripts/decision_door_check.py` evaluates every candidate from its fields
+and committed state alone -- no clock beyond `requested_at`, no environment, no network, no process
+beyond `git`, no LLM -- and either RECORDS it as the repository's own two-way decision or lets it
+RENDER as a card. Anything it cannot verify renders. No bypass flag exists.
+
+#### The clauses (top to bottom; the first routing clause that fires wins)
+
+| Clause | Reads | Routes |
+|---|---|---|
+| W1 FIELDS | every option's `undo` in vocabulary; `staged_artifact`, `evidence`, `externality`, `recommended`, `default_on_silence` present and in vocabulary; `class=spend` => `amount_usd`; `recommended != none` => an existing option label | no -> MALFORMED: every defect listed as `ADD-REFUSED<TAB>MALFORMED<TAB>W1<TAB>...`, exit 2, nothing appended |
+| W2 DEDUP-WHY | at least two UNCOMMITTED decision rows already share the candidate's `why_only_you` byte for byte | yes -> MALFORMED-BATCH ("one policy question filed N times: file one"), exit 2, nothing appended |
+| H1 HARD | `externality != none`: the class's observable (the lint's table above; `classifier-flagged` reads `.claude/hook-denials.jsonl` in the worktree, a row whose `command` equals the staged command) | POSITIVE -> CARD carrying `hard=<class>` and `corroborated_by`; UNVERIFIABLE -> CARD (`CORROBORATION-UNVERIFIABLE`); NEGATIVE -> finding `DECLARED-HARD-UNCORROBORATED:<class>`, continue |
+| T1 UNDO | every option's `undo != none`; the recommended option's undo corroborated against the staged artifact: `git-revert` / `flag` / `amendment` need every staged path inside the worktree, `ledger-row` needs the staged artifact to be exactly the configured ledger; a command line corroborates nothing (`UNDO-UNVERIFIABLE`) | `none` on all-tracked paths -> `UNDO-MISDECLARED`; any `none` -> `UNDO-NONE`; outside the worktree -> `UNDO-UNCORROBORATED`; each is a no |
+| T2 EVIDENCE | in order: (a) a pointer that fails to resolve at HEAD -> CARD (`EVIDENCE-UNRESOLVED`); (b) `recommended != none` and `default_on_silence == recommended` -> yes (zero-information: silence already yields the recommendation); (c) `recommended != none` and the pointer resolves inside the evidence classes (a `VERDICT.json`, a run grade, a `RUN-RECORD`, a `VERIFY.md`, a maintainer capture, a `decision-resolution` line of the configured ledger, a Runs-table row) -> yes; (d) otherwise no (`NOT-EVIDENCE-DECIDED`). Amendment guard after a yes: a staged `hypotheses/*.md` whose frozen span (the `## Binary assertions` heading line through the `## Verdict rule` heading line) differs from HEAD -> no (`FROZEN-SPAN-TOUCHED`) | |
+| T3 EXTERNALITY | all six observables over the candidate, a class already NEGATIVE at H1 staying NEGATIVE | any POSITIVE -> no (`EXTERNALITY-UNDECLARED:<class>`); any UNVERIFIABLE -> CARD; a `.github/` or `.changeset/` path with no `SHIP.md` staged beside it is an undeclared `external-publication` |
+| ROUTING | T1 and T2 and T3 | all yes -> RECORD; otherwise CARD with every finding; an exception or a git read past `--door-git-timeout` (default 20 s) -> CARD (`EVALUATOR-FAIL-CLOSED`) |
+| STREAK | the last 10 door outcomes on file (committed rows plus the uncommitted tail) all RECORD with no later veto | yes -> this candidate renders (`EVALUATOR-STREAK`): the auto-mode fallback shape, so a run of records is never silent |
+
+#### What `add` prints and appends
+
+| Outcome | `add` prints (after the lint's own lines) | Rows appended | Exit |
+|---|---|---|---|
+| RECORD | one `DECISION-DOOR<TAB><id><TAB>RECORD<TAB>T1=...<TAB>T2=...<TAB>T3=...<TAB>H1=...` audit line, a plain-English block ending "Proceed now. Do not wait on this row, and never gate a driver on it.", then `recorded <id>: ...` | the decision row with `door.outcome RECORD`, then the resolution row below; `proactive-open.sh` does not run -- nothing opens, nothing notifies | 0 (1 when the lint attached a finding) |
+| CARD | one `DECISION-DOOR<TAB><id><TAB>CARD<TAB>H1=yes(<class>: ...)` line (a hard card) or `...CARD<TAB>fail-closed|not-proven|EVALUATOR-STREAK(...)<TAB><findings><TAB>T1=...` (an unproven one), then `added <id>: ...`; the card opens as before | the decision row with `door.outcome CARD` and every finding under `door.findings` | 0 (1 when the lint attached a finding) |
+| MALFORMED / MALFORMED-BATCH | `ADD-REFUSED` lines and the two refusal sentences | nothing | 2 |
+
+The `door` object on every evaluated row: `{"fields_sha", "outcome": "RECORD|CARD", "evaluator": <sha7 of
+decision_door_check.py>, "head": <sha7>, "clauses": {"W1", "W2", "H1", "T1", "T2", "T3", "STREAK"?}, "hard"?,
+"corroborated_by"?, "findings"?}` -- the lint's `D<k>:` findings first, the evaluator's after. `show` prints it
+as `door-outcome: RECORD | evaluator <sha7> | head <sha7>[ | hard <class>]`.
+
+#### The RECORD row
+
+```json
+{"kind": "decision-resolution", "id": "DEC-NNN", "date": "YYYY-MM-DD", "disposition": "accepted",
+ "chosen_options": ["<recommended>"], "basis": "two-way-door",
+ "undo": "git revert --no-edit $(git log -1 --format=%H --grep='^landing: decision-record=DEC-NNN ')",
+ "veto_open_until": "<requested_at + 7 days>",
+ "comment": "decided by policy/no-card-for-two-way-doors on <the evidence pointer, or zero-information>; undo: ...; veto: python3 scripts/decisions.py resolve DEC-NNN --deny --comment veto"}
+```
+
+`add` appends it right after the decision row and stamps `date` itself (the evaluator reads no clock). It is
+an ordinary resolution row: the join reads it as `accepted`, `check` validates it as before, `list` and
+`show` render it, and attribution derives from the commit that lands it like any other. The `undo` line is
+one executable command: for `git-revert`, `flag` and `amendment` records it reverts the landing commit --
+the commit that lands the recorded change declares itself with a subject starting `landing:
+decision-record=DEC-NNN ` (the revert commit's own subject, `Revert "landing: ..."`, never matches the
+anchored pattern); for a `ledger-row` record the undo IS a superseding deny row
+(`python3 scripts/decisions.py resolve DEC-NNN --deny --comment '...'`).
+
+#### The veto window and the undo
+
+Every record stays open to a one-word veto for seven days from `requested_at` (`veto_open_until`), and the
+undo stays available after the window too. The veto is
+
+```
+python3 scripts/decisions.py resolve DEC-NNN --deny --comment veto
+```
+
+`resolve --deny` on a `basis: two-way-door` id is accepted although the id is already closed (no `--reopen`
+needed): the deny row is appended and committed as usual -- the latest closing disposition wins the join, so
+the record reads `denied` everywhere -- and then the resolver runs the record's `undo` line as an attributed
+follow-up, printing `VETO<TAB><id><TAB>undo executed rc=<n><TAB><line>` (and `VETO-UNDO-FAILED<TAB><id><TAB><tail>`
+when the command fails: for example no landing commit exists yet, in which case nothing else changes). A
+`ledger-row` record prints `VETO<TAB><id><TAB>undo is this superseding row (ledger-row); nothing else to execute`;
+`--no-commit` prints the undo without executing it. The dashboard header counts vetoed records; a vetoed record
+leaves the DECIDED FOR YOU list and the resolver's `DECISION-RECORD` lines.
+
+#### The streak guard and the fail-closed seeds
+
+Ten consecutive records on file with no veto make the eleventh two-way candidate render as a card with
+`EVALUATOR-STREAK`; a veto, or any card, breaks the streak. The evaluator never fails open: an exception
+inside it (`add --door-inject-fault` is the test seed), a git read past `--door-git-timeout`, a dangling or
+malformed `evidence` pointer, an unparseable row in `.claude/hook-denials.jsonl`, a staged spec absent from
+the worktree, an external host in the staged command -- each renders a card carrying its finding, and the
+record fields are dropped.
+
+#### Surfaces
+
+- `DASHBOARD.md` section `1b. DECIDED FOR YOU (veto open: N · recorded: N · vetoed: N · cards with findings: N)`:
+  one block per live record -- `decided:`, `because:`, `undo:` (one command), `veto:` (one word) and the lab's
+  note when the row carries findings; `(none — ...)` when nothing has been recorded. `decisions.html` carries
+  the same records in a `<section class="decided-for-you">` block before `</body>`. Both derive ages and windows
+  from the header stamp, never the wall clock.
+- SessionStart, after the open cards: `DECISION-RECORD<TAB><id><TAB>veto-until <date> (open|closed)<TAB><title><TAB>undo=<line>`
+  per live record, then `DECISIONS-RECORDS-OPEN`-style summary `DECISION-RECORDS-OPEN<TAB><open windows><TAB>oldest <id> <age>d`
+  (`DECISIONS_TODAY` pins the window computation for tests).
+- `proactive-open.sh` skips every id joined to an accepted or denied resolution, so a record never opens the
+  browser and never fires the OS notification; only cards do.
+- `check` prints `DECISIONS-CHECK<TAB>DOOR-UNAUDITED<TAB><id><TAB>decision row carries no door outcome (filed outside add, or before the evaluator)`
+  for a non-legacy decision row with no `door.outcome` -- exit-neutral, surfaced, never enforced.
+
+#### Callers
+
+Every shipped writer passes the evaluator after the lint. `retest-trigger.py` and `knob-observe.py` go
+through `add` and read `added <id>:` OR `recorded <id>:` as the filed signal (their current fields render:
+`recommended none`, or `evidence none-exists` beside a default that is not the recommendation). `dispatch-gate.py
+ingest` and `reflex-surface file` call `decisions.door_evaluate_row(row, root)` after `door_lint_row()` and
+before `append_line`; on RECORD they append `decisions.door_record_row(result)` beside the row and skip the
+opener; a MALFORMED-BATCH verdict refuses the row (the gate under its JSON `error`, the reflex `FATAL`). A copy
+of `decisions.py` needs `decision_door_check.py` and `decision_card_lint.py` beside it; the callers' selftests
+copy all three. `scripts/selftest-decision-door-evaluator.py` runs the evaluator's and the kit's selftests
+together.
+
+#### Ported constant
+
+The evaluator shipped here differs from the lab's sealed copy
+(`experiments/runs/H-DRAFT-73404199-decision-door-evaluator/fixture/impl/decision_door_check.py` in the
+source lab, sha256 `b5640819c2c6e8d3d53f71b7cfc7f6ad8b468ee8b2d2232c158a6df36a92fd63`) in one constant and its
+plumbing, so the ledger it reads is the consumer's: the lab path constant `LEDGER_REL = "ledger/work-ledger.jsonl"`
+is gone; `run()` resolves the ledger through the lint's `ledger_rel_for(root)` (`.claude/hyp.json` `ledger_file`,
+default `ledger/ledger.jsonl`) when none is handed in, stores its repo-relative form on the result
+(`ledger_rel_of`), T1 corroborates a `ledger-row` undo against that path, and T2 hands it to the lint's
+`evidence_class` as the decision-resolution authority. The stamp `door.evaluator` is the sha7 of the shipped
+file (so it differs from the counted runs' `b564081`), and the selftest gains two checks for the consumer's
+ledger through `.claude/hyp.json`. One docstring paragraph names the port. Every clause, text, exit code and
+the record shape are unchanged, and the source still carries no card or spec id literal. Still lab-shaped by
+the sealed treatment and left for a refine lane: the citations in the plain-English block
+(`research/raw/...-grant.md`, `...-directive.md`, a lab journal fragment), the `hypotheses/` prefix of the
+amendment guard, and the evidence classes the lint hard-codes (`experiments/runs/`, `research/raw/`,
+`program.md`).

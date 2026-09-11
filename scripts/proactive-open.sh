@@ -2,6 +2,8 @@
 # proactive-open.sh — the directive's "Conversely, you open up the dashboard for me so
 # that it's front and center" (consolidated decision-making directive 2026-08-28).
 #
+# door evaluator: an id joined to a closing resolution (accepted|denied) never counts as new — a
+# recorded two-way decision (basis two-way-door) opens nothing; only cards open.
 # Called by decisions.py add and decisions.py surface — NEVER by the compiler
 # (compile-dashboard.py renders surfaces; it opens nothing). Behavior, once per NEW
 # decision-row id (seen-ids kept in the JSON state file):
@@ -42,6 +44,7 @@ try:
 except (OSError, ValueError):
     pass
 out = []
+rows = []
 try:
     for raw in open(ledger, encoding="utf-8"):
         raw = raw.strip()
@@ -51,12 +54,16 @@ try:
             rec = json.loads(raw)
         except ValueError:
             continue
-        if (isinstance(rec, dict) and rec.get("kind") == "decision"
-                and rec.get("id") and str(rec["id"]) not in seen
-                and str(rec["id"]) not in out):
-            out.append(str(rec["id"]))
+        if isinstance(rec, dict):
+            rows.append(rec)
 except OSError:
     pass
+closed = {str(r.get("id")) for r in rows
+          if r.get("kind") == "decision-resolution" and r.get("disposition") in ("accepted", "denied")}
+for rec in rows:
+    if (rec.get("kind") == "decision" and rec.get("id") and str(rec["id"]) not in seen
+            and str(rec["id"]) not in closed and str(rec["id"]) not in out):
+        out.append(str(rec["id"]))
 print(" ".join(out))
 PYEOF
 )

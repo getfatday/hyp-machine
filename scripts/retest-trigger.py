@@ -59,7 +59,7 @@ closes_when.GIT_TIMEOUT = GIT_TIMEOUT
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 RULE_RETEST_CLASS = "rule-retest"
 EVIDENCE_POINTER_RE = re.compile(r"^[^@\s]+@[0-9a-f]{40}#L\d+-L\d+$")  # the door lint's evidence form
-ADDED_RE = re.compile(r"^added (DEC-\d+):", re.M)
+ADDED_RE = re.compile(r"^(?:added|recorded) (DEC-\d+):", re.M)  # `recorded`: the door evaluator recorded a two-way card
 
 
 def _git(repo, args):
@@ -162,8 +162,10 @@ def file_row(repo, ledger_path, rid, predicate, arg, sha, pointers, date):
     undo ledger-row), the trigger recommends neither (recommended none, staged_artifact none), the
     evidence is the first committed span the predicate matched (context_pointers carries every span),
     nothing leaves the repository (externality none) and silence changes nothing. Returns
-    (appended, rc, out): appended is read from the `added <id>:` line, because the door lint's exit 1
-    (ESCALATE: appended with door.findings) is a filed row and only exit 2 (MALFORMED) files nothing."""
+    (appended, rc, out): appended is read from the `added <id>:` line (or `recorded <id>:` when the door
+    evaluator recorded the card as a two-way decision -- the row landed with its resolution row and no card
+    opened), because the door lint's exit 1 (ESCALATE: appended with door.findings) is a filed row and only
+    exit 2 (MALFORMED) files nothing."""
     decisions = os.path.join(HERE, "decisions.py")
     evidence = next((p for p in pointers if EVIDENCE_POINTER_RE.match(p)), "none-exists")
     cmd = [sys.executable, "-B", decisions, "--root", repo, "--ledger", ledger_path, "add",
@@ -284,7 +286,7 @@ def _selftest():
     try:
         for d in ("ledger", "registry", "scripts", os.path.join("research", "raw")):
             os.makedirs(os.path.join(tmp, d))
-        for name in ("closes_when.py", "decisions.py", "decision_card_lint.py", "retest-trigger.py"):
+        for name in ("closes_when.py", "decisions.py", "decision_card_lint.py", "decision_door_check.py", "retest-trigger.py"):
             shutil.copy2(os.path.join(HERE, name), os.path.join(tmp, "scripts", name))
 
         def rule(rid, retest_when):
