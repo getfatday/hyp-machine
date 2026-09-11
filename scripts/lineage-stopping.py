@@ -40,10 +40,15 @@ The rule as a decision procedure (spec Method R0-R4):
       experiments/runs/H-DRAFT-5810517d-verdict-lineage-stopping/fixture/lineage.py, R2 (iv): "a failing
       assertion the record leaves unclassed ... never typed by guess"): an unclassed root cause is parked
       pending, never typed by guess -- and never defaulted to variable-side. Every (spec, run) is charged
-      and typed once: `record`, `append-look` and `void` refuse a run already in looks.jsonl or voids.jsonl
-      (`record` also one parked in pending.jsonl) with exit 3 `already-recorded <run>` and one refusals.jsonl
-      row, so a driver retry after a partial failure appends nothing. A void appends no look and is re-taken
-      at the next launch.
+      and typed once: `record`, `append-look` and `void` refuse a run already in looks.jsonl, voids.jsonl or
+      pending.jsonl (exit 3 `already-recorded <run>`, one refusals.jsonl row; a pending run names `settle` as
+      the one verb that types it), `record` keys on the run directory as well as the number and refuses a run
+      charged in spend.jsonl but typed nowhere, and `charge` refuses a second row for the same run -- so a
+      driver retry after a partial failure appends nothing. The charge is the record's wall_s and cost_usd or
+      the driver's `--wall-s`/`--cost-usd` (its own clock and meter); a record carrying neither refuses (exit
+      2): a crash-lost run never costs nothing toward the spend exit. The frozen copy is verified before any
+      R2 write. `settle` re-hashes the record files against what `record` parked: a record changed since is
+      the ambiguous void, never a look. A void appends no look and is re-taken at the next launch.
   R3  After every counted look: append the row to stream.jsonl, evaluate with `--evaluate --looks all`
       into state.jsonl, assert the prefix invariants on an in-progress file and run `--check` only on a
       terminated one. `evidence-sufficient promote` -> the lineage's current spec is KEPT;
@@ -59,19 +64,21 @@ hypotheses_dir, ledger_file -- with the lab layout as default; <lineage> = <runs
   paths <lane>
   may-launch <lane>                              exit 0 `launch` | exit 3 `budget-exhausted` / `look-pending` / `terminal:<kind>`
   type <run-dir> [--run-validity A5,..] [--root-cause A#=<class> ...]   -> counted|ambiguous|annulled|budget-exceeded
-  record <lane> <run-dir> [--run N] [--run-validity ..] [--root-cause ..]  R2 charge + type + look/void/pending, then R3
+  record <lane> <run-dir> [--run N] [--run-validity ..] [--root-cause ..] [--wall-s W --cost-usd C]  R2 charge + type + look/void/pending, then R3
   charge <lane> --wall-s W --cost-usd C --class CLS [--run N] [--run-record P]
   append-look <lane> <refusal 0|1> [--run N] [--clause iii|v] [--run-record P]
   void <lane> --class ambiguous|annulled [--clause i|ii|iv] [--run N] [--run-record P]
-  settle <lane> <run> --root-cause A#=<class> [...]   one class per pending id; an id left unclassed -> exit 2, the look stays pending
+  settle <lane> <run> --root-cause A#=<class> [...]   one class per pending id and no other; an id left unclassed -> exit 2, the look stays pending
   evaluate <lane>                                R3 alone: re-evaluate the stream into state.jsonl
   state <lane>                                   -> promote|hold|insufficient|max-looks|spend-exhausted
   walk <launches.jsonl> --model A|B [--ratios r,..] [--budget-caps N] --out <stream.jsonl>
-  --selftest [--into DIR]                        26 typing + 7 walk/settle cases (lineage.py) + spend / refusal / R3 / R4 / settle-refusal / already-recorded cases
+  --selftest [--into DIR]                        26 typing + 7 walk/settle cases (lineage.py) + spend / refusal / R3 / R4 / settle-refusal / already-recorded cases + the round-2 follow-ups (A13-A16, NIT-1..4)
 Every verb takes --root <repo-root> (default: the nearest ancestor of the cwd carrying .claude/hyp.json or
 .git) and --json (before or after the verb). Exit codes: 0 ok; 1 an invariant or check violated (named);
-2 usage, malformed input (a settle that leaves a pending id unclassed), or a lineage not initialised; 3 refused
-(R1, a pending look, a terminated lineage, an R0 byte or truncation mismatch, a run already recorded). The words
+2 usage, malformed input (a settle that leaves a pending id unclassed or names one that is not pending; a record
+whose files carry no wall_s / cost_usd and no override), or a lineage not initialised; 3 refused (R1, a pending
+look, a terminated lineage, an R0 byte or truncation mismatch, a tampered frozen copy, a run already recorded,
+parked or charged). The words
 keep and discard never enter a state line (the instrument's
 contract); they appear only in this script's `instruction` field, which belongs to the hypothesis loop.
 Stdlib only, Python 3.9; the work ledger (ledger_file) is resolved and reported by `paths`, never written.
@@ -509,17 +516,26 @@ def run_record_from_dir(run_dir, run_validity_ids=(), root_causes=None, run_id=N
            "cost_usd": float(cost) if isinstance(cost, (int, float)) else None,
            "wall_s": float(wall) if isinstance(wall, (int, float)) else None,
            "cap_s": float(cap) if isinstance(cap, (int, float)) else None}
+    read_ids = set(aid for aid, _ in items)
     meta = {"assertions_from": src, "files_read": sorted(files), "unparseable": unparseable, "budget_exceeded": budget_exceeded,
-            "grader_void_class": grader_void, "run_validity_ids": sorted(a["id"] for a in rv)}
+            "grader_void_class": grader_void, "run_validity_ids": sorted(a["id"] for a in rv),
+            # a declared run-validity id the record carries no assertion for (a typo in the driver's declaration): reported and
+            # warned, never typed; empty when no assertions were read at all (that is the crash-lost record, resolvable false)
+            "run_validity_unknown": sorted(str(x) for x in (run_validity_ids or []) if str(x) not in read_ids) if items else []}
     return rec, meta
 
 
-def type_run_dir(run_dir, run_validity_ids=(), root_causes=None):
+def type_run_dir(run_dir, run_validity_ids=(), root_causes=None, warn=None):
     """-> (word, typed, rec, meta): word is counted|ambiguous|annulled|budget-exceeded (a budget-exceeded run is the
-    `ambiguous` void the spec names -- reality unclear -- reported by its own word)."""
+    `ambiguous` void the spec names -- reality unclear -- reported by its own word). A --run-validity id the record carries
+    no assertion for is warned (`warn`, default stderr) and listed in meta.run_validity_unknown."""
     if not os.path.isdir(run_dir):
         raise Usage("run directory not found: %s" % run_dir)
     rec, meta = run_record_from_dir(run_dir, run_validity_ids, root_causes)
+    if meta["run_validity_unknown"]:
+        carried = sorted(a["id"] for a in rec["substantive"] + rec["run_validity"])
+        (warn or sys.stderr.write)("warning: --run-validity %s names no assertion the record carries (%s reads %s); a typo in the driver's declaration types nothing\n" % (
+            ",".join(meta["run_validity_unknown"]), meta["assertions_from"], ", ".join(carried) or "none"))
     typed = type_record(rec)
     word = "budget-exceeded" if meta["budget_exceeded"] else typed["type"]
     return word, typed, rec, meta
@@ -819,12 +835,28 @@ def may_launch(P, record_refusal=True):
 
 
 # ---------------------------------------------------------------- R2 + R3 bookkeeping
-def charge(P, spec, run_n, wall_s, cost_usd, cls, run_record):
+def refuse_if_charged(P, spec, run_n):
+    """One spend row per numbered (spec, run): a second `charge` of the same run is refused -- exit 3 `already-charged`, one
+    refusals.jsonl row -- so a manual driver's retry double-charges nothing (a charge with no --run is unidentified and not
+    guarded; `record` consults spend.jsonl through refuse_if_recorded before it charges)."""
+    if run_n is None:
+        return
+    for r in read_jsonl(P["spend"])[1:]:
+        if (str(r.get("spec")), str(r.get("run"))) == (str(spec), str(run_n)):
+            append_row(P["refusals"], {"at": now(), "reason": "already-charged", "verb": "charge", "spec": spec, "run": run_n, "found_in": "spend.jsonl"})
+            raise Refuse("already-charged %s run-%s -- a spend.jsonl row (class %s, %.1f s, US$%.4f); every run is charged once, so this charge appends nothing" % (
+                spec, run_n, r.get("class"), float(r.get("wall_s") or 0.0), float(r.get("cost_usd") or 0.0)))
+
+
+def charge(P, spec, run_n, wall_s, cost_usd, cls, run_record, extra=None):
+    refuse_if_charged(P, spec, run_n)
     header, cum_usd, cum_wall, n = spend_state(P)
     wall_s = float(wall_s or 0.0)
     cost_usd = float(cost_usd or 0.0)
     row = {"spec": spec, "run": run_n, "run_record": run_record, "cost_usd": cost_usd, "wall_s": round(wall_s, 1),
            "cum_usd": round(cum_usd + cost_usd, 6), "cum_wall_s": round(cum_wall + wall_s, 1), "charged": now(), "class": cls}
+    if extra:
+        row.update(extra)
     append_row(P["spend"], row)
     return row
 
@@ -854,30 +886,61 @@ def evaluate(P, instrument=None):
             "evaluate_rc": r.returncode, "instruction": INSTRUCTIONS.get(tk, CONTINUE)}
 
 
-def recorded_in(P, spec, run_n, include_pending=False):
-    """The lineage file a (spec, run) already occupies -- looks | voids | pending -- or None. A run with no number
-    (run_n None) cannot be identified and is never guarded."""
-    if run_n is None:
-        return None
-    key = (str(spec), str(run_n))
-    for name in (("looks", "voids", "pending") if include_pending else ("looks", "voids")):
-        for r in read_jsonl(P[name]):
-            if (str(r.get("spec")), str(r.get("run"))) == key:
-                return name
-    return None
+def _row_names_dir(r, run_dir_rel):
+    rr = r.get("run_record") if r.get("run_record") is not None else r.get("run_dir")
+    return isinstance(rr, str) and (rr == run_dir_rel or rr.startswith(run_dir_rel + "/"))
 
 
-def refuse_if_recorded(P, spec, run_n, verb, include_pending=False):
-    """Every (spec, run) is charged and typed once: a run already in looks.jsonl or voids.jsonl (for `record` also
-    pending.jsonl) is refused -- exit 3 `already-recorded`, one refusals.jsonl row -- so a driver retry appends nothing."""
-    where = recorded_in(P, spec, run_n, include_pending)
-    if where:
-        append_row(P["refusals"], {"at": now(), "reason": "already-recorded", "verb": verb, "spec": spec, "run": run_n, "found_in": "%s.jsonl" % where})
-        raise Refuse("already-recorded %s run-%s -- a row in %s.jsonl; every run is charged and typed once, so this %s appends nothing" % (spec, run_n, where, verb))
+def recorded_in(P, spec, run_n, include_pending=False, include_spend=False, run_dir_rel=None):
+    """The lineage file a run already occupies -- looks | voids | pending (open rows) | spend -- with the matching row and the
+    key that matched: `run`, the (spec, run NUMBER), or `run_dir`, the run DIRECTORY (`record run-5 --run 7` followed by
+    `record run-5` is one directory recorded twice). -> (name, row, key) or (None, None, None). A run with neither a number
+    nor a directory is unidentified and never guarded. spend.jsonl (its header skipped) is consulted only for `record`: a
+    run charged there but typed nowhere is a crash between R2's charge and its look."""
+    key = (str(spec), str(run_n)) if run_n is not None else None
+    names = ["looks", "voids"] + (["pending"] if include_pending else []) + (["spend"] if include_spend else [])
+    for name in names:
+        rows = read_jsonl(P[name])
+        for r in (rows[1:] if name == "spend" else rows):
+            if name == "pending" and r.get("settled"):
+                continue  # a settled pending look lives in looks.jsonl or voids.jsonl already
+            if key is not None and (str(r.get("spec")), str(r.get("run"))) == key:
+                return name, r, "run"
+            if run_dir_rel and _row_names_dir(r, run_dir_rel):
+                return name, r, "run_dir"
+    return None, None, None
 
 
-def append_look(P, spec, run_n, refusal, clause, run_record, root_causes=None, instrument=None):
-    refuse_if_recorded(P, spec, run_n, "append-look")
+def refuse_if_recorded(P, spec, run_n, verb, include_pending=False, include_spend=False, run_dir_rel=None):
+    """Every (spec, run) is charged and typed once. A run already in looks.jsonl or voids.jsonl -- or parked in pending.jsonl,
+    for `record`, `append-look` and `void` alike (`settle` is the one verb that types a pending look) -- is refused: exit 3
+    `already-recorded`, one refusals.jsonl row, so a driver retry or a manual verb aimed at the wrong run appends nothing.
+    `record` also refuses a run charged in spend.jsonl but typed nowhere (a crash between R2's charge and its look),
+    pointing at the manual verbs that finish it without a second charge."""
+    where, row, by = recorded_in(P, spec, run_n, include_pending, include_spend, run_dir_rel)
+    if not where:
+        return
+    ref = {"at": now(), "reason": "already-recorded", "verb": verb, "spec": spec, "run": run_n, "found_in": "%s.jsonl" % where}
+    if by == "run_dir":
+        ref.update({"matched_by": "run_dir", "run_dir": run_dir_rel, "recorded_as": row.get("run")})
+    append_row(P["refusals"], ref)
+    who = "%s run-%s" % (spec, run_n) if run_n is not None else "%s %s" % (spec, run_dir_rel)
+    tail = " (matched by its run directory %s, recorded as run-%s)" % (run_dir_rel, row.get("run")) if by == "run_dir" else ""
+    if where == "pending":
+        ids = row.get("failing") or []
+        raise Refuse("already-recorded %s -- parked PENDING its root cause in pending.jsonl%s; `settle %s %s --root-cause %s` is the one verb that types it, so this %s appends nothing" % (
+            who, tail, spec, row.get("run"), " ".join("%s=<class>" % a for a in ids) or "A#=<class>", verb))
+    if where == "spend":
+        raise Refuse("already-recorded %s -- charged in spend.jsonl (class %s, %.1f s, US$%.4f) but typed nowhere: a crash between R2's charge and its look%s; finish it by hand with `append-look %s <0|1> --run %s` or `void %s --class <ambiguous|annulled> --run %s` (neither charges again), so this %s appends nothing" % (
+            who, row.get("class"), float(row.get("wall_s") or 0.0), float(row.get("cost_usd") or 0.0), tail, spec, row.get("run"), spec, row.get("run"), verb))
+    raise Refuse("already-recorded %s -- a row in %s.jsonl%s; every run is charged and typed once, so this %s appends nothing" % (who, where, tail, verb))
+
+
+def append_look(P, spec, run_n, refusal, clause, run_record, root_causes=None, instrument=None, settling=False):
+    """R2 look + R3. The frozen copy is verified FIRST -- R3's check before any R2 write, so a tampered copy refuses before
+    the stream, the looks or the ledger grow -- and a run parked pending refuses unless `settle` is the caller."""
+    frozen_doc(P)
+    refuse_if_recorded(P, spec, run_n, "append-look", include_pending=not settling)
     tk, _ = last_terminal(P)
     if tk:
         raise Refuse("terminal:%s -- a terminated lineage never launches again, so no look can be appended (R3)" % tk)
@@ -891,8 +954,9 @@ def append_look(P, spec, run_n, refusal, clause, run_record, root_causes=None, i
     return k, ev
 
 
-def append_void(P, spec, run_n, cls, clause, run_record, extra=None):
-    refuse_if_recorded(P, spec, run_n, "void")
+def append_void(P, spec, run_n, cls, clause, run_record, extra=None, settling=False):
+    frozen_doc(P)
+    refuse_if_recorded(P, spec, run_n, "void", include_pending=not settling)
     row = {"spec": spec, "run": run_n, "class": cls, "clause": clause, "run_record": run_record, "recorded": now(), "re_take": RE_TAKE}
     if extra:
         row.update(extra)
@@ -906,23 +970,57 @@ def _run_record_rel(layout, run_dir):
     return layout.runs_rel(os.path.join(run_dir, rec_file)) if rec_file else layout.runs_rel(run_dir)
 
 
-def record_run(layout, lane, run_dir, run_n=None, run_validity_ids=(), root_causes=None, instrument=None):
-    """R2 + R3 for the run just graded: charge, type, append the look (or record the void / the pending look)."""
+def record_shas(run_dir):
+    """sha256 of every record file present -- the snapshot `record` parks beside a pending look and `settle` re-checks.
+    Keyed on the directory listing, so a case-insensitive filesystem never lists one file under two RECORD_FILES names."""
+    present = set(os.listdir(run_dir)) if os.path.isdir(run_dir) else set()
+    return {name: sha_file(os.path.join(run_dir, name)) for name in RECORD_FILES if name in present and os.path.isfile(os.path.join(run_dir, name))}
+
+
+def resolve_charge(rec, wall_s=None, cost_usd=None, run_dir=""):
+    """R2 charges the run's recorded wall_s and cost_usd; an explicit override (the driver's own clock and meter, which is
+    how the lab driver charged) wins over the record. A component the record does not carry and no override supplies
+    REFUSES (exit 2): a crash-lost run charged as free would make the spec's rejected reading (c) -- a lineage whose every
+    launch voids re-takes forever -- reachable, so it is never charged as nothing. An override of wall_s <= 0 refuses for
+    the same reason: a launched run spent wall-clock. -> (wall_s, cost_usd, {component: "record" | "override"})."""
+    missing = [k for k, v, o in (("wall_s", rec.get("wall_s"), wall_s), ("cost_usd", rec.get("cost_usd"), cost_usd)) if v is None and o is None]
+    if missing:
+        raise Usage("record %s: the record files carry no readable %s (a crash-lost record?); pass --wall-s <seconds> and --cost-usd <US$> from the driver's own clock and meter so the launch is charged -- a run that would cost nothing toward the spend exit is refused, never charged as free (R2)" % (
+            run_dir, " / ".join(missing)))
+    if wall_s is not None and float(wall_s) <= 0:
+        raise Usage("record %s: --wall-s %r is not a launch's wall-clock -- a launched run spent time, and a run that costs nothing toward the spend exit is refused (R2)" % (run_dir, wall_s))
+    if cost_usd is not None and float(cost_usd) < 0:
+        raise Usage("record %s: --cost-usd %r is negative" % (run_dir, cost_usd))
+    source = {"wall_s": "override" if wall_s is not None else "record", "cost_usd": "override" if cost_usd is not None else "record"}
+    return (float(wall_s) if wall_s is not None else float(rec["wall_s"]), float(cost_usd) if cost_usd is not None else float(rec["cost_usd"]), source)
+
+
+def record_run(layout, lane, run_dir, run_n=None, run_validity_ids=(), root_causes=None, instrument=None, wall_s=None, cost_usd=None):
+    """R2 + R3 for the run just graded: charge, type, append the look (or record the void / park the pending look). In order:
+    the frozen copy is verified before any write (R3's check ahead of R2's rows); a run already recorded, parked pending or
+    charged-but-untyped refuses (keyed on the run number AND the run directory); the charge is the record's wall_s /
+    cost_usd or the driver's explicit override, and a record carrying neither with no override refuses (exit 2) -- see
+    resolve_charge. A pending row carries the sha256 of the record files it was parked from (settle re-checks them)."""
     root_lane, P, hops = resolve_lineage(layout, lane)
     require_header(P)
+    frozen_doc(P)
     run_dir = os.path.abspath(run_dir)
     if run_n is None:
         base = os.path.basename(run_dir)
         run_n = int(base.split("-")[-1]) if base.startswith("run-") and base.split("-")[-1].isdigit() else None
-    refuse_if_recorded(P, lane, run_n, "record", include_pending=True)
+    run_dir_rel = layout.runs_rel(run_dir)
+    refuse_if_recorded(P, lane, run_n, "record", include_pending=True, include_spend=True, run_dir_rel=run_dir_rel)
     run_record = _run_record_rel(layout, run_dir)
     word, typed, rec, meta = type_run_dir(run_dir, run_validity_ids, root_causes)
+    charge_wall, charge_usd, charge_source = resolve_charge(rec, wall_s, cost_usd, run_dir)
     pend = pending_ids(rec, typed)
-    outcome = {"lineage": root_lane, "spec": lane, "run": run_n, "run_dir": layout.runs_rel(run_dir), "type": word, "typed": typed, "record": rec, "meta": meta}
+    outcome = {"lineage": root_lane, "spec": lane, "run": run_n, "run_dir": run_dir_rel, "type": word, "typed": typed, "record": rec, "meta": meta,
+               "charge_source": charge_source}
     if pend:
         cls = "pending-root-cause"
-        row = {"spec": lane, "run": run_n, "run_dir": layout.runs_rel(run_dir), "failing": pend, "settled": False, "recorded": now(),
+        row = {"spec": lane, "run": run_n, "run_dir": run_dir_rel, "failing": pend, "settled": False, "recorded": now(),
                "run_validity_ids": sorted(set(str(x) for x in run_validity_ids or []) | set(meta["run_validity_ids"])),
+               "record_sha256": record_shas(run_dir),
                "how": "lineage-stopping.py settle %s %s --root-cause %s -- one class per failing id, from %s; an id left unclassed refuses (exit 2) and the look stays pending, never typed by guess" % (
                    lane, run_n, " ".join("%s=<class>" % a for a in pend), " | ".join(ROOT_CAUSE_CLASSES))}
         append_row(P["pending"], row)
@@ -931,7 +1029,8 @@ def record_run(layout, lane, run_dir, run_n=None, run_validity_ids=(), root_caus
         cls = "counted"
     else:
         cls = "void:%s" % typed["type"]
-    outcome["spend_row"] = charge(P, lane, run_n, rec.get("wall_s"), rec.get("cost_usd"), cls, run_record)
+    extra = {"charge_source": "override"} if "override" in charge_source.values() else None
+    outcome["spend_row"] = charge(P, lane, run_n, charge_wall, charge_usd, cls, run_record, extra=extra)
     if cls == "counted":
         k, ev = append_look(P, lane, run_n, typed["refusal"], typed["clause"], run_record, instrument=instrument)
         outcome["look"] = k
@@ -946,8 +1045,14 @@ def record_run(layout, lane, run_dir, run_n=None, run_validity_ids=(), root_caus
 
 
 def settle(layout, lane, run_n, root_causes, instrument=None):
+    """R2 (iii)/(iv) for a pending look: one root-cause class per pending id and for no other id (exit 2 either way, the look
+    stays pending). The record files are re-hashed against the snapshot `record` parked: a record edited or lost since then
+    never settles as a look -- it is the `ambiguous` void (R2 (i): the record is not the one that parked the look), the void
+    row and the settled pending row carrying `record_changed` (parked vs now, per file) and the supplied classes recorded
+    but not applied; the run is re-taken. The frozen copy is verified before any write."""
     root_lane, P, hops = resolve_lineage(layout, lane)
     require_header(P)
+    frozen_doc(P)
     pend = read_jsonl(P["pending"])
     mine = [p for p in pend if p.get("spec") == lane and str(p.get("run")) == str(run_n) and not p.get("settled")]
     if not mine:
@@ -957,23 +1062,45 @@ def settle(layout, lane, run_n, root_causes, instrument=None):
     bad = sorted("%s=%s" % (a, c) for a, c in rc.items() if c not in ROOT_CAUSE_CLASSES)
     if bad:
         raise Usage("settle %s run-%s: unknown root-cause class %s; one of %s" % (lane, run_n, ", ".join(bad), " | ".join(ROOT_CAUSE_CLASSES)))
-    unclassed = [a for a in p0["failing"] if a not in rc]
+    failing = [str(a) for a in p0.get("failing") or []]
+    unclassed = [a for a in failing if a not in rc]
     if unclassed:
         # the fixture's typing law (lineage.py, R2 (iv)): an unclassed root cause is parked pending, never typed by guess
         raise Usage("settle %s run-%s: no root-cause class for %s -- the look stays pending; pass --root-cause %s with a class from %s (an unclassed root cause is parked pending, never typed by guess)" % (
             lane, run_n, ", ".join(unclassed), " ".join("%s=<class>" % a for a in unclassed), " | ".join(ROOT_CAUSE_CLASSES)))
+    stray = sorted(a for a in rc if a not in failing)
+    if stray:
+        raise Usage("settle %s run-%s: %s is not a pending id of this look (pending: %s) -- a root-cause class lands only on the ids `record` parked; the look stays pending" % (
+            lane, run_n, ", ".join(stray), ", ".join(failing)))
     run_dir = os.path.join(layout.rel("runs_dir"), *p0["run_dir"].split("/"))
-    word, typed, rec, meta = type_run_dir(run_dir, p0.get("run_validity_ids") or (), rc)
     run_record = _run_record_rel(layout, run_dir)
-    outcome = {"lineage": root_lane, "spec": lane, "run": int(run_n), "type": word, "typed": typed, "root_causes": rc}
-    if typed["type"] == "counted":
-        k, ev = append_look(P, lane, int(run_n), typed["refusal"], typed["clause"], run_record, root_causes=rc, instrument=instrument)
-        outcome["look"] = k
-        outcome["evaluation"] = ev
+    parked = p0.get("record_sha256")
+    changed = None
+    if isinstance(parked, dict):
+        now_shas = record_shas(run_dir) if os.path.isdir(run_dir) else {}
+        if now_shas != parked:
+            changed = {n: {"parked": parked.get(n), "now": now_shas.get(n)} for n in sorted(set(parked) | set(now_shas)) if parked.get(n) != now_shas.get(n)}
+    outcome = {"lineage": root_lane, "spec": lane, "run": int(run_n), "root_causes": rc}
+    if changed:
+        typed, word = dict(AMBIGUOUS), "ambiguous"
+        outcome.update({"type": word, "typed": typed, "record_changed": changed})
+        outcome["void_row"] = append_void(P, lane, int(run_n), "ambiguous", "i", run_record, {"root_causes": rc, "record_changed": changed}, settling=True)
+        outcome["evaluation"] = {"looks": len(read_jsonl(P["stream"])),
+                                 "instruction": "continue at R1 (no look appended: %s changed since `record` parked this look, so it is the ambiguous void and is re-taken; the supplied classes were recorded, not applied)" % ", ".join(changed)}
     else:
-        outcome["void_row"] = append_void(P, lane, int(run_n), typed["type"], typed["clause"], run_record, {"root_causes": rc})
-        outcome["evaluation"] = {"looks": len(read_jsonl(P["stream"])), "instruction": "continue at R1 (no look appended)"}
-    rows = [dict(p, settled=True, typed=typed, root_causes=rc) if (p is p0) else p for p in pend]
+        word, typed, rec, meta = type_run_dir(run_dir, p0.get("run_validity_ids") or (), rc)
+        outcome.update({"type": word, "typed": typed})
+        if typed["type"] == "counted":
+            k, ev = append_look(P, lane, int(run_n), typed["refusal"], typed["clause"], run_record, root_causes=rc, instrument=instrument, settling=True)
+            outcome["look"] = k
+            outcome["evaluation"] = ev
+        else:
+            outcome["void_row"] = append_void(P, lane, int(run_n), typed["type"], typed["clause"], run_record, {"root_causes": rc}, settling=True)
+            outcome["evaluation"] = {"looks": len(read_jsonl(P["stream"])), "instruction": "continue at R1 (no look appended)"}
+    settled_row = dict(p0, settled=True, typed=typed, root_causes=rc)
+    if changed:
+        settled_row["record_changed"] = changed
+    rows = [settled_row if (p is p0) else p for p in pend]
     write_rows(P["pending"], rows)
     return outcome
 
@@ -1425,6 +1552,159 @@ def selftest(into=None):
         check("CLI: record / append-look / void on an already-recorded run exit 3 with `refused: already-recorded <lane> run-N`",
               r_d1.returncode == 3 and r_d1.stdout.startswith("refused: already-recorded %s run-1" % lane10) and r_d2.returncode == 3 and "already-recorded" in r_d2.stdout
               and r_d3.returncode == 3 and "already-recorded" in r_d3.stdout, "%d %r / %d / %d" % (r_d1.returncode, r_d1.stdout.strip()[:100], r_d2.returncode, r_d3.returncode))
+        # round-2 follow-ups (the ship refute's A13-A16 and NIT-1..NIT-4)
+        lane11 = "H-DRAFT-selftest-followups"
+        cmd_init(layout, lane11, 1800.0, 0.10)
+        P11 = layout.lineage_paths(lane11)
+        # A13: void / append-look on a run parked pending refuse and point at settle
+        rd111 = _mk_run(layout, lane11, 1, {"A1": "PASS", "A2": "FAIL", "A5": "PASS"})
+        o111 = record_run(layout, lane11, rd111, run_validity_ids=["A5"])
+        a13 = {}
+        for verb, fn in (("void", lambda: append_void(P11, lane11, 1, "ambiguous", "i", "x")), ("append-look", lambda: append_look(P11, lane11, 1, 0, "v", "x"))):
+            try:
+                fn()
+                a13[verb] = None
+            except Refuse as e:
+                a13[verb] = str(e)
+        r_a13 = cli("void", lane11, "--class", "ambiguous", "--run", "1")
+        r_a13b = cli("append-look", lane11, "0", "--run", "1")
+        rows_a13 = (len(read_jsonl(P11["voids"])), len(read_jsonl(P11["stream"])), len(open_pending(P11)))
+        s111 = settle(layout, lane11, 1, {"A2": VARIABLE_SIDE})
+        check("A13: void and append-look on a run parked PENDING refuse `already-recorded ... parked PENDING` naming `settle <lane> 1 --root-cause A2=<class>` (CLI exit 3 both); no void, no look, the row still pending; settle then types it counted refusal 1 (look 1)",
+              o111.get("pending") == ["A2"] and all(v is not None and "parked PENDING" in v and "settle %s 1 --root-cause A2=<class>" % lane11 in v for v in a13.values())
+              and r_a13.returncode == 3 and "settle" in r_a13.stdout and r_a13b.returncode == 3 and "settle" in r_a13b.stdout and rows_a13 == (0, 0, 1)
+              and s111["typed"] == COUNTED_1 and s111["look"] == 1 and not open_pending(P11), json.dumps(a13))
+        # A14: a crash-lost record would cost nothing toward the spend exit -> refused unless the driver charges by its own clock and meter
+        rd112 = os.path.join(layout.rundir(lane11), "run-2")
+        os.makedirs(rd112, exist_ok=True)
+        try:
+            record_run(layout, lane11, rd112, run_validity_ids=["A5"])
+            e112 = None
+        except Usage as e:
+            e112 = str(e)
+        r_a14 = cli("record", lane11, rd112, "--run-validity", "A5")
+        rows_a14 = (len(read_jsonl(P11["spend"])), len(read_jsonl(P11["voids"])))
+        r_a14b = cli("record", lane11, rd112, "--run-validity", "A5", "--wall-s", "1800", "--cost-usd", "0.05", "--json")
+        j14 = json.loads(r_a14b.stdout) if r_a14b.returncode == 0 else {}
+        check("A14: record of a crash-lost record (no readable wall_s / cost_usd) REFUSES (exit 2, stdout empty, nothing charged or voided) naming --wall-s and --cost-usd; with both the CLI charges 1800 s / US$0.05 (spend row charge_source override, cumulative 1900 s) and voids ambiguous -- a free launch toward the spend exit is unreachable",
+              e112 is not None and "--wall-s" in e112 and "--cost-usd" in e112 and "wall_s / cost_usd" in e112 and r_a14.returncode == 2 and r_a14.stdout == "" and "--wall-s" in r_a14.stderr
+              and rows_a14 == (2, 0) and r_a14b.returncode == 0 and j14.get("word") == "ambiguous" and j14.get("spend_row", {}).get("wall_s") == 1800.0 and j14.get("spend_row", {}).get("cost_usd") == 0.05
+              and j14.get("spend_row", {}).get("charge_source") == "override" and len(read_jsonl(P11["voids"])) == 1 and read_jsonl(P11["spend"])[-1]["cum_wall_s"] == 1900.0,
+              (e112 or "")[:120] + " / rc %d %s" % (r_a14b.returncode, (r_a14b.stdout + r_a14b.stderr)[:200]))
+        rd113 = os.path.join(layout.rundir(lane11), "run-3")
+        os.makedirs(rd113, exist_ok=True)
+        try:
+            record_run(layout, lane11, rd113, run_validity_ids=["A5"], wall_s=0.0, cost_usd=0.0)
+            e113 = None
+        except Usage as e:
+            e113 = str(e)
+        n113 = len(read_jsonl(P11["spend"]))
+        rd114 = _mk_run(layout, lane11, 4, {"A1": "PASS", "A2": "PASS", "A5": "PASS"}, wall_s=100.0)
+        o114 = record_run(layout, lane11, rd114, run_validity_ids=["A5"], wall_s=120.5)
+        check("A14: an override of --wall-s 0 is refused too (a launched run spent wall-clock; nothing charged); an override beside a readable record wins (the driver's clock, as the lab driver charged): 120.5 s charged for a record saying 100.0, cost_usd from the record, charge_source {wall_s: override, cost_usd: record}, counted look 2",
+              e113 is not None and "--wall-s" in e113 and n113 == 3 and o114["spend_row"]["wall_s"] == 120.5 and o114["spend_row"]["cost_usd"] == 0.0 and o114["spend_row"]["charge_source"] == "override"
+              and o114["charge_source"] == {"wall_s": "override", "cost_usd": "record"} and o114["look"] == 2, (e113 or "")[:120])
+        # A15: a tampered frozen copy refuses record / append-look / void / settle BEFORE any write; the restored copy proceeds
+        lane12 = "H-DRAFT-selftest-tampered"
+        cmd_init(layout, lane12, 1800.0, 0.10)
+        P12 = layout.lineage_paths(lane12)
+        rd121 = _mk_run(layout, lane12, 1, {"A1": "PASS", "A2": "FAIL", "A5": "PASS"})
+        record_run(layout, lane12, rd121, run_validity_ids=["A5"])
+        rd122 = _mk_run(layout, lane12, 2, {"A1": "PASS", "A2": "PASS", "A5": "PASS"})
+        good12 = open(P12["frozen"], "rb").read()
+        doc12 = json.loads(good12.decode("utf-8"))
+        doc12["rule_text"] = doc12["rule_text"].replace('"alpha": 0.05', '"alpha": 0.5')
+        with open(P12["frozen"], "w", encoding="utf-8") as fh:
+            json.dump(doc12, fh)
+        before12 = {k: len(read_jsonl(P12[k])) for k in ("spend", "stream", "looks", "voids", "pending", "refusals")}
+        a15 = {}
+        for verb, fn in (("record", lambda: record_run(layout, lane12, rd122, run_validity_ids=["A5"])), ("append-look", lambda: append_look(P12, lane12, 3, 0, "v", "x")),
+                         ("void", lambda: append_void(P12, lane12, 4, "ambiguous", "i", "x")), ("settle", lambda: settle(layout, lane12, 1, {"A2": VARIABLE_SIDE}))):
+            try:
+                fn()
+                a15[verb] = None
+            except Refuse as e:
+                a15[verb] = str(e)
+        after12 = {k: len(read_jsonl(P12[k])) for k in before12}
+        still12 = [p["run"] for p in open_pending(P12)]
+        with open(P12["frozen"], "wb") as fh:
+            fh.write(good12)
+        s121 = settle(layout, lane12, 1, {"A2": VARIABLE_SIDE})
+        o122 = record_run(layout, lane12, rd122, run_validity_ids=["A5"])
+        check("A15: a tampered frozen copy refuses record, append-look, void AND settle `frozen-rule-tampered` BEFORE any write -- every lineage file unchanged (spend 2, pending 1, stream / looks / voids / refusals 0), the look still pending, the retry not already-recorded; the restored copy settles (look 1) and records (look 2)",
+              all(v is not None and "frozen-rule-tampered" in v for v in a15.values()) and after12 == before12 and before12 == {"spend": 2, "stream": 0, "looks": 0, "voids": 0, "pending": 1, "refusals": 0}
+              and still12 == [1] and s121["look"] == 1 and o122["look"] == 2, json.dumps(a15) + " " + json.dumps(after12))
+        # A16: settle re-hashes the record files against what record parked
+        rd115 = _mk_run(layout, lane11, 5, {"A1": "PASS", "A2": "FAIL", "A5": "PASS"})
+        o115 = record_run(layout, lane11, rd115, run_validity_ids=["A5"])
+        prow = [p for p in read_jsonl(P11["pending"]) if p["run"] == 5][0]
+        parked_sha = sha_file(os.path.join(rd115, "grade.json"))
+        _mk_run(layout, lane11, 5, {"A1": "PASS", "A2": "PASS", "A5": "PASS"})  # the edit between record and settle: A2 now passes
+        looks_before = len(read_jsonl(P11["stream"]))
+        s115 = settle(layout, lane11, 5, {"A2": VARIABLE_SIDE})
+        vrow = read_jsonl(P11["voids"])[-1]
+        prow2 = [p for p in read_jsonl(P11["pending"]) if p["run"] == 5][0]
+        check("A16: the pending row carries record_sha256 of the files `record` read; grade.json edited (A2 FAIL -> PASS) before settle -> settle reads the ambiguous void, NOT a refusal-0 look: no stream row, the void row and the settled pending row carry record_changed {grade.json: parked, now} (RUN-RECORD.json unchanged, not listed), the supplied class recorded not applied, nothing pending",
+              o115.get("pending") == ["A2"] and prow.get("record_sha256", {}).get("grade.json") == parked_sha and set(prow["record_sha256"]) == {"grade.json", "RUN-RECORD.json"}
+              and s115["type"] == "ambiguous" and s115["typed"] == AMBIGUOUS and "look" not in s115 and len(read_jsonl(P11["stream"])) == looks_before
+              and list(vrow["record_changed"]) == ["grade.json"] and vrow["record_changed"]["grade.json"]["parked"] == parked_sha and vrow["record_changed"]["grade.json"]["now"] == sha_file(os.path.join(rd115, "grade.json"))
+              and vrow["root_causes"] == {"A2": VARIABLE_SIDE} and prow2.get("settled") is True and prow2.get("record_changed") == vrow["record_changed"] and not open_pending(P11), canon(s115.get("record_changed")))
+        # NIT-1: a class for an id that is not pending is refused
+        rd116 = _mk_run(layout, lane11, 6, {"A1": "PASS", "A2": "FAIL", "A5": "PASS"})
+        record_run(layout, lane11, rd116, run_validity_ids=["A5"])
+        try:
+            settle(layout, lane11, 6, {"A2": INSTRUMENT_SIDE, "A9": VARIABLE_SIDE})
+            e116 = None
+        except Usage as e:
+            e116 = str(e)
+        r_n1 = cli("settle", lane11, "6", "--root-cause", "A2=instrument", "--root-cause", "A9=variable-side")
+        still116 = [p["run"] for p in open_pending(P11)]
+        s116 = settle(layout, lane11, 6, {"A2": INSTRUMENT_SIDE})
+        check("NIT-1: settle refuses (exit 2) a root-cause class for an id that is not pending (A9 beside A2: `not a pending id`), the look stays pending; with A2 alone it settles (annulled iv) and the void row carries {A2} only",
+              e116 is not None and "A9" in e116 and "not a pending id" in e116 and r_n1.returncode == 2 and "A9" in r_n1.stderr and still116 == [6]
+              and s116["typed"] == ANNULLED_IV and read_jsonl(P11["voids"])[-1]["root_causes"] == {"A2": INSTRUMENT_SIDE} and not open_pending(P11), e116)
+        # NIT-2: the guard keys on the run directory too
+        rd117 = _mk_run(layout, lane11, 7, {"A1": "PASS", "A2": "PASS", "A5": "PASS"})
+        o117 = record_run(layout, lane11, rd117, run_n=8, run_validity_ids=["A5"])
+        try:
+            record_run(layout, lane11, rd117, run_validity_ids=["A5"])
+            dup117 = None
+        except Refuse as e:
+            dup117 = str(e)
+        ref117 = read_jsonl(P11["refusals"])[-1]
+        check("NIT-2: the already-recorded guard keys on the run DIRECTORY as well as the number: `record run-7 --run 8` (look 3) then `record run-7` is refused `already-recorded <lane> run-7 ... recorded as run-8` (refusals row matched_by run_dir, recorded_as 8); one look and one spend row from one directory",
+              o117["look"] == 3 and o117["run"] == 8 and dup117 is not None and dup117.startswith("already-recorded %s run-7" % lane11) and "recorded as run-8" in dup117
+              and ref117["matched_by"] == "run_dir" and ref117["recorded_as"] == 8 and ref117["run_dir"].endswith("/run-7") and len(read_jsonl(P11["stream"])) == 3
+              and sum(1 for r in read_jsonl(P11["spend"])[1:] if r["run_record"].startswith("%s/run-7/" % lane11)) == 1, dup117)
+        # NIT-3: charge is guarded; record refuses a run charged but typed nowhere and points at the manual verbs
+        charge(P11, lane11, 9, 300.0, 0.0, "counted", "%s/run-9/RUN-RECORD.json" % lane11)
+        try:
+            charge(P11, lane11, 9, 300.0, 0.0, "counted", "x")
+            dupc = None
+        except Refuse as e:
+            dupc = str(e)
+        rd119 = _mk_run(layout, lane11, 9, {"A1": "PASS", "A2": "PASS", "A5": "PASS"}, wall_s=300.0)
+        try:
+            record_run(layout, lane11, rd119, run_validity_ids=["A5"])
+            dupr = None
+        except Refuse as e:
+            dupr = str(e)
+        spend_n = len(read_jsonl(P11["spend"]))
+        v9 = append_void(P11, lane11, 9, "ambiguous", "i", "%s/run-9/RUN-RECORD.json" % lane11)
+        r_c9 = cli("charge", lane11, "--wall-s", "300", "--cost-usd", "0", "--class", "counted", "--run", "9")
+        check("NIT-3: a second `charge` of the same run is refused `already-charged` (CLI exit 3, refusals row reason already-charged); `record` of a run charged but typed nowhere is refused `typed nowhere` pointing at append-look / void, and `void --run 9` then finishes it with no second charge (spend rows unchanged)",
+              dupc is not None and dupc.startswith("already-charged %s run-9" % lane11) and dupr is not None and "typed nowhere" in dupr and "append-look %s <0|1> --run 9" % lane11 in dupr
+              and v9["run"] == 9 and len(read_jsonl(P11["spend"])) == spend_n and r_c9.returncode == 3 and r_c9.stdout.startswith("refused: already-charged")
+              and read_jsonl(P11["refusals"])[-1]["reason"] == "already-charged", (dupc or "")[:100] + " / " + (dupr or "")[:160])
+        # NIT-4: a --run-validity id the record does not carry is warned, never silently ignored
+        warned, quiet = [], []
+        w10, t10, r10, m10 = type_run_dir(rd117, ["A7"], warn=warned.append)
+        w10b, _, _, m10b = type_run_dir(rd117, ["A5"], warn=quiet.append)
+        r_t7 = cli("type", rd117, "--run-validity", "A7")
+        check("NIT-4: --run-validity naming an assertion the record does not carry (A7) is listed in meta.run_validity_unknown and warned once (`warning: --run-validity A7 names no assertion the record carries`, CLI stderr), the word still counted and stdout clean; a carried id (A5) warns nothing",
+              m10["run_validity_unknown"] == ["A7"] and w10 == "counted" and len(warned) == 1 and "warning: --run-validity A7 names no assertion" in warned[0]
+              and m10b["run_validity_unknown"] == [] and quiet == [] and w10b == "counted"
+              and r_t7.returncode == 0 and r_t7.stdout.strip() == "counted" and "warning: --run-validity A7" in r_t7.stderr, (warned, r_t7.stderr[:160]))
     finally:
         if into is None:
             shutil.rmtree(scratch, ignore_errors=True)
@@ -1500,6 +1780,8 @@ def main(argv=None):
     p.add_argument("--run", type=int)
     p.add_argument("--run-validity")
     p.add_argument("--root-cause", action="append", default=[])
+    p.add_argument("--wall-s", type=float, help="charge this wall-clock (the driver's own clock) instead of the record's; required when the record carries no wall_s")
+    p.add_argument("--cost-usd", type=float, help="charge this US$ (the driver's own meter) instead of the record's; required when the record carries no cost_usd")
     p = add("charge", "R2: one spend row")
     p.add_argument("lane")
     p.add_argument("--wall-s", type=float, required=True)
@@ -1584,7 +1866,8 @@ def main(argv=None):
             emit(ev["state"] or "no looks", ev, as_json, ev["instruction"])
             return _rc_of(ev)
         if o.cmd == "record":
-            out = record_run(layout, o.lane, o.run_dir, o.run, parse_ids(o.run_validity), parse_root_causes(o.root_cause), instrument=o.instrument)
+            out = record_run(layout, o.lane, o.run_dir, o.run, parse_ids(o.run_validity), parse_root_causes(o.root_cause), instrument=o.instrument,
+                             wall_s=o.wall_s, cost_usd=o.cost_usd)
             emit("pending" if out.get("pending") else out["type"], out, as_json, out["evaluation"]["instruction"])
             return _rc_of(out.get("evaluation"))
         if o.cmd == "charge":

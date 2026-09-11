@@ -96,13 +96,13 @@ Rows are canonical JSON (sorted keys, compact separators), one per line, append-
 | file | rows |
 |---|---|
 | `frozen/rule.json` | the frozen copy (R0) |
-| `spend.jsonl` | header `{"header": true, "lineage", "frozen_rule_sha256", "frozen_copy", "per_run_cap": {"wall_s", "usd"}, "truncation_length", "budget": {"wall_s", "usd"}, "derivation", "opened"}`, then one row per launch `{"spec", "run", "run_record", "cost_usd", "wall_s", "cum_usd", "cum_wall_s", "charged", "class"}` with class `counted`, `void:ambiguous`, `void:annulled` or `pending-root-cause` |
+| `spend.jsonl` | header `{"header": true, "lineage", "frozen_rule_sha256", "frozen_copy", "per_run_cap": {"wall_s", "usd"}, "truncation_length", "budget": {"wall_s", "usd"}, "derivation", "opened"}`, then one row per launch `{"spec", "run", "run_record", "cost_usd", "wall_s", "cum_usd", "cum_wall_s", "charged", "class"}` with class `counted`, `void:ambiguous`, `void:annulled` or `pending-root-cause` (+ `charge_source: override` when the driver's `--wall-s` / `--cost-usd` charged it) |
 | `stream.jsonl` | the pooled counted looks `{"class": "lineage", "look": k, "refusal": 0|1}` -- what the instrument reads |
 | `looks.jsonl` | look k -> `{"spec", "run", "run_record", "refusal", "clause", "appended"}` (+ `root_causes` when settled) |
 | `state.jsonl` | the instrument's state lines, one per look up to the terminal (`look`, `llr`, `n_min`, `rule`, `rule_sha`, `state`, `stream`) |
-| `voids.jsonl` | `{"spec", "run", "class", "clause", "run_record", "recorded", "re_take"}` (+ `terminal: budget-exceeded`, + `root_causes`) |
-| `pending.jsonl` | `{"spec", "run", "run_dir", "failing", "settled", "recorded", "run_validity_ids", "how"}`; rewritten with `settled: true` and the typing at settle |
-| `refusals.jsonl` | R1 `{"at", "terminal": "budget-exhausted", "cum_usd", "cum_wall_s", "budget", "launches_so_far"}`; a duplicate run `{"at", "reason": "already-recorded", "verb", "spec", "run", "found_in"}` |
+| `voids.jsonl` | `{"spec", "run", "class", "clause", "run_record", "recorded", "re_take"}` (+ `terminal: budget-exceeded`, + `root_causes`, + `record_changed` from a `settle` whose record files no longer hash as parked) |
+| `pending.jsonl` | `{"spec", "run", "run_dir", "failing", "settled", "recorded", "run_validity_ids", "record_sha256", "how"}` -- `record_sha256` is the sha256 of every record file `record` read; rewritten with `settled: true`, the typing and `root_causes` at settle (+ `record_changed` when the files no longer hash as parked) |
+| `refusals.jsonl` | R1 `{"at", "terminal": "budget-exhausted", "cum_usd", "cum_wall_s", "budget", "launches_so_far"}`; a duplicate run `{"at", "reason": "already-recorded", "verb", "spec", "run", "found_in"}` (+ `matched_by: run_dir`, `run_dir`, `recorded_as` when the run directory matched under another number); a duplicate charge `{"at", "reason": "already-charged", "verb": "charge", "spec", "run", "found_in": "spend.jsonl"}` |
 | `inherits.json` | R4 pointer on a successor: `{"lineage_root", "via", "frozen_rule_sha256", "recorded", "r4"}` |
 
 The lab lineage's own files under `experiments/runs/H-DRAFT-5810517d-verdict-lineage-stopping/lineage/`
@@ -117,11 +117,11 @@ lineage-stopping.py paths <lane>
 lineage-stopping.py may-launch <lane>                          exit 0 `launch` | exit 3 `budget-exhausted` / `look-pending` / `terminal:<kind>`
 lineage-stopping.py type <run-dir> [--run-validity A5,..] [--root-cause A#=<class> ...]
                                                                -> counted | ambiguous | annulled | budget-exceeded
-lineage-stopping.py record <lane> <run-dir> [--run N] [--run-validity ..] [--root-cause ..]
+lineage-stopping.py record <lane> <run-dir> [--run N] [--run-validity ..] [--root-cause ..] [--wall-s W --cost-usd C]
 lineage-stopping.py charge <lane> --wall-s W --cost-usd C --class CLS [--run N] [--run-record P]
 lineage-stopping.py append-look <lane> <0|1> [--run N] [--clause iii|v] [--run-record P]
 lineage-stopping.py void <lane> --class ambiguous|annulled [--clause i|ii|iv] [--run N]
-lineage-stopping.py settle <lane> <run> --root-cause A#=<class> [...]     one class per pending id; an id left unclassed -> exit 2, the look stays pending
+lineage-stopping.py settle <lane> <run> --root-cause A#=<class> [...]     one class per pending id and no other; an id left unclassed -> exit 2, the look stays pending
 lineage-stopping.py evaluate <lane>
 lineage-stopping.py state <lane>                               -> promote | hold | insufficient | max-looks | spend-exhausted
 lineage-stopping.py walk <launches.jsonl> --model A|B [--ratios r,..] [--budget-caps N] --out <stream.jsonl>
@@ -135,14 +135,33 @@ same steps for a driver that types its runs itself. `state` is the read-back: th
 one exists, else `spend-exhausted` when R1 would refuse the next launch, else `insufficient` (with `n`,
 the llr, spend and remaining budget under `--json`). Exit codes: 0 ok; 1 an invariant or `--check`
 violated (named, files left as written -- a failing run is recorded, not repaired); 2 usage, a lineage
-not initialised, or a `settle` that leaves a pending id unclassed; 3 refused (R1, a pending look, a
-terminated lineage, an R0 byte or truncation mismatch, a run already recorded). Every (spec, run) is
-charged and typed once: `record`, `append-look` and `void` refuse a run already in `looks.jsonl` or
-`voids.jsonl` (`record` also one parked in `pending.jsonl`) with exit 3 `already-recorded <lane> run-N`
-and one `refusals.jsonl` row, so a driver retry after a partial failure appends nothing (a look or void
-given no `--run` number is unidentified and not guarded).
+not initialised, a `settle` that leaves a pending id unclassed or names an id that is not pending, or a
+`record` whose files carry no readable `wall_s` / `cost_usd` and no override; 3 refused (R1, a pending
+look, a terminated lineage, an R0 byte or truncation mismatch, a tampered frozen copy, a run already
+recorded, parked or charged). A `--run-validity` id the record carries no assertion for is warned on
+stderr (`warning: --run-validity A7 names no assertion the record carries ...`) and listed in
+`meta.run_validity_unknown`; it types nothing.
 The instruction field carries the hypothesis-loop words (KEEP / DISCARD / closed without a verdict); the
 state lines never do.
+
+### Refusals and guards
+
+Every (spec, run) is charged and typed once, and nothing is written past a check that fails:
+
+| guard | verbs | what happens |
+|---|---|---|
+| **frozen copy first** | `record`, `append-look`, `void`, `settle` | `frozen/rule.json` is verified before any write: a tampered copy exits 3 `frozen-rule-tampered` with the ledger, stream, looks, voids and pending rows untouched (the retry is not `already-recorded`); `evaluate` and the instrument itself (exits 12/13) refuse it too |
+| **already-recorded** | `record`, `append-look`, `void` | a run already in `looks.jsonl` or `voids.jsonl` exits 3 `already-recorded <lane> run-N` with one `refusals.jsonl` row; a driver retry after a partial failure appends nothing |
+| **parked pending** | `record`, `append-look`, `void` | a run parked in `pending.jsonl` exits 3 `already-recorded ... parked PENDING`, naming `settle <lane> N --root-cause A#=<class>` as the one verb that types it -- a manual verb aimed at a pending run can no longer wedge the lineage |
+| **run directory** | `record` | the guard keys on the run DIRECTORY as well as the number: `record run-5 --run 7` then `record run-5` is refused (`matched_by: run_dir`, `recorded_as: 7` in the refusals row); one directory is one look |
+| **charged, typed nowhere** | `record` | a run with a `spend.jsonl` row but no look, void or pending row (a crash between R2's charge and its look) exits 3 pointing at `append-look <lane> <0\|1> --run N` / `void <lane> --class .. --run N`, which finish it without a second charge |
+| **already-charged** | `charge` | a second `charge` of the same numbered run exits 3 `already-charged` with one refusals row (`reason: already-charged`) |
+| **charge readable** | `record` | the charge is the record's `wall_s` and `cost_usd`, or the driver's `--wall-s` / `--cost-usd` (its own clock and meter -- how the lab driver charged; the override wins and the spend row carries `charge_source: override`); a record carrying neither with no override exits 2 naming both flags, and `--wall-s 0` exits 2 too. A crash-lost run is never charged as free, so the spec's rejected reading (c) -- a lineage whose every launch voids re-takes forever -- stays unreachable |
+| **settle ids** | `settle` | one class per pending id (an id left unclassed exits 2, the look stays pending) and for no other id (`A9` beside a pending `A2` exits 2) |
+| **settle snapshot** | `settle` | the pending row carries `record_sha256` of the record files `record` read; a record edited or lost since then never settles as a look -- it is the `ambiguous` void (R2 (i): not the record that parked the look) with `record_changed` `{file: {parked, now}}` on the void row and the settled pending row, the supplied classes recorded but not applied, the run re-taken |
+
+Unguarded by design: a `charge`, `append-look` or `void` given no `--run` number is unidentified (and
+`record` of a directory recorded nowhere under no number likewise).
 
 ## How a lane adopts the rule
 
@@ -157,9 +176,13 @@ state lines never do.
 3. **Every launch.** `may-launch <id>` (exit 0) -> run and grade into `<runs_dir>/<id>/run-N/` ->
    `record <id> <runs_dir>/<id>/run-N --run-validity A5` -> read the instruction. A pending root cause is
    settled by whoever records it (the cold verifier, usually): `settle <id> N --root-cause A2=<class>`,
-   one class per failing id (`settle` refuses without one; the look stays pending). `record` is safe to
-   retry: an already-recorded run is refused, never charged or counted twice. Declare the lineage files
-   as writes for the lane's containment instrument.
+   one class per failing id (`settle` refuses without one; the look stays pending). Leave the run directory
+   untouched between `record` and `settle`: `settle` re-hashes the record files against what `record`
+   parked, and a changed record settles as the `ambiguous` void, never a look. A run whose child died before
+   writing its record (no `wall_s` / `cost_usd`) is recorded with the driver's own clock and meter,
+   `record ... --wall-s <s> --cost-usd <US$>`; without them `record` refuses rather than charge the launch
+   as free. `record` is safe to retry: an already-recorded run is refused, never charged or counted twice.
+   Declare the lineage files as writes for the lane's containment instrument.
 4. **Refine.** A successor with a new id runs `init <successor> --inherit <root>` and continues with the
    same verbs; its runs are charged to the root's ledger and its looks pool into the root's stream.
 5. **Close.** `state <id>` reads `promote` (KEEP the current spec), `hold` (DISCARD, exclusion banked),
@@ -176,9 +199,13 @@ a refine, so a successor cannot buy fresh launches by renaming; a spec never car
 decision card asks for one ("I will not sit here and tell you how many tests to run", the 2026-09-10
 ruling). `max_looks` is not a hidden cap: it is Wald's truncation, derived from the four policy numbers,
 reached only by a mechanism in the indifference zone, and read as `evidence-insufficient`, never a
-promote. The preflight-rigor `LINEAGE-CAP` row (a depth-3 `lineage-decision:` predicate) is the count
-request this rule retires; its successor is a maintainer ruling recorded in the source lab, and until then
-the row stays report-only.
+promote. The preflight-rigor `LINEAGE-CAP` row, once a depth-3 `lineage-decision:` count request, now
+reads this rule first: at depth >= 3 it resolves the lineage root (the successor's `inherits.json` chain,
+then the `refined-into:` root, then the spec's own run directory), verifies the frozen copy against the
+policy sha and reports the stream and spend ledger (`lineage-rule:<state> looks= voids= spend=`), reads
+`FAIL lineage-rule:tampered` on a frozen copy that does not hash to the policy, and falls back to the
+`lineage-decision:` path only for lineages with no lineage directory (`docs/preflight-rigor.md`, "Row 8
+under the lineage stopping rule"). The row stays report-only.
 
 ## Evidence (lab H-DRAFT-5810517d-verdict-lineage-stopping, kept 2026-09-11)
 
@@ -225,21 +252,30 @@ frozen copy.
 
 ## Known limitations (from the refute)
 
-Found by the adversarial review of the port and left as they are in this pass -- none is fixed here:
+Found by the adversarial reviews of the port. Round 1's A2 and A3 and round 2's A13-A16 and NIT-1..NIT-4
+are fixed ("Refusals and guards" above; every fix has a selftest case); these remain as they are:
 
 - **A4** -- `may-launch` and `state` answer from `state.jsonl` and `spend.jsonl` without re-verifying the
-  frozen copy; a tampered `frozen/rule.json` is caught by `evaluate`, `record`, `append-look` and `settle`
-  (exit 3 `frozen-rule-tampered`) and by the instrument itself (exits 12/13), not by those two read verbs.
+  frozen copy; a tampered `frozen/rule.json` is refused before any write by `record`, `append-look`, `void`
+  and `settle` (exit 3 `frozen-rule-tampered`), by `evaluate`, and by the instrument itself (exits 12/13),
+  not by those two read verbs.
 - **A5** -- R0's byte check of the lineage's frozen copy against `rules/frozen/lineage-sprt.json` is skipped
   silently when that reference file is absent from an install; the inner-rule sha check and the
   truncation derivation still run, so the docs' "byte-identical, refused otherwise" holds only with the
   reference present.
-- **A6** -- an `init` refused after the freeze (an R0 byte or truncation mismatch) leaves a stray
-  `lineage/frozen/rule.json` behind with no ledgers opened; a later `init` recovers (the freeze
-  overwrites, the header is opened).
+- **A18** -- `init --policy <path>` skips that reference byte check by design (a policy other than the
+  shipped one is a lab decision): a whitespace-only rewrite of the same policy is accepted, the lineage's
+  `frozen_rule_sha256` then differs from `8052bda9...`, and only the spend header records it; the inner-sha
+  and truncation checks still run.
+- **A6** -- an `init` refused after the freeze (an R0 byte mismatch) leaves a stray `lineage/frozen/rule.json`
+  behind with no ledgers opened; a later `init` recovers (the freeze overwrites, the header is opened). The
+  kind and truncation checks run before the freeze, so those refusals create nothing.
 - **A7** -- every refused `may-launch` appends one `refusals.jsonl` row (parity with the lab fixture's
   `r1_check`); a polling driver accumulates rows.
 - **A9** -- `record <lane> <run-dir>` resolves a relative run directory against the current working
   directory, not `--root`; drivers should pass absolute run directories.
 - **A11** -- `charge --class` accepts any string; the four classes this script writes (`counted`,
   `void:ambiguous`, `void:annulled`, `pending-root-cause`) are not enforced on that verb.
+- **Unidentified runs** -- a `charge`, `append-look` or `void` given no `--run` is not guarded (the residue
+  of NIT-3), and a pending row written before `record_sha256` existed settles by re-reading its run
+  directory as before.

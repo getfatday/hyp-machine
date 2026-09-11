@@ -18,8 +18,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/preflight-rigor.py" --selftest           
 
 Output: byte-stable `STATUS<TAB>check<TAB>relpath<TAB>detail` rows (PASS/FAIL/SKIP) — per spec
 the six ethics rows, then the thirteen rigor rows, then one `META` line (the ethics keys `signals`,
-`section_present`, `subjects`, `route` as before, plus a `rigor` block with `fails`, `skips`, `id`
-and, when computed, `lineage_depth`, `frozen_span_sha` / `no_frozen_span`). The six ethics rows are
+`section_present`, `subjects`, `route` as before, plus a `rigor` block with `fails`, `skips`, `id`,
+`lineage_rule` (row 8's lineage-rule state token, or `null` when the legacy path or the depth SKIP
+applied) and, when computed, `lineage_depth`, `frozen_span_sha` / `no_frozen_span`). The six ethics rows are
 byte-identical to what the script printed before the rigor rows landed; the rigor rows are appended.
 Exit 0 always; findings never change the exit code. Run it alongside — not inside — the shipped
 `scripts/preflight.py` (the 8-check deterministic gate), whose PASS/ESCALATE/MALFORMED semantics
@@ -50,7 +51,7 @@ keep-ship-gate id rule); the run directory is `<runs_dir>/<id>/`.
 | 5 | `DIRECTIVE-INTERPRETATION/SOURCE-LINE` | The spec cites a directive (a `research/raw/` path, or the word directive or ruling) and either carries no fenced `interpretation-set` block with `source:`, `verbatim:`, >= 2 numbered readings and `chosen:`, or no `research/raw/<file>.md:<L>-<L>` citation whose file exists and whose range lies within its line count; a DESIGN-doc-only source adds detail `design-doc-only` | no directive trigger | advisory (8, min 5) | yes |
 | 6 | `STAGE1-REVIEWED` | Claim type normative or the directive trigger, and no `reviewed-by:` keyed line whose value resolves to a decision (definition below) or names a committed file under `<runs_dir>/<id>/stage1/` | neither trigger | advisory (7, min 5) | yes |
 | 7 | `REFUTE-REVIEW` | `SHIP.md` exists (or `VERDICT.json` `files_changed_in_on` names a plugin-shipped path by keep-ship-gate's rule) and `REFUTE.md` is absent, lacks `blocking-findings: 0`, lacks `refuter-session:`, or its refuter equals a recorded builder or executor id (`SHIP.md`, `fixture/README.md`, `run.json`) | no `SHIP.md` and no plugin-shipped change | advisory (6, min 5) | yes |
-| 8 | `LINEAGE-CAP` | The spec has >= 3 ancestors by `refined-into:` pointers in the Status blocks of the repository's specs and no `lineage-decision:` keyed line that resolves to a decision (definition below); the detail carries depth, root id and the root-vs-current assertion-span sha pair | depth < 3 (detail `cap-not-reached`) | hard candidate (10, min 10); false-positive bound asserted — repaired detector | yes |
+| 8 | `LINEAGE-CAP` | The spec has >= 3 ancestors by `refined-into:` pointers in the Status blocks of the repository's specs and either (a) its lineage is under the lineage stopping rule — `<runs_dir>/<root>/lineage/frozen/rule.json` exists, the root resolved through the successor's `lineage/inherits.json` chain first, then the `refined-into:` root, then the spec's own run directory — but the frozen copy's `rule_text` does not hash to the policy sha `8052bda9…` or its `sha256` field disagrees (detail `lineage-rule:tampered`), or (b) no lineage directory exists and no `lineage-decision:` keyed line resolves to a decision (definition below; the legacy path, unchanged). A lineage under a verified frozen copy PASSes from its stream and spend ledger with `lineage-rule:<promote\|hold\|max-looks\|insufficient n=k/13\|spend-exhausted\|no-looks-yet> looks=<k> voids=<v> spend=<usd>/<wall_s>` and is never asked for a count (see "Row 8 under the lineage stopping rule" below); the detail always carries depth, root id and the root-vs-current assertion-span sha pair | depth < 3 (detail `cap-not-reached`), with or without a lineage directory | hard candidate (10, min 10); false-positive bound asserted — repaired detector; re-pointed at the lineage rule (lab H-DRAFT-5810517d, fragment 0490) | yes |
 | 9 | `VOID-CLASS` | Spec leg: the Verdict-rule span names a void class (void, uncounted, not counted) and does not type it with both `ambiguous` and `annulled`. Run leg: a void record (definition below) lacks `void_class` in {ambiguous, annulled} | no void clause and no void record | advisory (6, min 5) — repaired detector | yes |
 | 10 | `WHO-CARES` | The `- **What "keep" means:**` line is absent, names no actor id (a filename under `<model_dir>/*/actors/*.md`), or carries no magnitude token (a number followed by %, x, /n, s, ms, or the word today) | never | advisory (6, min 5) | yes |
 | 11 | `PREMORTEM-PRESENT` | Method carries no `Pre-mortem:` keyed list with >= 2 items each mapped `-> A<n>`, `-> void:<class>` or `-> banks` | never | advisory (6, min 5) | yes |
@@ -99,6 +100,47 @@ positive-control token (seeded, mutant, mutants, planted, sabotaged) or a negati
 (clean corpus, must-silent, zero findings, control range); Method prose never declares a control,
 and the row's detail reports Method mentions for the record only."
 
+## Row 8 under the lineage stopping rule
+
+`LINEAGE-CAP` began as a count request: at depth 3 a lineage had to carry a `lineage-decision:`
+line naming a resolved decision, or the row fired. The kept lineage stopping rule
+(`docs/lineage-stopping.md`, R0-R4; lab keep `H-DRAFT-5810517d-verdict-lineage-stopping`, kept
+2026-09-11, fragment 0490, On-keep: "the preflight-rigor LINEAGE-CAP row is re-pointed at the
+lineage stream and spend ledger instead of a depth-3 count request") replaces that request with
+evidence and spend, so at depth >= 3 the row now reads the rule first:
+
+1. **Resolve the lineage root.** The successor's own `<runs_dir>/<id>/lineage/inherits.json`
+   chain (R4: the pointer names the root; at most 16 hops, and a cycle or an unreadable pointer
+   ends the walk at the last lane reached), then the `refined-into:` root's run directory, then
+   the spec's own run directory; the first that carries `lineage/frozen/rule.json` is the
+   lineage directory. The spec's own directory is consulted last so that a lineage refined three
+   times under the old process and registered under the rule at its current spec (`init <id>`,
+   no pointer) is read from its ledger rather than asked for a count.
+2. **Verify the frozen copy.** Its `rule_text` bytes must hash to the policy sha
+   `8052bda9c051a90c762d3af9b84317941a5a5e9d44db5db90122a61a13aeeae1` (the bytes of
+   `rules/lineage-sprt.json`) and its `sha256` field must agree. Anything else that exists at that
+   path — a different policy, a disagreeing field, an unparseable file — reads
+   `FAIL lineage-rule:tampered`.
+3. **Report the stream and the spend ledger.** `PASS lineage-rule:<state> looks=<k> voids=<v>
+   spend=<usd>/<wall_s>`, where `<state>` follows `lineage-stopping.py state`: the instrument's
+   terminal from the last `state.jsonl` line (`promote`, `hold`, `max-looks`), else
+   `spend-exhausted` when R1 would refuse the next launch (cumulative spend plus one per-run cap
+   over either budget component of the `spend.jsonl` header, tolerance 1e-9), else
+   `no-looks-yet` with an empty `looks.jsonl`, else `insufficient n=<looks>/<truncation length>`
+   (the header's `truncation_length`, else the frozen rule's `max_looks`). `looks` and `voids` are
+   the row counts of `looks.jsonl` and `voids.jsonl`; `spend` sums `cost_usd` and `wall_s` over
+   the ledger's launch rows (`0.0/5753.6` for the lab lane). The row reads no `lineage-decision:`
+   line and never asks for a count; a keep, a discard and a closed-without-verdict all read PASS
+   because the rule decided them.
+4. **Legacy lineages are unchanged.** With no lineage directory anywhere in the chain the row
+   reads exactly as before: `PASS lineage-decision:<DEC id>` when the keyed line resolves to a
+   decision, `FAIL lineage-decision:unresolved` or `lineage-decision:absent` otherwise. Depth < 3
+   stays `SKIP cap-not-reached` whether or not a lineage directory exists.
+
+The META rigor block carries `lineage_rule`: the state token (or `tampered`) when the rule was
+read, `null` otherwise. Every other row is byte-identical to the counted detectors; the recorded
+fire rates below predate the re-pointing and are the legacy path's.
+
 ## Recorded fire rates (the flip input)
 
 Measured by the lane at the pinned lab snapshot `09e7d11e` (369 specs; the modern kept population
@@ -136,7 +178,14 @@ sensitivity control); five alternative clean paths (an amended frozen span, a `s
 typed void record, a typed discard, a two-assertion spec) read PASS or SKIP; the lane's sentinel
 fires all thirteen rows; and the exit code is 0 with 0 FAIL rows and with 13 FAIL rows alike,
 `--census` is byte-identical across two runs, the grammar is 6 + 13 rows + META per spec, and the
-usage error still exits 2.
+usage error still exits 2. Row 8's lineage-rule cases run over the seed lineage's root
+(`H-SEED-101-lineage-a`): a clean frozen copy byte-identical to `rules/frozen/lineage-sprt.json`
+with a 3-look stream (with and without the seed's `lineage-decision:` line), a charged void, a
+promote and a hold terminal, a spend-exhausted ledger, an empty stream, two tampered copies and an
+unparseable one, a successor's `inherits.json` pointer (to the root, to a lane the `refined-into:`
+walk would not pick, and a two-hop chain), the spec's own lineage directory, a depth-0 lineage
+directory that stays SKIP, and the legacy path unchanged without a lineage directory — each case
+leaving the other twelve rows byte-identical to the seed and META `lineage_rule` as expected.
 
 ## The ethics rows (H-132)
 
