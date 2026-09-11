@@ -163,7 +163,15 @@ ledger-path resolver alone. Every other shipped script is byte-identical to its 
   last three are `RULE-EXPIRED`.
 - `python3 scripts/decisions.py --selftest` exits 0: `on-full-moon=...` is refused at `add`,
   an armed row is silent on an uncommitted append and prints one `RETEST-DUE` line after the
-  evidence commit, and a "later" option with no trigger is `REVISIT-UNARMED` and exit-neutral.
+  evidence commit, and a "later" option with no trigger is `REVISIT-UNARMED` and exit-neutral;
+  its door cases pass too (a field-less card refused with exit 2 listing D0/D1/D3/D4/D5/D6, a
+  self-declared two-way card appended with a D8 finding and exit 1, `show` rendering the door
+  lines, `--door-git-timeout 0` yielding one `ADD-TIMEOUT` line and exit 0, `check` exempting
+  legacy ids).
+- `python3 scripts/decision_card_lint.py --selftest` exits 0 (every rule D0-D9 fires on its seeded
+  defect, the clean card passes, a malformed card suppresses the corroboration rules, the seeded
+  stall is exit-neutral, two passes are identical); `python3 scripts/selftest-decision-door-fields.py`
+  runs it and the kit selftest together (`docs/decisions.md`, "The six door fields").
 - `python3 scripts/knob-observe.py --selftest` exits 0: 0 rows filed at n=29, exactly 1 at
   n=30, and each of the four seeded violations makes `check` exit 1.
 - `python3 scripts/hyp-evidence-export.py --selftest` and `python3 scripts/evidence-ingest.py

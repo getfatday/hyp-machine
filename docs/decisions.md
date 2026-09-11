@@ -8,6 +8,7 @@ because the shipped code cites them). The kit's parts:
 | Part | Role |
 |---|---|
 | `scripts/decisions.py` | The CLI: add / list / show / resolve / check / surface / open (+ `--selftest`, the port's own end-to-end proof in a throwaway git repo) |
+| `scripts/decision_card_lint.py` | The door-field lint, rules D0-D9 with the corroboration table, called by `decisions.py add` after the shape check (standard library; `--selftest`, synthetic cards in a throwaway git repo); see "The six door fields" below |
 | `scripts/compile-dashboard.py` | Renders `DASHBOARD.md` section 1 (DECISIONS WAITING) and regenerates `decisions.html` from the template at every compile |
 | `scripts/decisions-template.html` | The decision-surface template (cards, gloss tooltips, keyboard handling, resolution tray); the compiler injects SNAPSHOT / REPO / DECISIONS / stamp |
 | `scripts/proactive-open.sh` | Opens `decisions.html` front-and-center ONCE per new decision id (state: `.claude/decision-surface-state.json`); called by `decisions.py add`/`surface` only — the compiler never opens anything |
@@ -57,7 +58,8 @@ max-on-file + 1):
  "requested_at": "YYYY-MM-DD", "requested_by": "<lane or person asking>",
  "title": "<one line>",
  "ask": {"question": "...", "header": "<=12 chars", "multiSelect": false,
-          "options": [{"label": "...", "description": "..."}, ...]},
+          "options": [{"label": "...", "description": "...",
+                       "undo": "git-revert|flag|amendment|ledger-row|none"}, ...]},
  "context_pointers": ["<repo-relative pointer>", ...],
  "blocks": ["<what waits>", ...],
  "urgency": "high|normal|low",
@@ -65,14 +67,23 @@ max-on-file + 1):
  "why_only_you": "<one clause>",
  "shadows": ["maintainer-ruling=<slug>", ...],
  "retest_when": "<predicate>=<argument>",
- "note": "<optional>"}
+ "note": "<optional>",
+ "staged_artifact": ["<repo-relative path>", ...] | "<one command line>" | "none",
+ "evidence": "<repo-path>@<sha40>#L<a>-L<b>" | "none-exists",
+ "externality": "none|other-humans|external-publication|spend-beyond-granted-budget|physical-act|classifier-flagged|reserved-in-his-words",
+ "recommended": "<one option label>|none",
+ "default_on_silence": "<one option label>|nothing-changes",
+ "amount_usd": <number >= 0, required iff class is spend>,
+ "door": {"fields_sha": "<sha256 of the six fields as canonical JSON>", "findings": ["D8:...", ...]}}
 ```
 
 Validation (`decisions.py check`, also run at `add`): id matches `DEC-NNN`; date, title,
 requested_by, why_only_you non-empty; urgency and class from the enums; ask carries a
 question, a 1-12-char header, a boolean multiSelect, and 2-4 options each with label +
 description. `decided_by` / `decided_at` / `resolution_commit` are FORBIDDEN on any row —
-see section 3.
+see section 3. The six door fields and the `door` object are the lint's ("The six door fields" below): `add`
+refuses a candidate that lacks or malforms one, and `check` re-validates their shape on every row
+whose numeric id is above the legacy boundary (`DOOR_LEGACY_MAX_ID`, 35).
 
 ## 3. The resolution row (`kind:"decision-resolution"`) and git-derived attribution
 
@@ -168,7 +179,7 @@ story is `docs/decision-durability.md`.
 
 | Command | Effect |
 |---|---|
-| `add --title ... --question ... --header ... --option L:D --option L:D --requested-by ... --class ... --why-only-you ... [--urgency high] [--pointer P] [--blocks "a, b"] [--shadows maintainer-ruling=slug] [--multi] [--no-open]` | Validate + append one decision row (id race-checked), then proactive-open |
+| `add --title ... --question ... --header ... --option L:D --option L:D --requested-by ... --class ... --why-only-you ... --undo U --undo U --staged-artifact P\|CMD\|none --evidence PTR\|none-exists --externality CLASS --recommended LABEL\|none --default-on-silence LABEL\|nothing-changes [--amount-usd N] [--urgency high] [--pointer P] [--blocks "a, b"] [--shadows maintainer-ruling=slug] [--multi] [--no-open] [--door-git-timeout S]` | Validate (shape, then the door lint D0-D9) + append one decision row (id race-checked), then proactive-open. Exit 0 PASS; 1 ESCALATE (appended with `door.findings`, one `ADD-FINDING` line first); 2 MALFORMED (`ADD-REFUSED` lines, nothing appended) |
 | `list [--json]` | One line per decision with derived status (join, no git) |
 | `show <id>` | The full card with git-derived resolution provenance |
 | `resolve <id> --accept "<label-or-free-text>" [--comment "..."]` | Accept (repeat `--accept` when multiSelect); commits JUST the resolution line |
@@ -179,7 +190,7 @@ story is `docs/decision-durability.md`.
 | `check` | Schema + join validation over every row; exit 1 on findings; also prints the exit-neutral `RETEST-DUE` / `REVISIT-UNARMED` lines (section 7) |
 | `surface [--no-open]` | Print the open-decision lines + summary; proactive-open (once-per-id guard) |
 | `open [--all]` | Open `decisions.html` (`--all` also opens `DASHBOARD.md`) |
-| `--selftest` | The full loop in a throwaway git repo, plus the `retest_when` scenario (unknown predicate refused; an armed row fires `RETEST-DUE` only after its evidence commit; a "later" option with no trigger is `REVISIT-UNARMED`); exits 0 only if every assertion passes |
+| `--selftest` | The full loop in a throwaway git repo, plus the `retest_when` scenario (unknown predicate refused; an armed row fires `RETEST-DUE` only after its evidence commit; a "later" option with no trigger is `REVISIT-UNARMED`); exits 0 only if every assertion passes; plus the door wiring (a field-less card refused with exit 2, a self-declared two-way card appended with a D8 finding and exit 1, `show` rendering the door lines, the seeded git stall exit-neutral, `check` exempting legacy ids). `python3 scripts/selftest-decision-door-fields.py` runs this and the lint's own `--selftest` together |
 
 Flags `--no-commit` (stage the resolution uncommitted) and `--no-recompile` exist for
 tests. `resolve` refuses to run while the ledger has unrelated uncommitted changes — the
@@ -193,3 +204,62 @@ people, or a physical act only the human can perform. Everything reversible — 
 that lands as a commit — proceeds without a card (`docs/communication-contract.md`,
 "Clarity is subtraction"). If a card keeps needing a third option, the ask is
 unconverted work: send it back to triage, convert it into a commit or an experiment.
+
+### The six door fields
+
+Every candidate carries six structured fields, so a script — not a reader — tells a two-way
+question from one only the maintainer can answer. Ported from the source lab's
+H-DRAFT-5f02c694-decision-card-door-fields (kept 2026-09-11, 5/5 in two counted runs: 123/123
+planted single-defect mutants caught with their rule id, 0 findings on the row-clean historical
+cards, 34/34 re-cuts labelled from the fields alone, legacy rows byte-identical; the unpatched
+`add` accepted 170/170 of the same cards). `add` copies them from these flags:
+
+| Field | Level | Flag | Vocabulary or shape |
+|---|---|---|---|
+| `undo` | per option | `--undo` (repeat; pairs positionally with `--option`) | `git-revert` \| `flag` \| `amendment` \| `ledger-row` \| `none` |
+| `staged_artifact` | card | `--staged-artifact` (repeat per path) | a non-empty list of repo-relative paths the recommended option changes; or the one command line it runs (one value containing whitespace); or the literal `none`, permitted only while `recommended` is `none` |
+| `evidence` | card | `--evidence` | `<repo-path>@<sha40>#L<a>-L<b>`, or the literal `none-exists` (the honest "this is a hypothesis, not a question") |
+| `externality` | card | `--externality` | `none` \| `other-humans` \| `external-publication` \| `spend-beyond-granted-budget` \| `physical-act` \| `classifier-flagged` \| `reserved-in-his-words` |
+| `recommended` | card | `--recommended` | exactly one existing option label, or `none` |
+| `default_on_silence` | card | `--default-on-silence` | one existing option label, or `nothing-changes` |
+| `amount_usd` | card, required iff `class=spend` | `--amount-usd` | a number >= 0 |
+
+The externality vocabulary is closed. `none` means a two-way door: nothing leaves the
+repository and no human but the decider is affected. Each hard class has one observable over
+`staged_artifact` and the cited artifacts; the lint corroborates the declaration against it
+(rule D4): `externality: none` beside a POSITIVE observable is the finding
+`EXTERNALITY-UNDECLARED:<class>`, a declared hard class beside a NEGATIVE observable is
+`DECLARED-HARD-UNCORROBORATED:<class>`.
+
+| `externality` | Meaning | Observable (POSITIVE when) |
+|---|---|---|
+| `other-humans` | the staged command reaches people outside this repository | a command whose target repository or host lies outside the owned set (`getfatday/cause-n-effect`, `getfatday/hyp-machine`; `localhost` is local), or that carries one of the words `invite`, `email`, `slack`, `reply` |
+| `external-publication` | the staged command publishes outside the worktree | `gh release`; `gh repo create\|rename\|edit`; a `marketplace.json` file among the paths or in the command; `git push` with an explicit refspec to a branch other than the current one (or `--tags`); a public URL |
+| `spend-beyond-granted-budget` | `amount_usd` exceeds a budget the maintainer granted | a `$N`, `US$N`, `N USD` or `N dollars` number on the cited lines of a `research/raw/` maintainer capture or `program.md` named in `context_pointers`; no such line is NEGATIVE |
+| `physical-act` | only a human at the keyboard can perform it | a token from the frozen list in the staged artifact: `device code`, `op signin`, `signing key`, `gpg`, `launchctl load`, `click`, `keystroke`, `your eyes` |
+| `classifier-flagged` | a harness denial for the staged command is on record | a row of `ledger/hook-denials.jsonl` at HEAD whose `command` equals the staged command |
+| `reserved-in-his-words` | the maintainer reserved this in his own committed words | `why_only_you` or `context_pointers` cites a `research/raw/` maintainer capture (filename ending `-ruling.md`, `-directive.md` or `-grant.md`, or first five lines matching `maintainer.*(verbatim\|ruling\|directive\|grant)`) whose cited lines carry the noun reserve/reserved |
+
+The lint (`scripts/decision_card_lint.py`) runs inside `add` after the shape check, under the
+preflight exit contract, and prints one tab-separated audit line per finding before anything
+else — no refusal is silent:
+
+| Exit | Rules | `add` prints | Row |
+|---|---|---|---|
+| 0 PASS | none fired | the `added ...` lines | appended with `door.fields_sha` (sha256 of the six values as canonical JSON) |
+| 1 ESCALATE | D2 UNDO-CORROBORATED (a revertible `undo` beside a staged path outside the worktree, or `none` beside all-tracked paths); D3 resolution (`git show <sha>:<path>` fails, the lines do not exist, or the target is not an evidence class: `experiments/runs/**/{VERDICT.json,VERIFY.md,grade*,RUN-RECORD*}`, a `research/raw/` maintainer capture, `kind:"decision-resolution"` lines of `ledger/work-ledger.jsonl`, a `hypotheses/*.md` Runs-table row or Status `kept` line); D4 corroboration (table above); D8 SELF-DECLARED-TWO-WAY (`why_only_you` or `note` carries `two-way door`, `proceeds under the standing grant`, `Nothing is blocked`, `default advisory` or `keep-advisory`); D9 BLOCKING-TWO-WAY (`blocks` non-empty while every `undo` is revertible and `externality` is `none`) | `ADD-FINDING<TAB><id><TAB><rule><TAB><detail>` per finding, then `added ...` | appended with the findings under `door.findings`; renders as before |
+| 2 MALFORMED | D0 STAGED-ARTIFACT, D1 UNDO-VOCAB, D3 form, D4 form (vocabulary; `class=spend` without a numeric `amount_usd`), D5 DEFAULT-STATED, D6 RECOMMENDED-ONE — every defect listed in one pass; then D7 DEDUP-WHY (at least two uncommitted decision rows already share the candidate's `why_only_you` byte-identically: one policy question filed N times) | `ADD-REFUSED<TAB>MALFORMED<TAB><rule><TAB><detail>` per defect (`MALFORMED-BATCH` for D7) | nothing appended |
+
+A malformed card gets its field list and nothing else: D2-D4 and D8-D9 are not evaluated. Every
+git read runs under one timeout (`--door-git-timeout`, default 20 s); a stall prints one
+exit-neutral `ADD-TIMEOUT<TAB><rule>` line for that rule and never a finding. Legacy rows —
+numeric id at or below `DOOR_LEGACY_MAX_ID` (35) — are exempt and never re-validated; `check`
+re-validates only the fields' shape (the exit-2 class) on newer rows; `show` prints the
+`door:` / `door-evidence:` / `door-finding:` lines only for rows that carry a `door` object, so
+legacy rows render byte-identically. Rows appended by a caller other than `add` (a direct
+`append_line`) are not linted at write time; `check` reports their missing fields once their id
+is above the legacy boundary. A script that files rows through `add` must pass the six flags
+(and a copy of `decisions.py` needs `decision_card_lint.py` beside it, or `add` exits with
+`FATAL: scripts/decision_card_lint.py ... is not beside decisions.py`); at this port
+`scripts/retest-trigger.py` and `scripts/knob-observe.py` do not yet, so their filings are
+refused until they are updated.

@@ -58,6 +58,14 @@ retest-when grammar of scripts/closes_when.py (event-count | metric-crosses |
 evidence-received; that module is the ONLY parser -- nothing here re-implements it). Evidence,
 never a date: the row is re-presented when committed evidence satisfies the predicate.
 
+door fields (decision-card-door-fields lane): every decision candidate carries six structured
+fields -- per-option --undo, and --staged-artifact --evidence --externality --recommended
+--default-on-silence (plus --amount-usd when --class spend) -- linted at add time by
+scripts/decision_card_lint.py (rules D0-D9) under preflight's exit contract: 0 PASS (appended),
+1 ESCALATE (appended with the finding under door.findings; renders as today), 2 MALFORMED
+(nothing appended; every missing or invalid field listed). Legacy rows (id <= DOOR_LEGACY_MAX_ID)
+are exempt and never re-validated; `check` re-validates only the fields' shape on newer rows.
+
 Stdlib only. Never touches anything outside the ledger append and the write-once
 ruling capture ADDITIONS under the configured raw dir that `shadows` requires
 (create-only, never edit).
@@ -122,6 +130,82 @@ RETEST_DUE_CLASS = "RETEST-DUE"
 REVISIT_UNARMED_CLASS = "REVISIT-UNARMED"
 _RW_POINTER_RE = re.compile(r"^(.+)@([0-9a-f]{40})#L(\d+)-L(\d+)$")
 _CLOSES_WHEN = None
+# door fields (decision-card-door-fields lane): the six structured fields on every candidate are linted
+# by scripts/decision_card_lint.py (rules D0-D9). Rows with a numeric id at or below this are legacy:
+# exempt, never re-validated. The lint carries no id literal, so the boundary lives here.
+DOOR_LEGACY_MAX_ID = 35
+DOOR_GIT_TIMEOUT = 20
+DOOR_SELFTEST_ARGS = ["--undo", "git-revert", "--undo", "ledger-row", "--staged-artifact", "README.md",
+                      "--evidence", "none-exists", "--externality", "none", "--recommended", "none",
+                      "--default-on-silence", "nothing-changes"]
+_DOOR_LINT = None
+
+
+def _door_lint():
+    """scripts/decision_card_lint.py imported from beside this file (the ON arm requires it)."""
+    global _DOOR_LINT
+    if _DOOR_LINT is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        try:
+            import decision_card_lint  # noqa: the door-field lint (rules D0-D9)
+        except ImportError:
+            raise SystemExit("FATAL: scripts/decision_card_lint.py (the door-field lint) is not beside decisions.py")
+        _DOOR_LINT = decision_card_lint
+    return _DOOR_LINT
+
+
+def is_legacy_decision(rec):
+    m = ID_RE.match(str(rec.get("id", "")))
+    return bool(m) and int(m.group(1)) <= DOOR_LEGACY_MAX_ID
+
+
+def door_shape_errors(rec):
+    """The exit-2 class over the six fields (presence, vocabulary, form; no git) -- what `check` re-validates
+    on non-legacy rows."""
+    return ["%s %s" % (rule, detail) for rule, detail in _door_lint().shape_errors(rec)]
+
+
+def _parse_amount(text):
+    for cast in (int, float):
+        try:
+            return cast(text)
+        except (TypeError, ValueError):
+            pass
+    return text
+
+
+def door_fields_from_args(args, rec):
+    """Copies the six door flags onto the candidate row. --undo pairs positionally with --option ('' = none
+    given); --staged-artifact: one value 'none' -> none, one empty value -> an empty list, one value with
+    whitespace -> a command line, otherwise each value is a repo-relative path; --recommended repeated ->
+    a list (malformed by construction; exactly one label is expected)."""
+    undos = args.undo or []
+    for i, opt in enumerate(rec["ask"]["options"]):
+        if i < len(undos) and undos[i] != "":
+            opt["undo"] = undos[i]
+    sa = args.staged_artifact
+    if sa is not None:
+        if len(sa) == 1 and sa[0] == "none":
+            rec["staged_artifact"] = "none"
+        elif len(sa) == 1 and sa[0] == "":
+            rec["staged_artifact"] = []
+        elif len(sa) == 1 and re.search(r"\s", sa[0]):
+            rec["staged_artifact"] = sa[0]
+        else:
+            rec["staged_artifact"] = list(sa)
+    if args.evidence is not None:
+        rec["evidence"] = args.evidence
+    if args.externality is not None:
+        rec["externality"] = args.externality
+    if args.recommended is not None:
+        rec["recommended"] = args.recommended[0] if len(args.recommended) == 1 else list(args.recommended)
+    if args.default_on_silence is not None:
+        rec["default_on_silence"] = args.default_on_silence
+    if args.amount_usd is not None:
+        rec["amount_usd"] = _parse_amount(args.amount_usd)
+
 
 
 def today_str():
@@ -591,11 +675,32 @@ def cmd_add(args, root, ledger):
         rec["note"] = args.note
     if getattr(args, "retest_when", None):
         rec[RETEST_WHEN_FIELD] = args.retest_when
+    door_fields_from_args(args, rec)
     errs = validate_decision(rec)
     if errs:
         for e in errs:
             print("ADD-INVALID\t%s" % e)
         return 1
+    lint = _door_lint()
+    result = lint.lint(rec, root, ledger or os.path.join(root, ledger_rel_for(root)),
+                       git_timeout=getattr(args, "door_git_timeout", DOOR_GIT_TIMEOUT))
+    for rule in result.timeouts:
+        print("ADD-TIMEOUT\t%s" % rule)
+    if result.exit_code == 2:
+        for rule, detail in result.malformed:
+            print("ADD-REFUSED\t%s\t%s\t%s" % ("MALFORMED-BATCH" if rule == "D7" else "MALFORMED",
+                                             rule, detail))
+        print("Nothing was appended. A decision candidate carries per-option --undo, and --staged-artifact "
+              "--evidence --externality --recommended --default-on-silence (spend: --amount-usd).")
+        print("A card exists only for what depends on a preference or policy only the maintainer holds "
+              "(research/raw/2026-08-18-decisions-are-two-way-doors-grant.md:18-20,26-27). Everything "
+              "reversible proceeds without a card.")
+        return 2
+    rec["door"] = {"fields_sha": lint.fields_sha(rec)}
+    if result.findings:
+        rec["door"]["findings"] = ["%s:%s" % (rule, detail) for rule, detail in result.findings]
+        for rule, detail in result.findings:
+            print("ADD-FINDING\t%s\t%s\t%s" % (rec["id"], rule, detail))
     append_line(root, rec, ledger)
     print("added %s: %s (urgency %s, class %s) — one JSONL line appended to %s"
           % (rec["id"], rec["title"], rec["urgency"], rec["class"],
@@ -603,7 +708,7 @@ def cmd_add(args, root, ledger):
     print("commit it with the asking lane's next attributed commit; the surface opens now")
     if not args.no_open:
         run_proactive(root)
-    return 0
+    return 1 if result.findings else 0
 
 
 def cmd_list(args, root, ledger):
@@ -667,6 +772,13 @@ def cmd_show(args, root, ledger):
         print("  blocks: %s" % ", ".join(rec["blocks"]))
     if rec.get("note"):
         print("  note: %s" % rec["note"])
+    if isinstance(rec.get("door"), dict):
+        print("  door: externality=%s | recommended=%s | default-on-silence=%s | undo %s"
+              % (rec.get("externality"), rec.get("recommended"), rec.get("default_on_silence"),
+                 ", ".join("%s:%s" % (o.get("label", "?"), o.get("undo", "?")) for o in ask.get("options", []))))
+        print("  door-evidence: %s | staged: %s" % (rec.get("evidence"), json.dumps(rec.get("staged_artifact"), ensure_ascii=False)))
+        for finding in rec["door"].get("findings", []):
+            print("  door-finding: %s" % finding)
     for res in sorted(chain, key=lambda r: r["order"]):
         r = res["rec"]
         if res.get("staged", True):
@@ -822,6 +934,9 @@ def cmd_check(args, root, ledger):
         seen.add(dec["id"])
         for e in validate_decision(dec["rec"]):
             findings.append("%s: %s" % (dec["id"], e))
+        if not is_legacy_decision(dec["rec"]):
+            for e in door_shape_errors(dec["rec"]):
+                findings.append("%s: %s" % (dec["id"], e))
     known = {d["id"] for d in parsed["decisions"]}
     for res in parsed["resolutions"]:
         for e in validate_resolution(res["rec"], known):
@@ -968,13 +1083,13 @@ def selftest():
                 "--option", "go:ship it", "--option", "hold:wait a wave",
                 "--requested-by", "lane SELFTEST", "--urgency", "high",
                 "--class", "plan", "--why-only-you", "only you hold the key",
-                "--pointer", "README.md", "--no-open")
+                "--pointer", "README.md", "--no-open", *DOOR_SELFTEST_ARGS)
         ok("add", r.returncode == 0 and "added DEC-001" in r.stdout,
            r.stdout.strip().splitlines()[0] if r.stdout else r.stderr[:120])
         r = cli("add", "--id", "DEC-001", "--title", "dup", "--question", "dup?",
                 "--header", "Dup", "--option", "a:b", "--option", "c:d",
                 "--requested-by", "x", "--urgency", "low", "--class", "plan",
-                "--why-only-you", "y", "--no-open")
+                "--why-only-you", "y", "--no-open", *DOOR_SELFTEST_ARGS)
         ok("add-id-race-check", r.returncode != 0 and "already on file" in
            (r.stdout + r.stderr))
         # list
@@ -1051,7 +1166,7 @@ def selftest():
                 "--option", "no:keep it", "--requested-by", "lane SELFTEST",
                 "--urgency", "normal", "--class", "hygiene",
                 "--why-only-you", "one word", "--shadows",
-                "maintainer-ruling=selftest-shadow", "--no-open")
+                "maintainer-ruling=selftest-shadow", "--no-open", *DOOR_SELFTEST_ARGS)
         ok("add-shadowed", r.returncode == 0 and "DEC-002" in r.stdout)
         subprocess.run(["git", "-C", root, "commit", "-qm", "ledger: DEC-002",
                         "--", DEFAULT_LEDGER_REL], check=True)
@@ -1078,7 +1193,7 @@ def selftest():
                 "Does the unknown predicate fail?", "--header", "Unknown",
                 "--option", "a:first", "--option", "b:second", "--requested-by", "x",
                 "--urgency", "low", "--class", "plan", "--why-only-you", "y",
-                "--retest-when", "on-full-moon=phase>=1", "--no-open")
+                "--retest-when", "on-full-moon=phase>=1", "--no-open", *DOOR_SELFTEST_ARGS)
         bad = [l for l in r.stdout.splitlines() if l.startswith("ADD-INVALID\t")]
         ok("retest-when-unknown-predicate-bites", r.returncode != 0 and len(bad) == 1
            and "retest_when" in bad[0] and "on-full-moon" in bad[0],
@@ -1089,13 +1204,13 @@ def selftest():
                 "--option", "wait-for-evidence:the row re-presents itself once two "
                 "checkpoints have compiled", "--requested-by", "lane SELFTEST",
                 "--urgency", "low", "--class", "plan", "--why-only-you", "z",
-                "--retest-when", "event-count=event/selftest-compiled>=2", "--no-open")
+                "--retest-when", "event-count=event/selftest-compiled>=2", "--no-open", *DOOR_SELFTEST_ARGS)
         ok("retest-when-armed-add", r.returncode == 0 and "added DEC-003" in r.stdout,
            r.stdout.strip()[:120])
         r = cli("add", "--title", "Unarmed wait", "--question", "Now or not now?",
                 "--header", "Unarmed", "--option", "now:do it",
                 "--option", "later:the card waits", "--requested-by", "lane SELFTEST",
-                "--urgency", "low", "--class", "plan", "--why-only-you", "z", "--no-open")
+                "--urgency", "low", "--class", "plan", "--why-only-you", "z", "--no-open", *DOOR_SELFTEST_ARGS)
         ok("revisit-unarmed-add", r.returncode == 0 and "added DEC-004" in r.stdout)
         subprocess.run(["git", "-C", root, "commit", "-qm",
                         "ledger: DEC-003 armed + DEC-004 unarmed", "--", DEFAULT_LEDGER_REL],
@@ -1138,6 +1253,35 @@ def selftest():
            and "0 finding(s)" in r.stdout and due ==
            ["DECISIONS-CHECK\tRETEST-DUE\tDEC-003\tledger/events.jsonl@%s#L2\t"
             "event-count=event/selftest-compiled>=2" % head], " | ".join(due)[:200])
+        # ---- door fields (decision-card-door-fields): the lint is wired into add ----
+        r = cli("add", "--title", "Door: missing fields", "--question", "Refused?", "--header", "Door",
+                "--option", "a:first", "--option", "b:second", "--requested-by", "x", "--urgency", "low",
+                "--class", "plan", "--why-only-you", "w", "--no-open")
+        refused = [l for l in r.stdout.splitlines() if l.startswith("ADD-REFUSED\tMALFORMED\t")]
+        ok("door-missing-fields-refused", r.returncode == 2 and len(refused) >= 6
+           and sorted({l.split("\t")[2] for l in refused}) == ["D0", "D1", "D3", "D4", "D5", "D6"],
+           "%d refusal line(s), exit %d" % (len(refused), r.returncode))
+        r = cli("add", "--title", "Door: self-declared two-way", "--question", "Escalates?", "--header", "Door2",
+                "--option", "a:first", "--option", "b:second", "--requested-by", "x", "--urgency", "low",
+                "--class", "plan", "--why-only-you", "the lane proceeds under the standing grant", "--no-open",
+                *DOOR_SELFTEST_ARGS)
+        fnd = [l for l in r.stdout.splitlines() if l.startswith("ADD-FINDING\t")]
+        ok("door-self-declared-escalates", r.returncode == 1 and len(fnd) == 1 and "\tD8\t" in fnd[0]
+           and "added " in r.stdout, r.stdout.strip()[:160])
+        last = json.loads(read_ledger(root).strip().splitlines()[-1])
+        ok("door-object-on-row", isinstance(last.get("door"), dict) and len(last["door"].get("fields_sha", "")) == 64
+           and last["door"].get("findings") and last["door"]["findings"][0].startswith("D8:"))
+        r = cli("show", last["id"])
+        ok("door-show-renders", r.returncode == 0 and "  door: externality=none" in r.stdout and "  door-finding: D8:" in r.stdout)
+        r = cli("add", "--title", "Door: stall", "--question", "Files?", "--header", "Stall",
+                "--option", "a:first", "--option", "b:second", "--requested-by", "x", "--urgency", "low",
+                "--class", "plan", "--why-only-you", "stall", "--no-open", "--door-git-timeout", "0",
+                "--undo", "ledger-row", "--undo", "ledger-row", "--staged-artifact", "none", "--evidence", "none-exists",
+                "--externality", "none", "--recommended", "none", "--default-on-silence", "nothing-changes")
+        ok("door-stall-exit-neutral", r.returncode == 0 and r.stdout.splitlines()[0] == "ADD-TIMEOUT\tD7"
+           and r.stdout.count("ADD-TIMEOUT") == 1, r.stdout.strip()[:120])
+        r = cli("check")
+        ok("door-check-exempts-legacy-ids", r.returncode == 0, r.stdout.strip()[-140:])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("selftest: %d failure(s)" % len(failures))
@@ -1176,6 +1320,19 @@ def main(argv=None):
                         "re-presented as RETEST-DUE once committed evidence satisfies it")
     p.add_argument("--no-open", action="store_true",
                    help="skip the proactive open (tests)")
+    p.add_argument("--undo", action="append", metavar="UNDO",
+                   help="per option, positional to --option: git-revert|flag|amendment|ledger-row|none")
+    p.add_argument("--staged-artifact", dest="staged_artifact", action="append", metavar="PATH|COMMAND|none",
+                   help="what the recommended option changes (repeat per path) or runs (one command line), or none")
+    p.add_argument("--evidence", metavar="PATH@SHA40#La-Lb|none-exists")
+    p.add_argument("--externality", metavar="CLASS",
+                   help="none|other-humans|external-publication|spend-beyond-granted-budget|physical-act|"
+                        "classifier-flagged|reserved-in-his-words")
+    p.add_argument("--recommended", action="append", metavar="LABEL|none")
+    p.add_argument("--default-on-silence", dest="default_on_silence", metavar="LABEL|nothing-changes")
+    p.add_argument("--amount-usd", dest="amount_usd", metavar="NUMBER", help="required when --class spend")
+    p.add_argument("--door-git-timeout", dest="door_git_timeout", type=int, default=DOOR_GIT_TIMEOUT,
+                   help="seconds per git read in the door lint (tests: 0 seeds a stall)")
 
     p = sub.add_parser("list", help="all decisions with derived status")
     p.add_argument("--json", action="store_true")
