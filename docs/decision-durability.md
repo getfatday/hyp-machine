@@ -151,21 +151,44 @@ They are ports: the decision ledger path resolves through `.claude/hyp.json` `le
 (default `ledger/ledger.jsonl`) in both, so the evaluator and the decision kit can never
 disagree on where decisions live. The `retest_when` delta was merged three-way onto the
 `decisions.py` port (one selftest constant renamed); `knob-observe.py` differs by the
-ledger-path resolver alone. Every other shipped script is byte-identical to its lab copy.
+ledger-path resolver and, since the door fields landed, by the six door flags it passes to `add`
+(`retest-trigger.py` passes them too; the lab copies gain the same on the lab-side landing of
+decision-card-door-fields). Every other shipped script is byte-identical to its lab copy.
 
 ## It is working if
 
 - `python3 scripts/closes_when.py --selftest` passes with the retest-when cases;
-  `python3 scripts/retest-trigger.py --selftest` exits 0 — and exits 1 if you make a seeded
-  uncommitted packet or a cross-then-revert series file a row.
+  `python3 scripts/retest-trigger.py --selftest` exits 0 (13 checks) — and exits 1 if you make a
+  seeded uncommitted packet or a cross-then-revert series file a row. The control row it files
+  carries the six door fields and a `door` object (undo `ledger-row` per option, `staged_artifact`
+  and `recommended` `none`, `evidence` the first committed stream span, `externality` `none`,
+  `default_on_silence` `nothing-changes`); the lint's `ADD-FINDING` lines on it (`D3`: a stream
+  span is not an authority; `D9`: the `blocks` dedup key beside revertible options) surface as
+  `# door <rule-id>: ...` commentary and the row counts as filed — exit 1 is ESCALATE, appended;
+  only exit 2 files nothing. The selftest's scratch `scripts/` carries `decision_card_lint.py`
+  beside `decisions.py`.
 - `python3 scripts/rule-lint.py --selftest` exits 0: of a date-less evidence-armed row, a
   date-less predicate-less row, a past-date row, and a malformed-predicate row, exactly the
   last three are `RULE-EXPIRED`.
 - `python3 scripts/decisions.py --selftest` exits 0: `on-full-moon=...` is refused at `add`,
   an armed row is silent on an uncommitted append and prints one `RETEST-DUE` line after the
-  evidence commit, and a "later" option with no trigger is `REVISIT-UNARMED` and exit-neutral.
-- `python3 scripts/knob-observe.py --selftest` exits 0: 0 rows filed at n=29, exactly 1 at
-  n=30, and each of the four seeded violations makes `check` exit 1.
+  evidence commit, and a "later" option with no trigger is `REVISIT-UNARMED` and exit-neutral;
+  its door cases pass too (a field-less card refused with exit 2 listing D0/D1/D3/D4/D5/D6, a
+  self-declared two-way card appended with a D8 finding and exit 1, `show` rendering the door
+  lines, `--door-git-timeout 0` yielding one `ADD-TIMEOUT` line and exit 0, `check` exempting
+  legacy ids, the legacy boundary in both modes — `.claude/hyp.json` `decision_door_legacy_max_id`
+  and, absent the key, shape and order — gating only post-upgrade door-less rows, and `append_line`
+  refusing a decision row that never passed `door_lint_row()`).
+- `python3 scripts/decision_card_lint.py --selftest` exits 0 (every rule D0-D9 fires on its seeded
+  defect, the clean card passes, a malformed card suppresses the corroboration rules, the seeded
+  stall is exit-neutral, two passes are identical); `python3 scripts/selftest-decision-door-fields.py`
+  runs it and the kit selftest together (`docs/decisions.md`, "The six door fields").
+- `python3 scripts/knob-observe.py --selftest` exits 0 (24 checks): 0 rows filed at n=29, exactly
+  1 at n=30 — a row that recommends `apply-plan`, stages the knob node (undo `git-revert`;
+  `hold-advisory` undo `ledger-row`), cites `none-exists`, declares `externality` `none` and
+  `default_on_silence` `nothing-changes`, and carries a `door` object with no finding (the
+  mini-lab is a git repository, so D2 corroborates the staged node) — and each of the four seeded
+  violations makes `check` exit 1.
 - `python3 scripts/hyp-evidence-export.py --selftest` and `python3 scripts/evidence-ingest.py
   --selftest` exit 0: every bait row refuses the write; a flipped byte and a replayed pointer
   write nothing.

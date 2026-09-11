@@ -25,8 +25,11 @@ Surfaces read (all consumer-repo-relative):
   the decision store (scripts/decisions.py)  quarantine rows: kind:"decision"
                                        rows with type:"needs-maintainer",
                                        reason:"k-strikes-quarantine" --
-                                       validated and appended through
-                                       decisions.py's own primitives, so the
+                                       validated, door-linted (D0-D9 over the
+                                       six door fields the row carries; a
+                                       MALFORMED row is refused, exit 2) and
+                                       appended through decisions.py's own
+                                       primitives, so the
                                        DASHBOARD "DECISIONS WAITING" surface and
                                        decisions.html render them with no
                                        compiler change
@@ -310,6 +313,8 @@ def cmd_ingest(ctx, lane):
         sp_rel = (os.path.relpath(sp_rel, ctx.root).replace(os.sep, "/")
                   if sp_rel else "hypotheses/ (spec file not found)")
         parsed = decisions.parse_ledger_v3(decisions.read_ledger(ctx.root))
+        declared = declared_budget(ctx, lane)
+        recorded = spend(ctx, lane)
         row = {
             "kind": "decision",
             "id": decisions.next_free_id(parsed),
@@ -333,12 +338,14 @@ def cmd_ingest(ctx, lane):
                     {"label": "relaunch",
                      "description": ("closing this row lifts the quarantine -- "
                                      "the next gate consult permits run %d "
-                                     "(land the fix first)" % (len(t) + 1))},
+                                     "(land the fix first)" % (len(t) + 1)),
+                     "undo": "ledger-row"},
                     {"label": "retire",
                      "description": ("keep it out of dispatch: land the "
                                      "spec-status ruling (discard/refine/"
                                      "supersede) that marks the lane "
-                                     "complete, then close this row")},
+                                     "complete, then close this row"),
+                     "undo": "git-revert"},
                 ],
             },
             "context_pointers": [
@@ -360,16 +367,43 @@ def cmd_ingest(ctx, lane):
             "strikes": s,
             "strike_terminals": strike_names,
             "halt_reason": halt,
-            "declared_per_run_budget_usd": declared_budget(ctx, lane),
-            "recorded_spend_usd": spend(ctx, lane),
+            "declared_per_run_budget_usd": declared,
+            "recorded_spend_usd": recorded,
             "action_required": ("quarantined after %d consecutive non-green "
                                 "terminals; human ruling required before "
                                 "any relaunch" % s),
+            # the six door fields (decision-card-door-fields): the gate recommends
+            # neither option and stages nothing; relaunch resolves by the closing
+            # row (undo ledger-row), retire by a spec-status commit (undo
+            # git-revert); the strike terminals are run artifacts, not a committed
+            # <path>@<sha40>#La-Lb span, so no authority is cited; nothing leaves
+            # the repository; silence keeps the quarantine; the dollars at stake
+            # are one relaunch: the declared per-run budget, else the recorded
+            # spend per run so far.
+            "staged_artifact": "none",
+            "evidence": "none-exists",
+            "externality": "none",
+            "recommended": "none",
+            "default_on_silence": "nothing-changes",
+            "amount_usd": (declared if declared is not None
+                           else round(recorded / max(1, len(t)), 4)),
         }
         errs = decisions.validate_decision(row)
         if errs:
             out["error"] = ("quarantine row failed decision-schema "
                             "validation: %s" % "; ".join(errs))
+            return emit(out, 2)
+        # the door lint (D0-D9), as `decisions.py add` runs it: MALFORMED appends
+        # nothing; ESCALATE appends the row with its findings under door.findings.
+        door = decisions.door_lint_row(row, ctx.root)
+        out["door"] = {"exit": door.exit_code,
+                       "malformed": ["%s %s" % m for m in door.malformed],
+                       "findings": ["%s:%s" % f for f in door.findings],
+                       "timeouts": list(door.timeouts)}
+        if door.exit_code == 2:
+            out["error"] = ("quarantine row refused by the door lint "
+                            "(MALFORMED; nothing appended): %s"
+                            % "; ".join("%s %s" % m for m in door.malformed))
             return emit(out, 2)
         decisions.append_line(ctx.root, row)
         env = dict(os.environ)

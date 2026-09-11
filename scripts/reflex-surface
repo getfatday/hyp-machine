@@ -13,8 +13,10 @@ The surfacing policy (spec "Variable under test", ON side):
   - Every breach lands ONCE through the existing decision door: a
     decisions.py-validated needs-ian row (kind:"decision", type:"needs-ian",
     reason:"breach-autopsy", context_pointers=[incident dir, manifest]) appended
-    via decisions.py's own primitives (validate_decision + append_line — the
-    H-218 dispatch-gate precedent). A row may cite an incident dir only after
+    via decisions.py's own primitives (validate_decision, then the door lint
+    door_lint_row -- D0-D9 over the six door fields the row carries, refusing
+    on MALFORMED exactly as `add` does -- then append_line; the H-218
+    dispatch-gate precedent). A row may cite an incident dir only after
     fidelity-manifest.py --verify exits 0 on that dir's manifest (H-104).
     Dedup is exactly-once per bucket (H-204 semantics).
   - Sessions partition new-vs-standing: a bucket is itemized once (REFLEX-NEW);
@@ -241,9 +243,11 @@ def cmd_file(args):
             "header": "Breach", "multiSelect": False,
             "options": [
                 {"label": "fix-now",
-                 "description": "land the remediation this wave"},
+                 "description": "land the remediation this wave",
+                 "undo": "git-revert"},
                 {"label": "accept-risk",
-                 "description": "close as tolerated; the bucket stops surfacing"},
+                 "description": "close as tolerated; the bucket stops surfacing",
+                 "undo": "ledger-row"},
             ],
         },
         "context_pointers": [incident_rel + "/", manifest_rel],
@@ -253,10 +257,30 @@ def cmd_file(args):
                          "maintainer ruling, not the machinery's call"),
         "type": "needs-ian", "reason": "breach-autopsy",
         "bucket": bucket, "first_seen": first_seen,
+        # the six door fields (decision-card-door-fields): the disposition is the
+        # maintainer's, so the reflex recommends neither option and stages
+        # nothing; a remediation lands as a commit (undo git-revert), tolerating
+        # is the closing row (undo ledger-row); the autopsy is cited by directory
+        # and manifest (no committed <path>@<sha40>#La-Lb span exists for an
+        # incident dir); nothing leaves the repository; silence keeps the bucket
+        # surfacing (nothing changes).
+        "staged_artifact": "none", "evidence": "none-exists",
+        "externality": "none", "recommended": "none",
+        "default_on_silence": "nothing-changes",
     }
     errs = D.validate_decision(row)
     if errs:
         raise SystemExit("FATAL: decision row failed validation: %s" % errs)
+    if not hasattr(D, "door_lint_row"):
+        raise SystemExit("FATAL: scripts/decisions.py at %s predates the door "
+                         "fields (no door_lint_row); update the decision kit"
+                         % root)
+    door = D.door_lint_row(row, root)
+    for line in D.door_audit_lines(row, door):
+        print(line)
+    if door.exit_code == 2:
+        raise SystemExit("FATAL: decision row refused by the door lint "
+                         "(MALFORMED; nothing appended)")
     D.append_line(root, row)
     state = load_state(root)
     state[bucket] = {"times_surfaced": 0, "decision_id": rid,
