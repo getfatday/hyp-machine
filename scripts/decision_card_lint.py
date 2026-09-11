@@ -6,8 +6,9 @@ lint-author readings of every point the tables leave open are listed in impl/CON
 file. Standard library only; byte-deterministic (findings are emitted one line per rule, in rule order).
 
 Reads: the candidate row, the repository's git objects (git ls-files / show / diff), the work ledger's
-uncommitted tail, research/raw/ and program.md at HEAD, and the hook denial record
-ledger/hook-denials.jsonl at HEAD. No clock, no environment, no network, no process beyond git.
+uncommitted tail (the consumer's ledger: .claude/hyp.json ledger_file, default ledger/ledger.jsonl --
+also D3's decision-resolution authority), research/raw/ and program.md at HEAD, and the hook denial
+record ledger/hook-denials.jsonl at HEAD. No clock, no environment, no network, no process beyond git.
 Every git read runs under one timeout; a stall yields one exit-neutral timeout mark for that rule
 (never a finding). A timeout of 0 means "no time to wait" and stalls by definition (the seeded stall).
 
@@ -31,7 +32,8 @@ NONE_EXISTS = "none-exists"
 LAB_OWNED_REPOS = ("getfatday/cause-n-effect", "getfatday/hyp-machine")
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 DENIAL_RECORD_REL = "ledger/hook-denials.jsonl"
-LEDGER_REL_DEFAULT = "ledger/work-ledger.jsonl"
+HYP_JSON_REL = ".claude/hyp.json"
+LEDGER_REL_DEFAULT = "ledger/ledger.jsonl"  # the plugin default; .claude/hyp.json ledger_file overrides it (ledger_rel_for)
 
 POINTER_RE = re.compile(r"^(?P<path>[^@\s]+)@(?P<sha>[0-9a-f]{40})#L(?P<a>\d+)-L(?P<b>\d+)$")
 PHYSICAL_RE = re.compile(r"(?i)\bdevice[ -]code\b|\bop signin\b|\bsigning[ -]key\b|\bgpg\b|"
@@ -119,6 +121,20 @@ class LintResult(object):
         if self.malformed:
             return 2
         return 1 if self.findings else 0
+
+
+def ledger_rel_for(root):
+    """The consumer's work ledger, repo-relative: .claude/hyp.json ledger_file when set, else LEDGER_REL_DEFAULT
+    (the key and default scripts/decisions.py resolves). D3's decision-resolution authority is this file."""
+    try:
+        with open(os.path.join(root, *HYP_JSON_REL.split("/")), encoding="utf-8") as fh:
+            data = json.load(fh)
+        val = data.get("ledger_file") if isinstance(data, dict) else None
+        if isinstance(val, str) and val.strip():
+            return val.strip().strip("/")
+    except (OSError, ValueError):
+        pass
+    return LEDGER_REL_DEFAULT
 
 
 # ---------- field helpers ----------
@@ -326,7 +342,7 @@ def _hyp_authority_lines(text):
     return ok
 
 
-def evidence_class(path, sha, a, b, content):
+def evidence_class(path, sha, a, b, content, ledger_rel=LEDGER_REL_DEFAULT):
     """-> None when the target is an EVIDENCE-CLASS artifact, else a short reason."""
     base = os.path.basename(path)
     if path.startswith("experiments/runs/") and (base in EVIDENCE_RUN_BASENAMES or base.startswith(EVIDENCE_RUN_PREFIXES)):
@@ -335,7 +351,7 @@ def evidence_class(path, sha, a, b, content):
         if is_maintainer_capture(path, content):
             return None
         return "a research/raw file that is not a maintainer capture"
-    if path == LEDGER_REL_DEFAULT:
+    if path == ledger_rel:
         lines = content.splitlines()
         for n in range(a, b + 1):
             try:
@@ -360,7 +376,7 @@ def is_maintainer_capture(path, content):
     return bool(MAINTAINER_CAPTURE_RE.search(head))
 
 
-def d3_evidence_resolves(rec, git):
+def d3_evidence_resolves(rec, git, ledger_rel=LEDGER_REL_DEFAULT):
     ev = rec.get("evidence")
     if ev == NONE_EXISTS:
         return None
@@ -372,7 +388,7 @@ def d3_evidence_resolves(rec, git):
     n = len(content.splitlines())
     if b > n:
         return ("D3", "EVIDENCE-UNRESOLVED %s cites lines %d-%d but the file has %d lines at that commit" % (json.dumps(ev, ensure_ascii=False), a, b, n))
-    reason = evidence_class(path, sha, a, b, content)
+    reason = evidence_class(path, sha, a, b, content, ledger_rel)
     if reason:
         return ("D3", "EVIDENCE-NOT-AN-AUTHORITY %s resolves but is %s; evidence is a VERDICT.json, a run grade, a RUN-RECORD, a VERIFY.md, a research/raw maintainer capture, a decision-resolution row or a Runs-table row" % (json.dumps(ev, ensure_ascii=False), reason))
     return None
@@ -590,7 +606,8 @@ def lint(rec, root, ledger_path=None, git_timeout=20):
     """-> LintResult over one validated candidate row (shape-valid in the legacy sense)."""
     res = LintResult()
     root = os.path.abspath(root)
-    ledger_path = ledger_path or os.path.join(root, LEDGER_REL_DEFAULT)
+    ledger_path = ledger_path or os.path.join(root, ledger_rel_for(root))
+    ledger_rel = os.path.relpath(os.path.abspath(ledger_path), root).replace(os.sep, "/")
     git = Git(root, git_timeout)
     res.malformed.extend(shape_errors(rec))
     if res.malformed:
@@ -602,7 +619,7 @@ def lint(rec, root, ledger_path=None, git_timeout=20):
             return res
     except GitStall:
         res.timeouts.append("D7")
-    for rule, fn in (("D2", lambda: d2_undo_corroborated(rec, git)), ("D3", lambda: d3_evidence_resolves(rec, git)),
+    for rule, fn in (("D2", lambda: d2_undo_corroborated(rec, git)), ("D3", lambda: d3_evidence_resolves(rec, git, ledger_rel)),
                      ("D4", lambda: d4_externality_corroborated(rec, git))):
         try:
             hit = fn()
@@ -632,12 +649,16 @@ def _selftest():
             fails.append(name)
 
     tmp = tempfile.mkdtemp(prefix="door-lint-selftest-")
+    LEDGER_REL = "ledger/work-ledger.jsonl"  # the scratch consumer's configured ledger (.claude/hyp.json), not the plugin default
     try:
         def sh(*a):
             return subprocess.run(["git", "-C", tmp] + list(a), capture_output=True, text=True, check=True).stdout
         subprocess.run(["git", "init", "-q", tmp], check=True)
         sh("config", "user.name", "lint selftest"); sh("config", "user.email", "lint@selftest.invalid"); sh("config", "commit.gpgsign", "false")
         os.makedirs(os.path.join(tmp, "ledger")); os.makedirs(os.path.join(tmp, "research", "raw")); os.makedirs(os.path.join(tmp, "notes"))
+        os.makedirs(os.path.join(tmp, ".claude"))
+        with open(os.path.join(tmp, ".claude", "hyp.json"), "w") as fh:
+            fh.write(json.dumps({"ledger_file": LEDGER_REL}) + "\n")
         os.makedirs(os.path.join(tmp, "experiments", "runs", "lane-x")); os.makedirs(os.path.join(tmp, "hypotheses"))
         with open(os.path.join(tmp, "notes", "a.md"), "w") as fh:
             fh.write("one\ntwo\nthree\n")
@@ -647,7 +668,7 @@ def _selftest():
             fh.write("# verify\n\nkept 5/5\n")
         with open(os.path.join(tmp, "hypotheses", "spec-x.md"), "w") as fh:
             fh.write("# spec\n\n## Status\nkept\n\n## Motivation\nprose\n\n## Runs\n| # | Date |\n|---|---|\n| 1 | 2026-01-01 |\n")
-        with open(os.path.join(tmp, "ledger", "work-ledger.jsonl"), "w") as fh:
+        with open(os.path.join(tmp, LEDGER_REL), "w") as fh:
             fh.write(json.dumps({"kind": "decision-resolution", "id": "DEC-%03d" % 1, "date": "2026-01-01", "disposition": "accepted"}) + "\n")
         with open(os.path.join(tmp, DENIAL_RECORD_REL), "w") as fh:
             fh.write(json.dumps({"kind": "hook-denial", "command": "bash scripts/post.sh", "source": "security-classifier"}) + "\n")
@@ -675,7 +696,7 @@ def _selftest():
             return c
 
         def run(c, timeout=20):
-            return lint(c, tmp, os.path.join(tmp, LEDGER_REL_DEFAULT), git_timeout=timeout)
+            return lint(c, tmp, os.path.join(tmp, ledger_rel_for(tmp)), git_timeout=timeout)
 
         def rules(r):
             return sorted(set([m[0] for m in r.malformed] + [f[0] for f in r.findings]))
@@ -740,14 +761,14 @@ def _selftest():
         # malformed suppresses corroboration: only the field defects print
         r = run(undo(card(blocks=["lane x"]), 0, "revert")); ok("malformed-suppresses-escalate", r.exit_code == 2 and rules(r) == ["D1"], str(rules(r)))
         # D7: two uncommitted twins in the tail
-        with open(os.path.join(tmp, LEDGER_REL_DEFAULT), "a") as fh:
+        with open(os.path.join(tmp, LEDGER_REL), "a") as fh:
             for i in (2, 3):
                 fh.write(json.dumps({"kind": "decision", "id": "DEC-%03d" % i, "why_only_you": "twin"}) + "\n")
         r = run(card(why_only_you="twin")); ok("d7-third-of-batch", r.exit_code == 2 and rules(r) == ["D7"], str(rules(r)))
-        with open(os.path.join(tmp, LEDGER_REL_DEFAULT), "a") as fh:
+        with open(os.path.join(tmp, LEDGER_REL), "a") as fh:
             fh.write(json.dumps({"kind": "decision", "id": "DEC-%03d" % 4, "why_only_you": "single"}) + "\n")
         r = run(card(why_only_you="single")); ok("d7-second-is-silent", r.exit_code == 0, str(rules(r)))
-        sh("checkout", "-q", "--", LEDGER_REL_DEFAULT)
+        sh("checkout", "-q", "--", LEDGER_REL)
         # the seeded stall: timeout 0 -> one exit-neutral mark for the only git-reading rule on this card's path
         r = run(card(staged_artifact="none", recommended="none"), timeout=0)
         ok("stall-exit-neutral", r.exit_code == 0 and r.timeouts == ["D7"] and not r.findings, "timeouts=%s" % r.timeouts)
@@ -755,6 +776,22 @@ def _selftest():
         # determinism + the manipulation-check sha
         c = card(); ok("fields-sha-stable", fields_sha(c) == fields_sha(json.loads(json.dumps(c))) and len(fields_sha(c)) == 64)
         r1, r2 = run(card()), run(card()); ok("two-pass-identical", (r1.malformed, r1.findings, r1.timeouts) == (r2.malformed, r2.findings, r2.timeouts))
+        # the ledger the lint reads (the D7 tail, D3's decision-resolution authority) is the consumer's:
+        # .claude/hyp.json ledger_file, the plugin default when the key is absent -- never a fixed path
+        ok("ledger-resolves-from-hyp-json", ledger_rel_for(tmp) == LEDGER_REL, ledger_rel_for(tmp))
+        ok("ledger-default-without-hyp-json", ledger_rel_for(os.path.join(tmp, "notes")) == LEDGER_REL_DEFAULT == "ledger/ledger.jsonl")
+        r = lint(card(evidence="ledger/work-ledger.jsonl@%s#L1-L1" % head), tmp, os.path.join(tmp, "ledger", "custom.jsonl"))
+        ok("d3-authority-is-the-configured-ledger", rules(r) == ["D3"] and "NOT-AN-AUTHORITY" in r.findings[0][1], str(r.findings)[:160])
+        with open(os.path.join(tmp, "ledger", "custom.jsonl"), "w") as fh:
+            fh.write(json.dumps({"kind": "decision-resolution", "id": "DEC-%03d" % 1, "date": "2026-01-02", "disposition": "denied"}) + "\n")
+        with open(os.path.join(tmp, ".claude", "hyp.json"), "w") as fh:
+            fh.write(json.dumps({"ledger_file": "ledger/custom.jsonl"}) + "\n")
+        sh("add", "-A"); sh("commit", "-qm", "custom ledger")
+        head2 = sh("rev-parse", "HEAD").strip()
+        r = lint(card(evidence="ledger/custom.jsonl@%s#L1-L1" % head2), tmp)
+        ok("d3-custom-ledger-resolution-row-resolves", r.exit_code == 0 and not r.findings, str(r.findings)[:160])
+        r = lint(card(evidence="ledger/work-ledger.jsonl@%s#L1-L1" % head), tmp)
+        ok("d3-former-ledger-path-is-no-authority-once-reconfigured", rules(r) == ["D3"] and "NOT-AN-AUTHORITY" in r.findings[0][1])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("lint-selftest: %d failure(s)" % len(fails))

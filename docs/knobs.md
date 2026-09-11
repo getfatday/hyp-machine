@@ -64,6 +64,9 @@ Dates: the evaluator reads no clock. `DECISIONS_TODAY` (YYYY-MM-DD) is passed th
 The filed decision row is class `plan`, its default `IF YOU DO NOTHING: nothing changes` (the
 node stays at advise), and its `note` carries `plan: 10=deny 11=deny ...` plus the per-class
 counts; `context_pointers` name the knob node, the signal file at its sha256, and the state row.
+Its six door fields (`docs/decisions.md`, "The six door fields") read `recommended` `apply-plan`,
+`staged_artifact` the knob node (undo `git-revert`; `hold-advisory` undo `ledger-row`), `evidence`
+`none-exists`, `externality` `none`, `default_on_silence` `nothing-changes`.
 The SessionStart resolver line reads the latest state row:
 `KNOB checkpoint-gate-stance n=k/30 would=10:advise,...`.
 

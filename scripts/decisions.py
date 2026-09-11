@@ -63,8 +63,11 @@ fields -- per-option --undo, and --staged-artifact --evidence --externality --re
 --default-on-silence (plus --amount-usd when --class spend) -- linted at add time by
 scripts/decision_card_lint.py (rules D0-D9) under preflight's exit contract: 0 PASS (appended),
 1 ESCALATE (appended with the finding under door.findings; renders as today), 2 MALFORMED
-(nothing appended; every missing or invalid field listed). Legacy rows (id <= DOOR_LEGACY_MAX_ID)
-are exempt and never re-validated; `check` re-validates only the fields' shape on newer rows.
+(nothing appended; every missing or invalid field listed). Legacy rows -- cards appended before the
+fields existed -- are exempt and never re-validated; the boundary is the consumer's (.claude/hyp.json
+decision_door_legacy_max_id, an int; absent: shape + order -- every row before the first row carrying
+a door object). `check` re-validates only the fields' shape on the other rows. Every writer of a
+kind:"decision" row passes the lint (door_lint_row) and append_line refuses a row without its door stamp.
 
 Stdlib only. Never touches anything outside the ledger append and the write-once
 ruling capture ADDITIONS under the configured raw dir that `shadows` requires
@@ -131,9 +134,12 @@ REVISIT_UNARMED_CLASS = "REVISIT-UNARMED"
 _RW_POINTER_RE = re.compile(r"^(.+)@([0-9a-f]{40})#L(\d+)-L(\d+)$")
 _CLOSES_WHEN = None
 # door fields (decision-card-door-fields lane): the six structured fields on every candidate are linted
-# by scripts/decision_card_lint.py (rules D0-D9). Rows with a numeric id at or below this are legacy:
-# exempt, never re-validated. The lint carries no id literal, so the boundary lives here.
-DOOR_LEGACY_MAX_ID = 35
+# by scripts/decision_card_lint.py (rules D0-D9). Legacy rows -- appended before the fields existed -- are
+# exempt from check's re-validation. The boundary is the consumer's: .claude/hyp.json
+# decision_door_legacy_max_id (an int; rows with a numeric id at or below it are legacy) or, when the key
+# is absent, shape + order (the rows before the first row that carries a door object). The lint carries
+# no id literal, so the boundary lives here.
+DOOR_LEGACY_KEY = "decision_door_legacy_max_id"
 DOOR_GIT_TIMEOUT = 20
 DOOR_SELFTEST_ARGS = ["--undo", "git-revert", "--undo", "ledger-row", "--staged-artifact", "README.md",
                       "--evidence", "none-exists", "--externality", "none", "--recommended", "none",
@@ -156,9 +162,43 @@ def _door_lint():
     return _DOOR_LINT
 
 
-def is_legacy_decision(rec):
-    m = ID_RE.match(str(rec.get("id", "")))
-    return bool(m) and int(m.group(1)) <= DOOR_LEGACY_MAX_ID
+def door_legacy_max_id(root):
+    """The explicit legacy boundary from <root>/.claude/hyp.json decision_door_legacy_max_id (an int, or a
+    string of digits), else None: the boundary is then read from the ledger's shape and order."""
+    try:
+        with open(os.path.join(root, ".claude", "hyp.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    val = data.get(DOOR_LEGACY_KEY) if isinstance(data, dict) else None
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, int):
+        return val
+    if isinstance(val, str) and val.strip().isdigit():
+        return int(val.strip())
+    return None
+
+
+def legacy_decision_ids(parsed, root):
+    """The decision ids `check` never re-validates for door fields. Explicit boundary (hyp.json
+    decision_door_legacy_max_id): every numeric id at or below it. Otherwise shape + order: every row
+    appended before the first row that carries a door object (those rows carry none by construction); a
+    door-less row appended after that first row is gated. A consumer with any number of pre-upgrade cards
+    upgrades cleanly either way; `add` exempts nothing."""
+    max_id = door_legacy_max_id(root)
+    legacy = set()
+    if max_id is not None:
+        for dec in parsed["decisions"]:
+            m = ID_RE.match(str(dec["rec"].get("id", "")))
+            if m and int(m.group(1)) <= max_id:
+                legacy.add(dec["id"])
+        return legacy
+    for dec in sorted(parsed["decisions"], key=lambda d: d["order"]):
+        if isinstance(dec["rec"].get("door"), dict):
+            break
+        legacy.add(dec["id"])
+    return legacy
 
 
 def door_shape_errors(rec):
@@ -205,6 +245,40 @@ def door_fields_from_args(args, rec):
         rec["default_on_silence"] = args.default_on_silence
     if args.amount_usd is not None:
         rec["amount_usd"] = _parse_amount(args.amount_usd)
+
+
+def door_lint_row(rec, root, ledger=None, git_timeout=DOOR_GIT_TIMEOUT):
+    """The door lint over one shape-valid candidate -- the one gate every writer of a kind:"decision" row
+    passes: `add`, and the callers that append through append_line (dispatch-gate.py, reflex-surface). On
+    PASS or ESCALATE the row is stamped with its door object (fields_sha; findings when any); on MALFORMED
+    (exit_code 2) nothing is stamped and the caller appends nothing. -> the lint's result (.exit_code
+    0|1|2, .malformed, .findings, .timeouts); door_audit_lines renders it as `add` prints it."""
+    lint = _door_lint()
+    result = lint.lint(rec, root, ledger or os.path.join(root, ledger_rel_for(root)), git_timeout=git_timeout)
+    if result.exit_code != 2:
+        rec["door"] = {"fields_sha": lint.fields_sha(rec)}
+        if result.findings:
+            rec["door"]["findings"] = ["%s:%s" % (rule, detail) for rule, detail in result.findings]
+    return result
+
+
+def door_audit_lines(rec, result):
+    """The audit lines `add` prints for a lint result, in order: ADD-TIMEOUT per stalled rule, then either
+    the ADD-REFUSED lines with the two refusal sentences (exit 2) or one ADD-FINDING line per finding."""
+    lines = ["ADD-TIMEOUT\t%s" % rule for rule in result.timeouts]
+    if result.exit_code == 2:
+        for rule, detail in result.malformed:
+            lines.append("ADD-REFUSED\t%s\t%s\t%s" % ("MALFORMED-BATCH" if rule == "D7" else "MALFORMED",
+                                                     rule, detail))
+        lines.append("Nothing was appended. A decision candidate carries per-option --undo, and --staged-artifact "
+                     "--evidence --externality --recommended --default-on-silence (spend: --amount-usd).")
+        lines.append("A card exists only for what depends on a preference or policy only the maintainer holds "
+                     "(research/raw/2026-08-18-decisions-are-two-way-doors-grant.md:18-20,26-27). Everything "
+                     "reversible proceeds without a card.")
+        return lines
+    for rule, detail in result.findings:
+        lines.append("ADD-FINDING\t%s\t%s\t%s" % (rec.get("id"), rule, detail))
+    return lines
 
 
 
@@ -546,6 +620,9 @@ def append_line(root, rec, ledger=None):
     path = ledger or os.path.join(root, ledger_rel_for(root))
     parsed = parse_ledger_v3(read_ledger(root, ledger))
     if rec.get("kind") == "decision":
+        if not isinstance(rec.get("door"), dict):
+            raise SystemExit("FATAL: decision row %s carries no door object -- every writer runs door_lint_row() "
+                             "before appending (add does; a MALFORMED card is never appended)" % rec.get("id"))
         if any(d["id"] == rec["id"] for d in parsed["decisions"]):
             raise SystemExit("FATAL: id %s already on file (race check)" % rec["id"])
     line = json.dumps(rec, ensure_ascii=False)
@@ -681,26 +758,11 @@ def cmd_add(args, root, ledger):
         for e in errs:
             print("ADD-INVALID\t%s" % e)
         return 1
-    lint = _door_lint()
-    result = lint.lint(rec, root, ledger or os.path.join(root, ledger_rel_for(root)),
-                       git_timeout=getattr(args, "door_git_timeout", DOOR_GIT_TIMEOUT))
-    for rule in result.timeouts:
-        print("ADD-TIMEOUT\t%s" % rule)
+    result = door_lint_row(rec, root, ledger, git_timeout=getattr(args, "door_git_timeout", DOOR_GIT_TIMEOUT))
+    for line in door_audit_lines(rec, result):
+        print(line)
     if result.exit_code == 2:
-        for rule, detail in result.malformed:
-            print("ADD-REFUSED\t%s\t%s\t%s" % ("MALFORMED-BATCH" if rule == "D7" else "MALFORMED",
-                                             rule, detail))
-        print("Nothing was appended. A decision candidate carries per-option --undo, and --staged-artifact "
-              "--evidence --externality --recommended --default-on-silence (spend: --amount-usd).")
-        print("A card exists only for what depends on a preference or policy only the maintainer holds "
-              "(research/raw/2026-08-18-decisions-are-two-way-doors-grant.md:18-20,26-27). Everything "
-              "reversible proceeds without a card.")
         return 2
-    rec["door"] = {"fields_sha": lint.fields_sha(rec)}
-    if result.findings:
-        rec["door"]["findings"] = ["%s:%s" % (rule, detail) for rule, detail in result.findings]
-        for rule, detail in result.findings:
-            print("ADD-FINDING\t%s\t%s\t%s" % (rec["id"], rule, detail))
     append_line(root, rec, ledger)
     print("added %s: %s (urgency %s, class %s) — one JSONL line appended to %s"
           % (rec["id"], rec["title"], rec["urgency"], rec["class"],
@@ -927,6 +989,7 @@ def cmd_check(args, root, ledger):
     parsed = parse_ledger_v3(read_ledger(root, ledger))
     findings = []
     seen = set()
+    legacy = legacy_decision_ids(parsed, root)
     for dec in parsed["decisions"]:
         if dec["id"] in seen:
             findings.append("duplicate decision row for %s (one decision row per id)"
@@ -934,7 +997,7 @@ def cmd_check(args, root, ledger):
         seen.add(dec["id"])
         for e in validate_decision(dec["rec"]):
             findings.append("%s: %s" % (dec["id"], e))
-        if not is_legacy_decision(dec["rec"]):
+        if dec["id"] not in legacy:
             for e in door_shape_errors(dec["rec"]):
                 findings.append("%s: %s" % (dec["id"], e))
     known = {d["id"] for d in parsed["decisions"]}
@@ -1282,6 +1345,79 @@ def selftest():
            and r.stdout.count("ADD-TIMEOUT") == 1, r.stdout.strip()[:120])
         r = cli("check")
         ok("door-check-exempts-legacy-ids", r.returncode == 0, r.stdout.strip()[-140:])
+        # ---- the legacy boundary in both modes, and the writer gate (a second scratch repository) ----
+        root2 = tempfile.mkdtemp(prefix="decisions-selftest-legacy-")
+        try:
+            subprocess.run(["git", "init", "-q", root2], check=True)
+            for k, v in (("user.name", "Selftest Runner"), ("user.email", "selftest@example.invalid"),
+                         ("commit.gpgsign", "false")):
+                subprocess.run(["git", "-C", root2, "config", k, v], check=True)
+            os.makedirs(os.path.join(root2, "ledger"))
+            with open(os.path.join(root2, "README.md"), "w") as fh:
+                fh.write("legacy boundary selftest\n")
+
+            def legacy_row(n):
+                return {"kind": "decision", "id": "DEC-%03d" % n, "date": "2026-08-01", "requested_at": "2026-08-01",
+                        "requested_by": "lane LEGACY", "title": "legacy card %d" % n,
+                        "ask": {"question": "q?", "header": "Legacy", "multiSelect": False,
+                                "options": [{"label": "a", "description": "first"}, {"label": "b", "description": "second"}]},
+                        "context_pointers": [], "blocks": [], "urgency": "low", "class": "plan", "why_only_you": "legacy %d" % n}
+
+            def cli2(*a):
+                return subprocess.run([sys.executable, me, "--root", root2] + list(a), capture_output=True, text=True, env=env)
+
+            def flagged(r):
+                return sorted({l.split("\t")[2].split(":")[0] for l in r.stdout.splitlines()
+                               if l.startswith("DECISIONS-CHECK\tFAIL\t")})
+
+            with open(os.path.join(root2, DEFAULT_LEDGER_REL), "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(legacy_row(1)) + "\n" + json.dumps(legacy_row(2)) + "\n")
+            subprocess.run(["git", "-C", root2, "add", "-A"], check=True)
+            subprocess.run(["git", "-C", root2, "commit", "-qm", "two pre-upgrade cards"], check=True)
+            r = cli2("add", "--title", "First door card", "--question", "Upgraded?", "--header", "Door", "--option", "a:first",
+                     "--option", "b:second", "--requested-by", "x", "--urgency", "low", "--class", "plan",
+                     "--why-only-you", "post-upgrade", "--no-open", *DOOR_SELFTEST_ARGS)
+            ok("door-legacy-first-door-row-added", r.returncode == 0 and "added DEC-003" in r.stdout, r.stdout.strip()[:120])
+            with open(os.path.join(root2, DEFAULT_LEDGER_REL), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(legacy_row(4)) + "\n")
+            r = cli2("check")
+            ok("door-legacy-shape-order-gates-only-post-upgrade-rows", r.returncode == 1 and flagged(r) == ["DEC-004"],
+               "flagged=%s exit %d" % (flagged(r), r.returncode))
+            os.makedirs(os.path.join(root2, ".claude"))
+            with open(os.path.join(root2, ".claude", "hyp.json"), "w") as fh:
+                json.dump({DOOR_LEGACY_KEY: 4}, fh)
+            r = cli2("check")
+            ok("door-legacy-explicit-boundary-exempts-at-or-below", r.returncode == 0 and flagged(r) == [], "flagged=%s" % flagged(r))
+            with open(os.path.join(root2, ".claude", "hyp.json"), "w") as fh:
+                json.dump({DOOR_LEGACY_KEY: 1}, fh)
+            r = cli2("check")
+            ok("door-legacy-explicit-boundary-gates-above", r.returncode == 1 and flagged(r) == ["DEC-002", "DEC-004"],
+               "flagged=%s" % flagged(r))
+            # the writer gate: append_line refuses a decision row that never passed door_lint_row
+            before = read_ledger(root2)
+            try:
+                append_line(root2, legacy_row(5))
+                refused = False
+            except SystemExit as exc:
+                refused = "no door object" in str(exc)
+            ok("door-append-line-refuses-unstamped-decision-row", refused and read_ledger(root2) == before)
+            caller_row = legacy_row(5)
+            caller_row.update({"staged_artifact": "none", "evidence": "none-exists", "externality": "none",
+                               "recommended": "none", "default_on_silence": "nothing-changes"})
+            for opt in caller_row["ask"]["options"]:
+                opt["undo"] = "ledger-row"
+            res = door_lint_row(caller_row, root2)
+            ok("door-lint-row-stamps-a-caller-row", res.exit_code == 0 and len(caller_row.get("door", {}).get("fields_sha", "")) == 64
+               and door_audit_lines(caller_row, res) == [], str(res.findings)[:160])
+            append_line(root2, caller_row)
+            ok("door-lint-row-then-append-line-lands", json.loads(read_ledger(root2).strip().splitlines()[-1])["id"] == "DEC-005")
+            bad = legacy_row(6)
+            res = door_lint_row(bad, root2)
+            lines = door_audit_lines(bad, res)
+            ok("door-lint-row-malformed-stamps-nothing", res.exit_code == 2 and "door" not in bad
+               and sum(1 for l in lines if l.startswith("ADD-REFUSED\tMALFORMED\t")) >= 6, "%d line(s)" % len(lines))
+        finally:
+            shutil.rmtree(root2, ignore_errors=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("selftest: %d failure(s)" % len(failures))

@@ -82,8 +82,9 @@ requested_by, why_only_you non-empty; urgency and class from the enums; ask carr
 question, a 1-12-char header, a boolean multiSelect, and 2-4 options each with label +
 description. `decided_by` / `decided_at` / `resolution_commit` are FORBIDDEN on any row —
 see section 3. The six door fields and the `door` object are the lint's ("The six door fields" below): `add`
-refuses a candidate that lacks or malforms one, and `check` re-validates their shape on every row
-whose numeric id is above the legacy boundary (`DOOR_LEGACY_MAX_ID`, 35).
+refuses a candidate that lacks or malforms one, and `check` re-validates their shape on every row past
+the legacy boundary (`.claude/hyp.json` `decision_door_legacy_max_id`, or shape and order when the key is
+absent -- "Legacy rows and the boundary" below).
 
 ## 3. The resolution row (`kind:"decision-resolution"`) and git-derived attribution
 
@@ -247,19 +248,70 @@ else — no refusal is silent:
 | Exit | Rules | `add` prints | Row |
 |---|---|---|---|
 | 0 PASS | none fired | the `added ...` lines | appended with `door.fields_sha` (sha256 of the six values as canonical JSON) |
-| 1 ESCALATE | D2 UNDO-CORROBORATED (a revertible `undo` beside a staged path outside the worktree, or `none` beside all-tracked paths); D3 resolution (`git show <sha>:<path>` fails, the lines do not exist, or the target is not an evidence class: `experiments/runs/**/{VERDICT.json,VERIFY.md,grade*,RUN-RECORD*}`, a `research/raw/` maintainer capture, `kind:"decision-resolution"` lines of `ledger/work-ledger.jsonl`, a `hypotheses/*.md` Runs-table row or Status `kept` line); D4 corroboration (table above); D8 SELF-DECLARED-TWO-WAY (`why_only_you` or `note` carries `two-way door`, `proceeds under the standing grant`, `Nothing is blocked`, `default advisory` or `keep-advisory`); D9 BLOCKING-TWO-WAY (`blocks` non-empty while every `undo` is revertible and `externality` is `none`) | `ADD-FINDING<TAB><id><TAB><rule><TAB><detail>` per finding, then `added ...` | appended with the findings under `door.findings`; renders as before |
-| 2 MALFORMED | D0 STAGED-ARTIFACT, D1 UNDO-VOCAB, D3 form, D4 form (vocabulary; `class=spend` without a numeric `amount_usd`), D5 DEFAULT-STATED, D6 RECOMMENDED-ONE — every defect listed in one pass; then D7 DEDUP-WHY (at least two uncommitted decision rows already share the candidate's `why_only_you` byte-identically: one policy question filed N times) | `ADD-REFUSED<TAB>MALFORMED<TAB><rule><TAB><detail>` per defect (`MALFORMED-BATCH` for D7) | nothing appended |
+| 1 ESCALATE | D2 UNDO-CORROBORATED (a revertible `undo` beside a staged path outside the worktree, or `none` beside all-tracked paths); D3 EVIDENCE-RESOLVES, resolution leg (`git show <sha>:<path>` fails, the lines do not exist, or the target is not an evidence class: `experiments/runs/**/{VERDICT.json,VERIFY.md,grade*,RUN-RECORD*}`, a `research/raw/` maintainer capture, `kind:"decision-resolution"` lines of the configured work ledger -- `.claude/hyp.json` `ledger_file`, default `ledger/ledger.jsonl` -- a `hypotheses/*.md` Runs-table row or Status `kept` line); D4 EXTERNALITY-CORROBORATED, corroboration leg (table above); D8 SELF-DECLARED-TWO-WAY (`why_only_you` or `note` carries `two-way door`, `proceeds under the standing grant`, `Nothing is blocked`, `default advisory` or `keep-advisory`); D9 BLOCKING-TWO-WAY (`blocks` non-empty while no option's `undo` is `none` and `externality` is `none`) | `ADD-FINDING<TAB><id><TAB><rule><TAB><detail>` per finding, then `added ...` | appended with the findings under `door.findings`; renders as before |
+| 2 MALFORMED | D0 STAGED-ARTIFACT, D1 UNDO-VOCAB, D3 EVIDENCE-RESOLVES (form), D4 EXTERNALITY-CORROBORATED (form: vocabulary; `class=spend` without a numeric `amount_usd`), D5 DEFAULT-STATED, D6 RECOMMENDED-ONE — every defect listed in one pass; then D7 DEDUP-WHY (at least two uncommitted decision rows already share the candidate's `why_only_you` byte-identically: one policy question filed N times) | `ADD-REFUSED<TAB>MALFORMED<TAB><rule><TAB><detail>` per defect (`MALFORMED-BATCH` for D7) | nothing appended |
 
 A malformed card gets its field list and nothing else: D2-D4 and D8-D9 are not evaluated. Every
 git read runs under one timeout (`--door-git-timeout`, default 20 s); a stall prints one
-exit-neutral `ADD-TIMEOUT<TAB><rule>` line for that rule and never a finding. Legacy rows —
-numeric id at or below `DOOR_LEGACY_MAX_ID` (35) — are exempt and never re-validated; `check`
-re-validates only the fields' shape (the exit-2 class) on newer rows; `show` prints the
+exit-neutral `ADD-TIMEOUT<TAB><rule>` line for that rule and never a finding.
+
+#### Legacy rows and the boundary
+
+Legacy rows — cards appended before the fields existed — are exempt and never re-validated. The
+boundary is the consumer's, read by `check` from `.claude/hyp.json`:
+
+| `decision_door_legacy_max_id` | Legacy rows |
+|---|---|
+| an integer N (set it when you know your pre-upgrade count) | every row whose numeric id is at or below N |
+| absent (the default) | shape and order: every row appended before the first row that carries a `door` object; a door-less row appended after that first row is gated |
+
+Either way a consumer with any number of pre-upgrade cards upgrades cleanly, every post-upgrade
+path is gated, and `add` exempts nothing (a legacy-shaped card is refused whatever its id). `check`
+re-validates only the fields' shape (the exit-2 class) on the other rows; `show` prints the
 `door:` / `door-evidence:` / `door-finding:` lines only for rows that carry a `door` object, so
-legacy rows render byte-identically. Rows appended by a caller other than `add` (a direct
-`append_line`) are not linted at write time; `check` reports their missing fields once their id
-is above the legacy boundary. A script that files rows through `add` must pass the six flags
-(and a copy of `decisions.py` needs `decision_card_lint.py` beside it, or `add` exits with
-`FATAL: scripts/decision_card_lint.py ... is not beside decisions.py`); at this port
-`scripts/retest-trigger.py` and `scripts/knob-observe.py` do not yet, so their filings are
-refused until they are updated.
+legacy rows render byte-identically.
+
+#### Callers: all shipped callers pass the fields
+
+Every shipped writer of a `kind:"decision"` row passes the six fields and the lint, with values
+that say what its card is:
+
+| Writer | `undo` per option | `staged_artifact` | `evidence` | `externality` | `recommended` | `default_on_silence` | Lint result on these values |
+|---|---|---|---|---|---|---|---|
+| `retest-trigger.py` (rule-retest card) | `ledger-row`, `ledger-row` — a retest's verdict flips the registry by appended row, a retirement is an appended status row | `none` | the first committed `<path>@<sha40>#La-Lb` span the predicate matched (`context_pointers` carries every span) | `none` | `none` | `nothing-changes` | ESCALATE, appended: `D3 EVIDENCE-NOT-AN-AUTHORITY` (a stream span is a signal, not a verdict or ruling) and `D9 BLOCKING-TWO-WAY` (`blocks: ["rule/<id>"]`, the dedup key, beside two revertible options) |
+| `knob-observe.py` (gate-stance card) | `git-revert` (apply-plan: one node edit in its own commit), `ledger-row` (hold-advisory: the resolution row is the record) | the knob node path | `none-exists` (its pointers are a node path, a stream sha256 and a state-row key, none a committed span) | `none` | `apply-plan` | `nothing-changes` | PASS in a git consumer whose node is tracked |
+| `dispatch-gate.py ingest` (K-strikes quarantine row, class `spend`) | `ledger-row` (relaunch: the closing row lifts the quarantine), `git-revert` (retire: a spec-status commit) | `none` | `none-exists` (strike terminals are run artifacts) | `none` | `none` | `nothing-changes` (the quarantine stands) | ESCALATE, appended: `D9 BLOCKING-TWO-WAY` (the row gates the lane's relaunch); `amount_usd` is the declared per-run budget, else the recorded spend per run |
+| `reflex-surface file` (breach-autopsy row) | `git-revert` (fix-now: a remediation commit), `ledger-row` (accept-risk: the closing row) | `none` | `none-exists` (an incident dir has no committed span) | `none` | `none` | `nothing-changes` (the bucket keeps surfacing) | PASS |
+
+`retest-trigger.py` and `knob-observe.py` pass the flags to `add` and read the `added <id>:` line
+as the filed signal — exit 1 (ESCALATE) is a filed row, only exit 2 files nothing; the trigger
+echoes `ADD-FINDING` / `ADD-TIMEOUT` lines as `# door <rule-id>: ...` commentary. `dispatch-gate.py`
+and `reflex-surface` build their rows in-process and call `door_lint_row()` (the lint `add` runs,
+stamping `door` on PASS and ESCALATE) before `append_line`; a MALFORMED row is refused — the gate
+reports it under its JSON `error` (exit 2) and the reflex exits `FATAL` — and both surface the
+audit lines (`door_audit_lines()`; the gate under its JSON `door` key). `append_line` itself
+refuses a `kind:"decision"` row that carries no `door` object, so no path, shipped or not, appends
+a field-less card. A copy of `decisions.py` needs `decision_card_lint.py` beside it, or `add`
+exits with `FATAL: scripts/decision_card_lint.py ... is not beside decisions.py`; the callers'
+selftests copy both.
+
+#### Ported constants
+
+The lint shipped here differs from the lab's sealed copy
+(`experiments/runs/H-DRAFT-5f02c694-decision-card-door-fields/fixture/impl/decision_card_lint.py`
+in the source lab, sha256 `fa88cde74093cafc5d04a2177ffaf12e5c3a30c75a0873d82b975b7362289c82`) in
+one constant and its plumbing, so the ledger it reads is the consumer's: `LEDGER_REL_DEFAULT` is
+the plugin default `ledger/ledger.jsonl` (the sealed copy carried the lab path
+`ledger/work-ledger.jsonl`), `ledger_rel_for(root)` resolves `.claude/hyp.json` `ledger_file`
+over it (the key and default `decisions.py` uses), `lint()` takes that resolved path when none is
+handed in and passes its repo-relative form to D3, whose decision-resolution authority is the
+configured ledger (`evidence_class` and `d3_evidence_resolves` gain a `ledger_rel` parameter).
+The shipped file's sha256 is `3268bb88cc408c591d69fdb19c7d812909712697ff737253b40507e8daeb694d`:
+14 lines removed and 49 added against the sealed copy — one docstring paragraph, the two constant
+lines, the resolver, two signatures and their two call sites, two lines in `lint()`, and the
+selftest's scratch repository configuring its ledger through `.claude/hyp.json` plus five new checks
+(64 to 69). Rules D0-D9, their vocabularies, the corroboration table and the output grammar are
+unchanged; the lab keeps its path because its `hyp.json` says `ledger/work-ledger.jsonl`. Still
+lab-shaped by the sealed treatment and left for a refine lane: the refusal sentence's
+`research/raw/...-grant.md` citation, `ledger/hook-denials.jsonl`, `research/raw/`, `program.md`,
+`experiments/runs/`, `hypotheses/` and the owned-repository set `LAB_OWNED_REPOS`.

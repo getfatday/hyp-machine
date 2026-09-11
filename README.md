@@ -220,6 +220,7 @@ read it. All paths are repo-relative.
 | `hypotheses_dir` | `hypotheses` |
 | `runs_dir` | `experiments/runs` |
 | `ledger_file` | `ledger/ledger.jsonl` (the work ledger the dashboard, decision kit, and session resolver share; the optional `DECIDERS` routing file lives beside it) |
+| `decision_door_legacy_max_id` | absent — `decisions.py check` treats every decision row before the first row carrying a `door` object as legacy (exempt from the door-field re-validation); set an integer to exempt every numeric id at or below it instead (`docs/decisions.md`, "Legacy rows and the boundary") |
 | `template_file` | `hypotheses/TEMPLATE.md` |
 | `followups_file` | `hypotheses/FOLLOWUPS.md` (the licensed follow-up lanes the dispatch REFILL reads; grammar in `docs/workgraph.md`) |
 | `preflight_file` | `experiments/preflight.py` |

@@ -15,4 +15,6 @@ status: current
 The one verb the licensing policy issues. Class `plan`; the default on silence is the literal
 `nothing changes` (the node stays at advise for every class), so no dated backstop is armed. The
 row is appended by `decisions.py add --no-open` with `--date` pinned by the caller
-(`DECISIONS_TODAY`); the evaluator reads no clock.
+(`DECISIONS_TODAY`); the evaluator reads no clock. It carries the six door fields: `recommended`
+`apply-plan`, the knob node staged (undo `git-revert`; `hold-advisory` undo `ledger-row`),
+`evidence` `none-exists`, `externality` `none`, `default_on_silence` `nothing-changes`.

@@ -7,7 +7,10 @@ rows, the licensing policy node, the kill-switch surfaces and the run directorie
 appends ONE state row to ledger/knob-state.jsonl per new signal state, and -- only in
 `mode: recommend`, only when the window holds the declared sample size, only when the licensing
 node resolves (H-241), and only when no decision for the knob is open -- files exactly one
-class-plan decision row through scripts/decisions.py add --no-open. Silence is a recorded
+class-plan decision row through scripts/decisions.py add --no-open, carrying the six door
+fields (decision-card-door-fields): the ladder recommends `apply-plan` and stages the knob node
+(undo `git-revert`; `hold-advisory` undo `ledger-row`), `evidence` `none-exists`, `externality`
+`none`, `default_on_silence` `nothing-changes`. Silence is a recorded
 state (`evidence-insufficient n=k/30`), never an absent one (H-154). No wall clock is read
 anywhere: DECISIONS_TODAY is passed through to decisions.py as --date and the state row carries
 no clock field.
@@ -604,10 +607,23 @@ def packet_args(knob, knob_rel, n, n_min, per_class, signal_rel, signal_sha, dat
             "--pointer", "%s@sha256:%s" % (signal_rel, signal_sha),
             "--pointer", "%s#knob=%s;n=%d/%d;signal=%s" % (STATE_REL, knob, n, n_min, signal_sha[:12]),
             "--note", note,
+            # the six door fields (decision-card-door-fields): the ladder recommends the plan, which is one
+            # node edit in its own commit (undo git-revert); holding keeps observing and the resolution row
+            # is its record (undo ledger-row); the pointers above are a node path, a sha256 of the stream
+            # and a state-row key, none a <path>@<sha40>#La-Lb span, so no committed authority is cited;
+            # nothing leaves the repository; silence changes nothing (the node stays at advise).
+            "--undo", "git-revert", "--undo", "ledger-row",
+            "--staged-artifact", knob_rel,
+            "--evidence", "none-exists",
+            "--externality", "none",
+            "--recommended", "apply-plan",
+            "--default-on-silence", "nothing-changes",
             "--no-open", "--date", date, "--requested-at", date]
 
 
 def file_decision(root, args):
+    """-> (id or None, rc, tail). The id is read from the `added <id>:` line: the door lint's exit 1
+    (ESCALATE) is a filed row carrying door.findings; only exit 2 (MALFORMED) files nothing."""
     script = os.path.join(root, "scripts", "decisions.py")
     cmd = [sys.executable, script, "--root", root, "add"] + args
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=root)
@@ -950,6 +966,13 @@ def build_minilab(root, mode="recommend", license_node=True):
     _w(root, "ledger/work-ledger.jsonl", "")
     os.makedirs(os.path.join(root, "scripts"), exist_ok=True)
     shutil.copyfile(os.path.join(HERE, "decisions.py"), os.path.join(root, "scripts", "decisions.py"))
+    shutil.copyfile(os.path.join(HERE, "decision_card_lint.py"), os.path.join(root, "scripts", "decision_card_lint.py"))
+    # every consumer is a git repository: the door lint corroborates the staged knob node against git ls-files
+    for cmd in (["git", "init", "-q", root],
+                ["git", "-C", root, "add", "-A"],
+                ["git", "-C", root, "-c", "user.name=selftest", "-c", "user.email=selftest@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "-q", "-m", "minilab"]):
+        subprocess.run(cmd, check=True, capture_output=True)
 
 
 def selftest():
@@ -994,6 +1017,14 @@ def selftest():
         ok("clean-30-filed-once", rc == 0 and len(res["filed"]) == 1 and res["decision_rows_total"] == 1
            and pc["13"]["would_set"] == "advise" and all(pc[c]["would_set"] == "deny" for c in ("10", "11", "12", "15")),
            json.dumps(res)[:400])
+        filed_dec = [json.loads(l) for l in read_text(os.path.join(root, "ledger", "work-ledger.jsonl")).splitlines()
+                     if l.strip() and json.loads(l).get("kind") == "decision"]
+        ok("clean-30-filed-row-carries-door-fields", len(filed_dec) == 1
+           and len((filed_dec[0].get("door") or {}).get("fields_sha", "")) == 64 and "findings" not in filed_dec[0]["door"]
+           and filed_dec[0].get("recommended") == "apply-plan" and filed_dec[0].get("staged_artifact") == [res["knob_node"]]
+           and [o.get("undo") for o in filed_dec[0]["ask"]["options"]] == ["git-revert", "ledger-row"]
+           and filed_dec[0].get("evidence") == "none-exists" and filed_dec[0].get("externality") == "none"
+           and filed_dec[0].get("default_on_silence") == "nothing-changes", json.dumps(filed_dec)[:400])
         rc2, res2 = evaluate(root, "checkpoint-gate-stance")
         ok("clean-idempotent", rc2 == 0 and res2["idempotent_skip"] and not res2["appended"] and not res2["filed"])
         v, summ = check(root, "checkpoint-gate-stance")

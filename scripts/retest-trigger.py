@@ -9,7 +9,10 @@ evidence-received, evaluated against committed HEAD only) holds and which has no
 resolved class:"rule-retest" decision row for its id, it files exactly one
 `decisions.py add --class rule-retest` row whose context_pointers are `<path>@<sha>#L<a>-L<b>`
 spans into the committed stream, and prints one RETEST-DUE line. It licenses nothing else
-(H-241: the row is the only action). No wall clock is read anywhere: the row's `date` and
+(H-241: the row is the only action). The row carries the six door fields (decision-card-door-fields):
+undo `ledger-row` per option, `staged_artifact` and `recommended` `none`, `evidence` the first
+committed span the predicate matched, `externality` `none`, `default_on_silence` `nothing-changes`;
+the lint's exit 1 (ESCALATE, appended with door.findings) is a filed row, exit 2 files nothing. No wall clock is read anywhere: the row's `date` and
 `requested_at` are the HEAD commit's author date (the date the evidence was committed), so two
 drives over the same commits file byte-identical rows.
 
@@ -55,6 +58,8 @@ GIT_TIMEOUT = 60
 closes_when.GIT_TIMEOUT = GIT_TIMEOUT
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 RULE_RETEST_CLASS = "rule-retest"
+EVIDENCE_POINTER_RE = re.compile(r"^[^@\s]+@[0-9a-f]{40}#L\d+-L\d+$")  # the door lint's evidence form
+ADDED_RE = re.compile(r"^added (DEC-\d+):", re.M)
 
 
 def _git(repo, args):
@@ -151,8 +156,16 @@ def filed_rule_ids(ledger_path):
 
 
 def file_row(repo, ledger_path, rid, predicate, arg, sha, pointers, date):
-    """Append the row through decisions.py (the single validated writer). Returns (rc, out)."""
+    """Append the row through decisions.py (the single validated writer). The six door fields say what
+    the card is -- a machine-filed, evidence-backed, reversible ask: both options resolve by an appended
+    row (a retest's verdict flips the registry by appended row, a retirement is an appended status row:
+    undo ledger-row), the trigger recommends neither (recommended none, staged_artifact none), the
+    evidence is the first committed span the predicate matched (context_pointers carries every span),
+    nothing leaves the repository (externality none) and silence changes nothing. Returns
+    (appended, rc, out): appended is read from the `added <id>:` line, because the door lint's exit 1
+    (ESCALATE: appended with door.findings) is a filed row and only exit 2 (MALFORMED) files nothing."""
     decisions = os.path.join(HERE, "decisions.py")
+    evidence = next((p for p in pointers if EVIDENCE_POINTER_RE.match(p)), "none-exists")
     cmd = [sys.executable, "-B", decisions, "--root", repo, "--ledger", ledger_path, "add",
            "--no-open",
            "--class", RULE_RETEST_CLASS,
@@ -169,15 +182,22 @@ def file_row(repo, ledger_path, rid, predicate, arg, sha, pointers, date):
            "--why-only-you", "a counted retest spends lane budget and its verdict can retire a live "
                              "rule; the trigger files this row and licenses nothing else",
            "--blocks", "rule/%s" % rid,
-           "--note", "retest_when %s=%s evaluated at %s" % (predicate, arg, sha)]
+           "--note", "retest_when %s=%s evaluated at %s" % (predicate, arg, sha),
+           "--undo", "ledger-row", "--undo", "ledger-row",
+           "--staged-artifact", "none",
+           "--evidence", evidence,
+           "--externality", "none",
+           "--recommended", "none",
+           "--default-on-silence", "nothing-changes"]
     for p in pointers:
         cmd += ["--pointer", p]
     env = dict(os.environ, DECISIONS_TODAY=date)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
-        return 1, "decisions.py launch failed: %s" % exc
-    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+        return False, 1, "decisions.py launch failed: %s" % exc
+    appended = ADDED_RE.search(proc.stdout or "") is not None
+    return appended, proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
 def run(root, registry_opt=None, ledger_opt=None, dry_run=False, date_opt=None):
@@ -224,11 +244,14 @@ def run(root, registry_opt=None, ledger_opt=None, dry_run=False, date_opt=None):
         if dry_run:
             findings.append(("RETEST-DUE", rid, display, referent))
             continue
-        rc, out = file_row(repo, ledger, rid, predicate, arg, sha, pointers, date)
-        if rc != 0:
+        appended, rc, out = file_row(repo, ledger, rid, predicate, arg, sha, pointers, date)
+        if not appended:
             for ln in out.splitlines():
                 print("# decisions.py add failed for %s: %s" % (rid, ln.strip()))
             continue
+        for ln in out.splitlines():
+            if ln.startswith("ADD-FINDING\t") or ln.startswith("ADD-TIMEOUT\t"):
+                print("# door %s: %s" % (rid, ln.strip().replace("\t", " ")))
         already.add(rid)
         n_filed += 1
         findings.append(("RETEST-DUE", rid, display, referent))
@@ -261,7 +284,7 @@ def _selftest():
     try:
         for d in ("ledger", "registry", "scripts", os.path.join("research", "raw")):
             os.makedirs(os.path.join(tmp, d))
-        for name in ("closes_when.py", "decisions.py", "retest-trigger.py"):
+        for name in ("closes_when.py", "decisions.py", "decision_card_lint.py", "retest-trigger.py"):
             shutil.copy2(os.path.join(HERE, name), os.path.join(tmp, "scripts", name))
 
         def rule(rid, retest_when):
@@ -336,6 +359,17 @@ def _selftest():
            and ctrl[0]["context_pointers"] and ctrl[0]["date"] == "2026-09-05", json.dumps(ctrl)[:300])
         date_tokens = set(re.findall(r"\d{4}-\d{2}-\d{2}", json.dumps(ctrl)))
         ok("no date token in the row other than its own date", date_tokens <= {"2026-09-05"}, str(date_tokens))
+        c0 = ctrl[0] if ctrl else {}
+        ok("control row carries the six door fields and the door stamp",
+           bool(ctrl) and len((c0.get("door") or {}).get("fields_sha", "")) == 64
+           and [o.get("undo") for o in c0.get("ask", {}).get("options", [])] == ["ledger-row", "ledger-row"]
+           and c0.get("staged_artifact") == "none" and c0.get("recommended") == "none"
+           and c0.get("externality") == "none" and c0.get("default_on_silence") == "nothing-changes"
+           and c0.get("evidence") == (c0.get("context_pointers") or [None])[0]
+           and EVIDENCE_POINTER_RE.match(c0.get("evidence") or ""), json.dumps(c0)[:300])
+        ok("door findings surface as commentary, never as a finding line",
+           all(ln.startswith("# door R-903: ADD-") for ln in (out1 + out2).splitlines() if "ADD-FINDING" in ln or "ADD-TIMEOUT" in ln)
+           and "ADD-FINDING" not in out2, out1[:300])
         # dry-run files nothing even when due
         proc = subprocess.run([sys.executable, "-B", os.path.join(tmp, "scripts", "retest-trigger.py"),
                                tmp, "--dry-run"], capture_output=True, text=True, timeout=120)
