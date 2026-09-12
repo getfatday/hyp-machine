@@ -1,0 +1,43 @@
+{
+ "decide": "Sign three unsigned commits yourself by 2026-09-26, or accept them unsigned; signing is recommended.",
+ "situation": "Three commits landed while your key was locked, so they carry no signature. A signature only shows who wrote a commit; nothing is broken.",
+ "yours_because": "Only your key can produce your signature.",
+ "choices": [
+  {
+   "label": "sign-them",
+   "in_practice": "You unlock your key and sign the three commits.",
+   "undo": "cannot be undone: the signatures stay in history."
+  },
+  {
+   "label": "accept-unsigned",
+   "in_practice": "A dated note records the acceptance.",
+   "undo": "Reversible: you can still sign them on any day."
+  }
+ ],
+ "if_nothing": "On 2026-09-26 accept-unsigned is taken for you.",
+ "evidence_line": "Both paths are written down in the committed governance text of this repository.",
+ "terms": {
+  "signature": "a stamp proving who made a commit"
+ },
+ "sources": [
+  "kernel/GOVERNANCE.md@1721457e58f54adb444dbfbbce5ff3717db4ff3a#L12-L19",
+  "kernel/GOVERNANCE.md@1721457e58f54adb444dbfbbce5ff3717db4ff3a#L12-L19",
+  "kernel/GOVERNANCE.md@1721457e58f54adb444dbfbbce5ff3717db4ff3a#L12-L19",
+  "kernel/GOVERNANCE.md@1721457e58f54adb444dbfbbce5ff3717db4ff3a#L12-L19",
+  "kernel/GOVERNANCE.md@1721457e58f54adb444dbfbbce5ff3717db4ff3a#L12-L19",
+  "kernel/GOVERNANCE.md@1721457e58f54adb444dbfbbce5ff3717db4ff3a#L12-L19",
+  "pipeline-fact:append-only-ledger",
+  "pipeline-fact:append-only-ledger",
+  "operating-model/cause-n-effect/policies/decision-default-on-silence.md@1721457e58f54adb444dbfbbce5ff3717db4ff3a#L18-L24",
+  "kernel/GOVERNANCE.md@1721457e58f54adb444dbfbbce5ff3717db4ff3a#L12-L19",
+  "experiments/deploy/hyp-machine/docs/decisions.md@1721457e58f54adb444dbfbbce5ff3717db4ff3a#L43-L46"
+ ],
+ "card_sha": "1c4c6b8bfda4a515e79e4d8a61ca941b99d48821b4b04af478740d6731aeaca8",
+ "provenance": {
+  "protocol": "inline",
+  "packet_sha": "81ebb5aece79776d57f4ac528326d6401a51e106e6326e59193f59c59bc3beb6",
+  "prompt_sha": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "writer_session": "6fce2307/planter",
+  "drafted_at_head": "1721457e58f54adb444dbfbbce5ff3717db4ff3a"
+ }
+}

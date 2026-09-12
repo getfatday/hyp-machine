@@ -90,6 +90,20 @@ unchanged:
   - --check compares DASHBOARD.md bytes only (they cover every ledger change); an
     edit to the decisions-template alone refreshes decisions.html on the next
     render rather than tripping --check.
+
+Decision briefs (ported from the source lab's decision-brief-gate lane, kept 2026-09-12): the
+kind:"decision-brief" / "decision-brief-test" sidecar rows are carried silently by parse_ledger and
+read by parse_brief_rows; scripts/decision_brief_render.py beside this script decides every card's
+state (valid / findings / legacy-missing / legacy-resolved / missing / stale) from the row, its
+briefs and .claude/hyp.json decision_brief_legacy_max_id. Section 1 renders a valid brief
+brief-first (the seven reader labels, one answer: line per choice), a legacy open card as today's
+grammar plus exactly one `brief: BRIEF-MISSING` marker line, and a card above the boundary with no
+valid brief as a NOT READY block after the cards (never as a question); section 1b renders a
+record's brief when it has one; the decisions.html card payload carries brief / brief_state, or a
+first-key brief_marker on a legacy card. A missing render module renders as today plus a
+`source missing` note on the store line. The parse_brief_rows / _brief_render / compute_brief_states
+helpers and every inserted render line are byte-identical to the lab compiler's (the snap dict is
+the adapter).
 """
 import json
 import os
@@ -109,6 +123,7 @@ DECISIONS_TEMPLATE_NAME = "decisions-template.html"
 RESOLVE_CLI = "python3 scripts/decisions.py resolve"
 URGENCY_ORDER = {"high": 0, "normal": 1, "low": 2}
 CAP_DECISION_CARDS = 25
+BRIEF_KINDS = ("decision-brief", "decision-brief-test")   # decision briefs: sidecar rows, read by parse_brief_rows
 
 DEFAULTS = {
     "raw_dir": "research/raw",
@@ -190,6 +205,8 @@ def parse_ledger(text):
                                     "id": rec["id"],
                                     "disposition": rec["disposition"]})
                 continue
+            if kind in BRIEF_KINDS:            # decision briefs: carried silently, never malformed
+                continue
             if "slug" in rec and "hit" in rec:            # legacy shape
                 date, slug, hit = rec["date"], rec["slug"], rec["hit"]
             elif "id" in rec and "text" in rec:           # v2 shape
@@ -208,6 +225,72 @@ def parse_ledger(text):
                                   if isinstance(assignee, str) else ""),
                      "lineno": lineno})
     return rows, malformed, decisions, resolutions
+
+
+def parse_brief_rows(text):
+    """decision briefs: the kind:"decision-brief" / "decision-brief-test" sidecar recs in ledger order (parse_ledger
+    carries the two kinds silently; the state table reads them here). Never raises."""
+    out = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("kind") in BRIEF_KINDS and rec.get("id") is not None:
+            out.append(rec)
+    return out
+
+
+_BRIEF_RENDER = None
+
+
+def _brief_render():
+    """scripts/decision_brief_render.py beside this compiler (the one render module behind every decision surface);
+    None when absent -- the compiler never raises, and a missing module renders as a visible line in section 1."""
+    global _BRIEF_RENDER
+    if _BRIEF_RENDER is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        try:
+            import decision_brief_render  # noqa
+            _BRIEF_RENDER = decision_brief_render
+        except Exception:
+            _BRIEF_RENDER = False
+    return _BRIEF_RENDER or None
+
+
+def compute_brief_states(snap):
+    """-> ({id: state}, {id: brief-or-None}, module_missing) over every logical decision row: the render module's
+    state table with the boundary from .claude/hyp.json (absent: shape and order). An unreadable brief is stale,
+    never a question (the compiler never raises)."""
+    render = _brief_render()
+    if render is None:
+        return {}, {}, True
+    config = render.load_config(snap["root"])
+    in_order = [d["rec"] for d in sorted(snap["decision_rows"], key=lambda d: d["order"])]
+    legacy = render.legacy_ids(in_order, config)
+    briefs = render.group_by_id([r for r in snap["brief_rows"] if r.get("kind") == "decision-brief"])
+    tests = render.group_by_id([r for r in snap["brief_rows"] if r.get("kind") == "decision-brief-test"])
+    states, briefs_of = {}, {}
+    for row in snap["decisions_logical"]:
+        try:
+            state, brief = render.resolve_brief(row, briefs.get(row["id"], []), tests.get(row["id"], []),
+                                                legacy=row["id"] in legacy, status=row.get("status"))
+        except Exception:
+            state, brief = "stale", None
+        states[row["id"]], briefs_of[row["id"]] = state, brief
+    return states, briefs_of, False
+
+
+def _brief_snap_default(stamp):
+    """Port adaptation: the lab compiler hands its renderers one snapshot dict; this compiler passes the same keys the
+    brief path reads (stamp, brief_states, brief_of, brief_module_missing) as `snap`, so the inserted lines are
+    byte-identical in both compilers. A caller that passes none gets an empty state table."""
+    return {"stamp": stamp, "brief_states": {}, "brief_of": {}, "brief_module_missing": _brief_render() is None}
 
 
 # --- v3 decision join + attribution (docs/decisions.md sections 2-3, 6) -----------------
@@ -375,11 +458,12 @@ def find_decisions_template(root):
 
 
 def render_decision_section(stamp, head_short, ledger_rel, ledger_missing,
-                            template_present, routes, open_cards, compat):
+                            template_present, routes, open_cards, compat, snap=None):
     """Section 1 — DECISIONS WAITING: one AskUserQuestion-grammar card per open
     decision (the section-1 text grammar of docs/decisions.md), then compat cards for
     open legacy maintainer-ruling rows an open decision does not shadow. Ages derive
     from the header stamp (determinism), never the wall clock."""
+    snap = snap if snap is not None else _brief_snap_default(stamp)
     yours = [r for r in open_cards if owner_of(r, routes) == "you"]
     others = [r for r in open_cards if owner_of(r, routes) != "you"]
     n = len(open_cards) + len(compat)
@@ -393,6 +477,8 @@ def render_decision_section(stamp, head_short, ledger_rel, ledger_missing,
     if not template_present:
         store_line += (" · decisions.html: template missing (%s) — emission skipped"
                        % DECISIONS_TEMPLATE_NAME)
+    if snap.get("brief_module_missing"):
+        store_line += " · source missing: scripts/decision_brief_render.py (brief states not computed; cards render as today)"
     lines.append(store_line)
     lines.append("")
     if ledger_missing:
@@ -403,6 +489,9 @@ def render_decision_section(stamp, head_short, ledger_rel, ledger_missing,
                      "moment a decision row lands in the ledger)")
         lines.append("")
     card_blocks = []
+    not_ready = []
+    render = _brief_render()
+    states = snap.get("brief_states", {})
     for row in open_cards:
         ask = row.get("ask", {}) if isinstance(row.get("ask"), dict) else {}
         age = decision_age_days(row, stamp)
@@ -412,7 +501,23 @@ def render_decision_section(stamp, head_short, ledger_rel, ledger_missing,
                 "class " + str(row.get("class", "?"))]
         if ask.get("multiSelect"):
             chip.append("pick many")
+        state = states.get(row["id"], "legacy-missing") if render is not None else None
+        if state in ("missing", "stale"):
+            # decision briefs: above the boundary without a valid brief -- a NOT READY block after the cards, never a question
+            not_ready.append((row, state))
+            continue
         block = ["- [%s]" % " | ".join(chip)]
+        if state in ("valid", "findings"):
+            # decision briefs: brief-first (the seven labels, one answer per choice, evidence, details), one marker on findings
+            brief = snap["brief_of"].get(row["id"])
+            block.extend(render.card_lines(row, brief, snap["stamp"]))
+            block.extend(render.marker_lines(row, state, brief=brief))
+            for res in row.get("resolutions", []):
+                if res["disposition"] == "commented":
+                    block.append("  comment (stays open): \"%s\"" % res["comment"])
+            block.append("")
+            card_blocks.append(block)
+            continue
         block.append("  ask: %s" % ask.get("question", row.get("title", "")))
         for opt in ask.get("options", []):
             block.append("  [ ] %s — %s" % (opt.get("label", "?"),
@@ -432,11 +537,16 @@ def render_decision_section(stamp, head_short, ledger_rel, ledger_missing,
             block.append("  blocks: %s" % ", ".join(row["blocks"]))
         if row.get("note"):
             block.append("  note: %s" % row["note"])
+        if state == "legacy-missing":
+            # decision briefs: today's grammar byte for byte plus exactly one marker line (legacy rows are never re-validated)
+            block.extend(render.marker_lines(row, state))
         accept, deny, comment = decision_answer_commands(row)
         block.append("  answer: %s" % accept)
         block.append("          deny: %s · comment: %s" % (deny, comment))
         block.append("")
         card_blocks.append(block)
+    for row, state in not_ready:
+        card_blocks.append(render.not_ready_lines([(row, state)], snap["stamp"]) + [""])
     for row, arg in compat:
         age = decision_age_days(row, stamp)
         block = ["- [legacy %s | %s | asked-by ledger row %s | class ruling-compat]"
@@ -479,9 +589,10 @@ def door_records(decisions_logical):
     return records, vetoed, with_findings
 
 
-def render_decision_records_section(decisions_logical, stamp):
+def render_decision_records_section(decisions_logical, stamp, snap=None):
     """Section 1b -- DECIDED FOR YOU (veto open): one block per two-way decision the door recorded, plain English,
     impact first, one command to undo, one word to veto. Ages and windows derive from the header stamp."""
+    snap = snap if snap is not None else _brief_snap_default(stamp)
     records, vetoed, with_findings = door_records(decisions_logical)
     stamp_day = str(stamp)[:10]
     n_open = sum(1 for _row, res in records if str(res.get("veto_open_until") or "") >= stamp_day)
@@ -494,6 +605,21 @@ def render_decision_records_section(decisions_logical, stamp):
     for row, res in records:
         ask = row.get("ask", {}) if isinstance(row.get("ask"), dict) else {}
         chosen = (res.get("chosen_options") or ["?"])[0]
+        state = snap.get("brief_states", {}).get(row["id"])
+        if state in ("valid", "findings") and _brief_render() is not None:
+            # decision briefs: a record with a valid brief renders brief-first (DECIDED, THE SITUATION, WHY THE LAB DID
+            # NOT ASK YOU, WHAT CHANGES, UNDO, the veto line); today's because: form otherwise
+            render = _brief_render()
+            until = str(res.get("veto_open_until") or "?")
+            window = "open" if until >= stamp_day else "closed"
+            block = ["- [%s | recorded %s | veto until %s (%s) | class %s | asked by %s]"
+                     % (row["id"], res.get("date", "?"), until, window, row.get("class", "?"), row.get("requested_by", "?"))]
+            brief = snap["brief_of"].get(row["id"])
+            block.extend(render.record_lines(row, res, brief, snap["stamp"]))
+            block.extend(render.marker_lines(row, state, brief=brief))
+            block.append("")
+            blocks.append(block)
+            continue
         desc = next((o.get("description", "") for o in ask.get("options", []) if o.get("label") == chosen), "")
         until = str(res.get("veto_open_until") or "?")
         window = "open" if until >= stamp_day else "closed"
@@ -529,13 +655,22 @@ def records_html_block(decisions_logical, stamp):
             % (n_open, len(records), len(vetoed), "".join(items) or "<li>(none)</li>"))
 
 
-def render_decisions_html(template, stamp, head_short, ledger_rel, open_cards, decisions_logical=None):
+def render_decisions_html(template, stamp, head_short, ledger_rel, open_cards, decisions_logical=None, snap=None):
     """decisions.html: the template re-emitted whole with SNAPSHOT / REPO / DECISIONS
     / stamp injected. REPO injects empty (repo-relative hrefs: the file lives at the
     repo root, next to DASHBOARD.md). Raises on a malformed template; the caller
     catches (the DASHBOARD render never fails on the html emission)."""
+    snap = snap if snap is not None else _brief_snap_default(stamp)
     payload = []
+    render = _brief_render()
+    states = snap.get("brief_states", {})
     for row in open_cards:
+        if render is not None:
+            # decision briefs: one card object per state -- today's object plus a first-key brief_marker for a legacy
+            # card, brief + brief_state for a valid one, the NOT READY object (no ask, no answer) above the boundary
+            payload.append(render.html_payload(row, snap["brief_of"].get(row["id"]), row.get("resolutions", []),
+                                               snap["stamp"], state=states.get(row["id"], "legacy-missing")))
+            continue
         item = {k: row[k] for k in ("kind", "id", "date", "requested_at",
                                     "requested_by", "title", "ask",
                                     "context_pointers", "blocks", "urgency",
@@ -790,6 +925,11 @@ def compile_text(root):
     if resolution_rows:
         derive_attribution(root, ledger_rel, resolution_rows)
     decisions_logical = join_decisions(decision_rows, resolution_rows)
+    # decision briefs: the state of every logical row by the one render module (never raises); snap carries the
+    # keys the brief path reads (the lab compiler's snapshot dict), so the renderers' brief lines are byte-identical
+    snap = {"root": root, "stamp": stamp, "decision_rows": decision_rows, "decisions_logical": decisions_logical,
+            "brief_rows": parse_brief_rows(ledger_text)}
+    snap["brief_states"], snap["brief_of"], snap["brief_module_missing"] = compute_brief_states(snap)
     resolved_ids = (head_resolved_ids(root, ledger_rel)
                     if resolution_rows else set())
 
@@ -828,10 +968,10 @@ def compile_text(root):
     template = find_decisions_template(root)
     out.extend(render_decision_section(stamp, head_short, ledger_rel,
                                        ledger_text is None, template is not None,
-                                       routes, open_cards, compat))
+                                       routes, open_cards, compat, snap=snap))
     out.append("")
     # door evaluator: section 1b -- DECIDED FOR YOU (records with an open veto window; never a pop-up)
-    out.extend(render_decision_records_section(decisions_logical, stamp))
+    out.extend(render_decision_records_section(decisions_logical, stamp, snap=snap))
     out.append("")
 
     decisions_html = None
@@ -839,7 +979,7 @@ def compile_text(root):
         try:
             decisions_html = render_decisions_html(template, stamp, head_short,
                                                    ledger_rel, open_cards,
-                                                   decisions_logical)
+                                                   decisions_logical, snap=snap)
         except (ValueError, KeyError, TypeError):
             decisions_html = None
 

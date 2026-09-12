@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "docs/decision-brief.schema.json",
+  "title": "Decision brief",
+  "description": "The plain-English brief filed beside a decision card (decisions.py add --brief <brief.json>, or decisions.py brief <id> --brief <brief.json> for a retrofit). Six authored fields the reader sees under fixed labels, plus glosses, one machine pointer per authored statement, the card fingerprint and the provenance receipt. Linted by scripts/decision_card_lint.py rules B0-B11: B0 PRESENT and B1 CARD-SHA refuse the candidate (exit 2, nothing appended); B2-B11 are prose findings (exit 1, the row is appended with brief.lint.findings and renders with a BRIEF-FINDINGS marker); B6, B9 and B10 block only once admitted in .claude/hyp.json decision_brief_admitted_rules, else they print as ADD-REPORT lines. The reader is an adult with general software knowledge and no lab context: no sentence over 25 words (B2), no field over 5 sentences and decide exactly one (B3), the six authored fields at most 120 words together with glosses, labels excluded (B4), every house-only term and id glossed at first use or in terms{} (B5), machine text -- paths, commands, URLs, commit hashes, score shorthand, relative time -- kept off the authored fields (B6), if_nothing dated or 'nothing changes' or the pipeline fact and in agreement with default_on_silence and the class boundary (B7), undo statements agreeing with the door's undo token or carrying a source (B8), no NEEDS-<Name> tag and no git author string (B9), none of the banned tone tokens (B10), every sources[] pointer resolving at HEAD and every literal from the fixed list (B11). Draft one with: python3 scripts/decisions.py brief-skeleton <candidate.json>; exemplar: docs/decision-brief.exemplar.json.",
+  "type": "object",
+  "required": ["decide", "situation", "yours_because", "choices", "if_nothing", "evidence_line", "sources", "card_sha"],
+  "additionalProperties": true,
+  "properties": {
+    "decide": {
+      "type": "string", "minLength": 1,
+      "description": "Reader label DECIDE (DECIDED on a record). Exactly one sentence: the choice as an act, the deadline if one exists, the recommendation if one is on record."
+    },
+    "situation": {
+      "type": "string", "minLength": 1,
+      "description": "Reader label THE SITUATION. At most 5 sentences: what the thing is in ordinary nouns, what changed, how it is handled at present."
+    },
+    "yours_because": {
+      "type": "string", "minLength": 1,
+      "description": "Reader label WHY YOU (WHY THE LAB DID NOT ASK YOU on a record). One or two sentences naming the door in words: what becomes permanent, who outside the repository is affected, or the physical act only the reader can perform."
+    },
+    "choices": {
+      "type": "array", "minItems": 1,
+      "description": "Reader label YOUR CHOICES, one line per option followed by its own answer: command. Labels equal ask.options[].label one-to-one and in order.",
+      "items": {
+        "type": "object",
+        "required": ["label", "in_practice", "undo"],
+        "properties": {
+          "label": {"type": "string", "minLength": 1, "description": "The option label, byte-equal to ask.options[].label at the same position."},
+          "in_practice": {"type": "string", "minLength": 1, "description": "What happens next if this option is chosen, in plain words."},
+          "undo": {"type": "string", "minLength": 1, "description": "How the choice is reversed in words; or, when the door's undo token is none, a statement beginning 'cannot be undone:' followed by what stays."}
+        }
+      }
+    },
+    "if_nothing": {
+      "type": "string", "minLength": 1,
+      "description": "Reader label IF YOU DO NOTHING. An ISO date (YYYY-MM-DD) and the outcome, or the literal 'nothing changes', or the pipeline fact 'No default is armed; the card stays open and is listed at every session start.' Agrees with default_on_silence when present; classes publish, spend, live-surface and schema never name an automatic default."
+    },
+    "evidence_line": {
+      "type": "string", "minLength": 1,
+      "description": "Reader label WHAT WE KNOW. One or two sentences of evidence in words (for example 'passed all four checks in both scored runs'); pointers stay in sources[]."
+    },
+    "terms": {
+      "type": "object",
+      "description": "Inline glosses (html tooltips): the plain gloss for every house-only term or id token the brief needed, keyed by the term as used. A term absent here needs a parenthetical gloss within 80 characters of its first use.",
+      "additionalProperties": {"type": "string"}
+    },
+    "sources": {
+      "type": "array", "minItems": 1,
+      "description": "The machine line, never rendered in the body: one <repo-path>@<sha40>#L<a>-L<b> pointer into committed lines per authored statement, or one pipeline-fact literal from the fixed list.",
+      "items": {
+        "type": "string",
+        "pattern": "^(?:[^@\\s]+@[0-9a-f]{40}#L[0-9]+-L[0-9]+|pipeline-fact:(?:no-default-armed|card-stays-open|append-only-ledger|class-never-auto-resolves|premise-shipped:[A-Za-z0-9][A-Za-z0-9._-]*))$"
+      }
+    },
+    "card_sha": {
+      "type": "string", "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 over the canonical JSON of the card's reader-facing fields: {\"title\", \"ask.question\", \"ask.options\": [{\"label\", \"description\", \"undo\"}, ...], \"why_only_you\", \"recommended\", \"default_on_silence\", \"externality\"} with every absent field present as null, serialised as json.dumps(obj, sort_keys=True, separators=(\",\", \":\"), ensure_ascii=False) encoded UTF-8 (the fields_sha convention). The lint also accepts the same fields nested under \"ask\": {\"question\", \"options\"}, flat as \"question\"/\"options\", under \"ask.options[]\", as three parallel lists \"ask.options[].label\" / \"ask.options[].description\" / \"ask.options[].undo\", and with absent option keys omitted instead of null. brief-skeleton writes the first form. A mismatch is B1 (exit 2)."
+    },
+    "provenance": {
+      "type": "object",
+      "description": "The provenance receipt, carried through as schema data (no rule B0-B11 reads it): protocol cold | inline | template, packet_sha, prompt_sha, writer_session, drafted_at_head.",
+      "properties": {
+        "protocol": {"type": "string", "enum": ["cold", "inline", "template"]},
+        "packet_sha": {"type": "string"},
+        "prompt_sha": {"type": "string"},
+        "writer_session": {"type": "string"},
+        "drafted_at_head": {"type": "string"}
+      }
+    },
+    "lint": {
+      "type": "object",
+      "description": "Written by the lint at filing, never by the author (a stamp in a submitted file is dropped and recomputed): {tool, sha7, exit (0 valid | 1 findings), brief_sha (sha256 over the canonical JSON of the brief with this stamp removed), findings[] when any (\"<rule>:<detail>\")}.",
+      "properties": {
+        "tool": {"type": "string"},
+        "sha7": {"type": "string"},
+        "exit": {"type": "integer", "enum": [0, 1]},
+        "brief_sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "findings": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}
