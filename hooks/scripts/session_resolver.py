@@ -11,7 +11,10 @@ compiled dashboard can never disagree on open/closed), and a one-argument AUTO
 mode (`session_resolver.py <repo_root>`) derives the ledger / hypotheses /
 operating-model paths from .claude/hyp.json + the hyp defaults for hook
 wiring. The 3-, 4-, and 5-argument CLI and all resolution semantics are
-identical to the lab copy.
+identical to the lab copy. Decision briefs (decision-brief-gate lane): the
+DECISION-BRIEFS summary and exception lines print first, from the same render
+module as the lab's; the module is looked up under the consumer's scripts/ and
+then this plugin's own scripts/ (surface_briefs itself is byte-identical).
 
 v5 additions (docs/decisions.md sections 5-6) -- everything below this block is the v4
 text, unchanged where it still applies:
@@ -385,6 +388,94 @@ def surface_decisions(decisions, resolutions):
         n_open, oldest_id, _decision_age_days(decisions[oldest_id])))
 
 
+def _brief_render(repo_root, ledger_path):
+    """scripts/decision_brief_render.py under the repository root (argv[4]) or the ledger's grandparent; (module, root)
+    or (None, root) when absent -- the resolver never crashes on it."""
+    roots = []
+    for r in (repo_root, os.path.dirname(os.path.dirname(os.path.abspath(ledger_path)))):
+        if r and r not in roots:
+            roots.append(r)
+    for root in roots:
+        scripts = os.path.join(root, 'scripts')
+        if os.path.isfile(os.path.join(scripts, 'decision_brief_render.py')):
+            if scripts not in sys.path:
+                sys.path.insert(0, scripts)
+            try:
+                import decision_brief_render  # noqa
+                return decision_brief_render, root
+            except Exception:
+                return None, root
+    # port adaptation (hooks/scripts/session_resolver.py -> ../../scripts/): the plugin's own render module when the
+    # consumer repository carries none; the consumer root still supplies .claude/hyp.json and the policy text
+    plugin_scripts = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'scripts')
+    if os.path.isfile(os.path.join(plugin_scripts, 'decision_brief_render.py')):
+        if plugin_scripts not in sys.path:
+            sys.path.insert(0, plugin_scripts)
+        try:
+            import decision_brief_render  # noqa
+            return decision_brief_render, (roots[0] if roots else None)
+        except Exception:
+            pass
+    return None, (roots[0] if roots else None)
+
+
+def surface_briefs(decisions, resolutions, briefs, brief_tests, ledger_path, repo_root):
+    """decision briefs (decision-brief-gate lane): ONE summary line first --
+        DECISION-BRIEFS\tok=<n> findings=<f> missing=<m> stale=<s>
+    over the open (or commented) decision rows, then exception lines only, each BRIEF-MISSING\t<id>,
+    BRIEF-STALE\t<id>, BRIEF-FINDINGS\t<id>\t<rules> or DEFAULT-SUSPENDED\t<id>\t<armed date>, in ledger order, so
+    the hook's head -40 never cuts the summary. Prints NOTHING when no decision rows exist (the v4 byte-identical
+    regression lock) or when the render module is absent."""
+    if not decisions:
+        return
+    render, root = _brief_render(repo_root, ledger_path)
+    if render is None or root is None:
+        return
+    closed, commented = set(), set()
+    for rec in resolutions:
+        disp = rec.get('disposition')
+        if disp in ('accepted', 'denied'):
+            closed.add(rec.get('id'))
+        elif disp == 'commented':
+            commented.add(rec.get('id'))
+    in_order = list(decisions.values())
+    legacy = render.legacy_ids(in_order, render.load_config(root))
+    by_id = render.group_by_id(briefs)
+    tests = render.group_by_id(brief_tests)
+    try:
+        with open(os.path.join(root, 'operating-model', 'cause-n-effect', 'policies',
+                               'decision-default-on-silence.md'), encoding='utf-8') as fh:
+            policy = fh.read()
+    except OSError:
+        policy = ''
+    counts = {'ok': 0, 'findings': 0, 'missing': 0, 'stale': 0}
+    exceptions, suspended = [], []
+    for rid, rec in decisions.items():
+        if rid in closed:
+            continue
+        status = 'commented' if rid in commented else 'open'
+        state, brief = render.resolve_brief(rec, by_id.get(rid, []), tests.get(rid, []),
+                                            legacy=rid in legacy, status=status)
+        if state == 'valid':
+            counts['ok'] += 1
+        elif state == 'findings':
+            counts['findings'] += 1
+            exceptions.append('BRIEF-FINDINGS\t{}\t{}'.format(rid, render.findings_rules(brief)))
+        elif state in ('legacy-missing', 'missing'):
+            counts['missing'] += 1
+            exceptions.append('BRIEF-MISSING\t{}'.format(rid))
+        elif state == 'stale':
+            counts['stale'] += 1
+            exceptions.append('BRIEF-STALE\t{}'.format(rid))
+        when = render.armed_default(rec, status, policy)
+        if when and state not in ('valid', 'findings'):
+            suspended.append('DEFAULT-SUSPENDED\t{}\t{}'.format(rid, when))
+    print('DECISION-BRIEFS\tok={} findings={} missing={} stale={}'.format(
+        counts['ok'], counts['findings'], counts['missing'], counts['stale']))
+    for line in exceptions + suspended:
+        print(line)
+
+
 def run(ledger_path, hyp_dir, om_dir, repo_root):
     filenames = load_hypothesis_filenames(hyp_dir)
     om_contents = load_operating_model_contents(om_dir)
@@ -394,6 +485,8 @@ def run(ledger_path, hyp_dir, om_dir, repo_root):
     entries = []
     decisions = {}     # v5: id -> decision rec (first occurrence wins)
     resolutions = []   # v5: decision-resolution recs, file order
+    briefs = []        # decision briefs: kind decision-brief sidecar rows, file order
+    brief_tests = []   # decision briefs: kind decision-brief-test rows, file order
     for lineno, raw in enumerate(raw_lines, start=1):
         text = raw.strip()
         if not text:
@@ -411,6 +504,9 @@ def run(ledger_path, hyp_dir, om_dir, repo_root):
                 record['id'], record['disposition']      # shape check
                 resolutions.append(record)
                 continue
+            if kind in ('decision-brief', 'decision-brief-test'):   # decision briefs: carried silently
+                (briefs if kind == 'decision-brief' else brief_tests).append(record)
+                continue
             if kind not in SUPPORTED_KINDS:
                 raise ValueError('unsupported kind {!r}'.format(kind))
             if 'slug' in record and 'hit' in record:     # legacy shape
@@ -426,6 +522,7 @@ def run(ledger_path, hyp_dir, om_dir, repo_root):
             continue
         entries.append((date, slug, hit, kind))
 
+    surface_briefs(decisions, resolutions, briefs, brief_tests, ledger_path, repo_root)  # decision briefs: summary then exceptions, FIRST
     surface_decisions(decisions, resolutions)  # v5: decisions print FIRST (head -20)
 
     unresolved = [

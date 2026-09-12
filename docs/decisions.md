@@ -8,13 +8,16 @@ because the shipped code cites them). The kit's parts:
 | Part | Role |
 |---|---|
 | `scripts/decisions.py` | The CLI: add / list / show / resolve / check / surface / open (+ `--selftest`, the port's own end-to-end proof in a throwaway git repo) |
-| `scripts/decision_card_lint.py` | The door-field lint, rules D0-D9 with the corroboration table, called by `decisions.py add` after the shape check (standard library; `--selftest`, synthetic cards in a throwaway git repo); see "The six door fields" below |
+| `scripts/decision_card_lint.py` | The door-field lint, rules D0-D9 with the corroboration table, and the brief rules B0-B11 (the plain-English brief every candidate carries), called by `decisions.py add` after the shape check (standard library; `--selftest`, synthetic cards in a throwaway git repo); see "The six door fields" and "The plain-English brief" below |
 | `scripts/decision_door_check.py` | The door evaluator, called by `decisions.py add` after the lint: every candidate is RECORDED as a two-way decision (with a veto window and a one-line undo) or RENDERED as a card carrying the findings, fail-closed (standard library; `--selftest`; a stdin/argv CLI); see "Records vs cards" below |
-| `scripts/compile-dashboard.py` | Renders `DASHBOARD.md` sections 1 (DECISIONS WAITING) and 1b (DECIDED FOR YOU: the door's records with their veto windows) and regenerates `decisions.html` (the cards, plus the records block) from the template at every compile |
+| `scripts/compile-dashboard.py` | Renders `DASHBOARD.md` sections 1 (DECISIONS WAITING: a briefed card brief-first, a legacy card as today plus one `brief: BRIEF-MISSING` line, an unbriefed card above the boundary as a NOT READY block) and 1b (DECIDED FOR YOU: the door's records with their veto windows) and regenerates `decisions.html` (the cards with their brief state, plus the records block) from the template at every compile |
+| `scripts/decision_brief_render.py` | The one render module behind every decision surface: a card's brief state (valid / findings / legacy-missing / legacy-resolved / missing / stale) from its row, its brief rows and the boundary, and the brief-first card lines, the record lines, the NOT READY block, the marker line and the html payload; imported by `decisions.py show`, the compiler and the session resolver, so no surface can drift (standard library; `--selftest`); see "The plain-English brief" below |
+| `docs/decision-brief.schema.json`, `docs/decision-brief.exemplar.json` | The brief's JSON schema and one sealed compliant example: the two files the refusal recipe names after `ADD-REFUSED BRIEF-MALFORMED` |
+| `scripts/selftest-decision-briefs.py` | The brief gate's regression test: the lint's B-rule checks, the render module's state table, the kit's brief scenarios, the evaluator's seat, and a live pass over the repository it runs in (every open legacy card renders today's grammar plus exactly one marker; resolved rows byte-identical; the resolver's summary first) |
 | `scripts/decisions-template.html` | The decision-surface template (cards, gloss tooltips, keyboard handling, resolution tray); the compiler injects SNAPSHOT / REPO / DECISIONS / stamp |
 | `scripts/proactive-open.sh` | Opens `decisions.html` front-and-center ONCE per new decision id (state: `.claude/decision-surface-state.json`); a recorded id — one joined to a closing resolution — never opens and never notifies; called by `decisions.py add`/`surface` only — the compiler never opens anything |
 | `scripts/closes_when.py` | The shared closes-when predicate evaluator, including `decision-resolved` (section 4) |
-| `hooks/scripts/session_resolver.py` | SessionStart surfacing: open decisions print first, then the door's records (`DECISION-RECORD` lines), then unresolved ledger rows (section 6) |
+| `hooks/scripts/session_resolver.py` | SessionStart surfacing: the `DECISION-BRIEFS` summary and its exception lines print first, then open decisions, then the door's records (`DECISION-RECORD` lines), then unresolved ledger rows (section 6) |
 
 One store: the configured work ledger (`.claude/hyp.json` `ledger_file`, default
 `ledger/ledger.jsonl`), append-only. No second file, no parallel queue.
@@ -48,6 +51,55 @@ glosses as tooltips), 2-4 verb-labeled options, consequence and reversibility pe
 Legacy compat: an open `[closes-when: maintainer-ruling=<slug>]` ledger row that no open
 decision `shadows` renders as a compat card with a `resolve --legacy <slug>` answer line,
 so nothing waits invisibly during migration.
+
+### 1a. The brief-first card (decision briefs)
+
+A card whose brief the lint accepted (state `valid`, or `findings` when a prose rule fired)
+renders brief-first on every surface -- `show`, section 1 and the `decisions.html` payload --
+under seven fixed reader labels, one `answer:` line per choice, the machine line and a
+pointer to today's grammar:
+
+```
+- [<id> | <urgency> | <age> | asked-by <requester> | class <class>]
+  DECIDE: <one sentence: the choice as an act, the deadline if one exists, the recommendation if one is on record>
+  THE SITUATION: <at most five sentences: what the thing is, what changed, how it is handled at present>
+  WHY YOU: <one or two sentences naming the door in words>
+  YOUR CHOICES:
+  [ ] <label> — <what happens next if this option is chosen>
+  answer: python3 scripts/decisions.py resolve <id> --accept "<label>"
+  IF YOU DO NOTHING: <an ISO date and the outcome | nothing changes | the pipeline fact>
+  WHAT WE KNOW: <one or two sentences of evidence in words>
+  UNDO: <label> — <how it is reversed, or "cannot be undone: ..."> ; ...
+  terms: <term> = <gloss>; ...                  (only when the brief carries glosses)
+  evidence: <sources joined by ' · '>            (machine line; the row's pointers when sources[] is empty)
+  details: python3 scripts/decisions.py show <id> --raw
+  brief: BRIEF-FINDINGS <rules> — <n> prose finding(s) on the brief; the card renders brief-first; fix: python3 scripts/decisions.py brief <id> --brief brief.json
+```
+
+The last line appears only on a brief with findings. A card at or below the brief boundary
+with no brief (state `legacy-missing`) renders today's grammar byte for byte plus exactly one
+line right before `answer:`:
+
+```
+  brief: BRIEF-MISSING — no brief on file; a default never executes against this card while it is not readable; retrofit: python3 scripts/decisions.py brief <id> --brief brief.json
+```
+
+A card above the boundary with no valid brief -- a row that reached the ledger outside `add`,
+or a brief edited in place (states `missing` and `stale`) -- is never shown as a question: it
+renders a NOT READY block addressed to the lab, with no `ask:`, option or `answer:` line, after
+the question cards:
+
+```
+- [<id> | <urgency> | <age> | NOT READY]
+  title: <title>
+  finding: BRIEF-MISSING | BRIEF-STALE
+  fix: python3 scripts/decisions.py brief <id> --brief brief.json
+```
+
+`show <id> --raw` prints today's grammar verbatim for any card (machine readers; the selftest
+anchors). A record (section 1b) with a valid brief renders `DECIDED`, `THE SITUATION`,
+`WHY THE LAB DID NOT ASK YOU`, `WHAT CHANGES`, `UNDO` and the veto line; without one, today's
+`decided:` / `because:` block. Resolved cards render as today with no marker.
 
 ## 2. The decision row (`kind:"decision"`)
 
@@ -89,7 +141,9 @@ description. `decided_by` / `decided_at` / `resolution_commit` are FORBIDDEN on 
 see section 3. The six door fields and the `door` object are the lint's ("The six door fields" below): `add`
 refuses a candidate that lacks or malforms one, and `check` re-validates their shape on every row past
 the legacy boundary (`.claude/hyp.json` `decision_door_legacy_max_id`, or shape and order when the key is
-absent -- "Legacy rows and the boundary" below).
+absent -- "Legacy rows and the boundary" below). The `brief` object ("The plain-English brief" below) rides
+on the row as filed, with `brief.lint` stamped by the lint; above the brief boundary
+(`decision_brief_legacy_max_id`) `append_line` refuses a decision row that carries no stamp.
 
 ## 3. The resolution row (`kind:"decision-resolution"`) and git-derived attribution
 
@@ -145,7 +199,10 @@ unparseable JSON or none of the three:
 2. v2 `{kind, id, date, text[, closes_when][, assignee]}` — normalized as `slug := id`,
    `hit := text + " [closes-when: <closes_when>]"`;
 3. the decision pair (`kind:"decision"` / `kind:"decision-resolution"`) — joined on id
-   at read time, never rendered as ordinary rows.
+   at read time, never rendered as ordinary rows;
+4. the brief sidecars (`kind:"decision-brief"` / `kind:"decision-brief-test"`) — rows keyed by
+   a decision id, carried silently by every reader and joined by the render module (the latest
+   valid brief per id wins; a test row is the comprehension lane's, reserved here).
 
 ## 6. The surfaces
 
@@ -156,8 +213,11 @@ unparseable JSON or none of the three:
 - `decisions.html` — regenerated whole at every compile; answering on the page stages
   the exact `decisions.py resolve` command in a visible tray (the ledger row is the
   record; the page is its shadow).
-- SessionStart — the resolver prints one line per open decision FIRST (the hook pipes
-  through `head -20`), then the summary, then unresolved ledger rows:
+- SessionStart — the resolver prints ONE brief summary line first,
+  `DECISION-BRIEFS\tok=<n> findings=<f> missing=<m> stale=<s>` over the open or commented cards,
+  then exception lines only (`BRIEF-MISSING\t<id>`, `BRIEF-STALE\t<id>`, `BRIEF-FINDINGS\t<id>\t<rules>`,
+  `DEFAULT-SUSPENDED\t<id>\t<armed date>`), then one line per open decision (the hook pipes
+  through `head -40`), then the summary, then unresolved ledger rows:
   `DECISION-LEDGER\t<id>\t<urgency>\t<title>\t<blocks>` … `DECISIONS-OPEN\t<count>\toldest <id> <age>d`,
   then one `DECISION-RECORD\t<id>\tveto-until <date> (open|closed)\t<title>\tundo=<line>` per live record
   and `DECISION-RECORDS-OPEN\t<open windows>\toldest <id> <age>d`.
@@ -195,18 +255,20 @@ story is `docs/decision-durability.md`.
 
 | Command | Effect |
 |---|---|
-| `add --title ... --question ... --header ... --option L:D --option L:D --requested-by ... --class ... --why-only-you ... --undo U --undo U --staged-artifact P\|CMD\|none --evidence PTR\|none-exists --externality CLASS --recommended LABEL\|none --default-on-silence LABEL\|nothing-changes [--amount-usd N] [--urgency high] [--pointer P] [--blocks "a, b"] [--shadows maintainer-ruling=slug] [--multi] [--no-open] [--door-git-timeout S] [--door-inject-fault]` | Validate (shape, then the door lint D0-D9, then the door evaluator) + append one decision row (id race-checked) — and, when the evaluator RECORDS it, its resolution row right after (`recorded <id>:`, no card opens) — then proactive-open for a CARD (`added <id>:`). Exit 0 PASS; 1 ESCALATE (appended with `door.findings`, one `ADD-FINDING` line first); 2 MALFORMED / MALFORMED-BATCH (`ADD-REFUSED` lines, nothing appended) |
+| `add --title ... --question ... --header ... --option L:D --option L:D --requested-by ... --class ... --why-only-you ... --undo U --undo U --staged-artifact P\|CMD\|none --evidence PTR\|none-exists --externality CLASS --recommended LABEL\|none --default-on-silence LABEL\|nothing-changes --brief BRIEF_JSON [--amount-usd N] [--urgency high] [--pointer P] [--blocks "a, b"] [--shadows maintainer-ruling=slug] [--multi] [--no-open] [--door-git-timeout S] [--door-inject-fault]` | Validate (shape, then the door lint D0-D9 and the brief rules B0-B11, then the door evaluator) + append one decision row (id race-checked) — and, when the evaluator RECORDS it, its resolution row right after (`recorded <id>:`, no card opens) — then proactive-open for a CARD (`added <id>:`). Exit 0 PASS; 1 ESCALATE (appended with `door.findings` and/or `brief.lint.findings`, one `ADD-FINDING` line per finding first, `ADD-REPORT` lines for report-only rules); 2 MALFORMED / MALFORMED-BATCH / BRIEF-MALFORMED (`ADD-REFUSED` lines, nothing appended; a brief refusal is followed by the three recipe lines) |
+| `brief <id> --brief BRIEF_JSON` | File a `kind:"decision-brief"` sidecar row for a card already on file (a retrofit of a legacy card, or a correction): the same brief lint, the same exits, `briefed <id>:` on success; the latest valid brief per id wins at render; opens nothing |
+| `brief-skeleton CANDIDATE_JSON` | Print a deterministic brief skeleton for a candidate (a decision-row-shaped object, or `{legacy: {...}, door: {...}}`) with the row's facts placed and `UNKNOWN:` in every slot the record does not supply -- the lint refuses it until a writer fills them |
 | `list [--json]` | One line per decision with derived status (join, no git) |
-| `show <id>` | The full card with git-derived resolution provenance and, on an evaluated row, the `door-outcome:` line |
+| `show <id> [--raw]` | The full card: brief-first when its brief is valid, today's grammar plus one marker line on a legacy card, the NOT READY block on an unreadable card; with git-derived resolution provenance and, on an evaluated row, the `door-outcome:` line. `--raw` prints today's grammar verbatim |
 | `resolve <id> --accept "<label-or-free-text>" [--comment "..."]` | Accept (repeat `--accept` when multiSelect); commits JUST the resolution line |
 | `resolve <id> --deny [--comment "..."]` | Deny and close. On a recorded id (`basis: two-way-door`) this is the veto: accepted without `--reopen`, the deny wins the join, and the record's undo runs as an attributed follow-up (`VETO` line) |
 | `resolve <id> --comment "..."` | Comment — the decision STAYS OPEN |
 | `resolve <id> ... --reopen` | Append another closing row over an already-closed id |
 | `resolve --legacy <slug> --accept "done"` | Compat shim: answer a legacy maintainer-ruling bracket with no decision row (emits + commits the raw-dir ruling capture) |
-| `check` | Schema + join validation over every row; exit 1 on findings; also prints the exit-neutral `RETEST-DUE` / `REVISIT-UNARMED` lines (section 7) and `DOOR-UNAUDITED` for a non-legacy decision row with no door outcome |
+| `check` | Schema + join validation over every row; exit 1 on findings; also prints the exit-neutral `RETEST-DUE` / `REVISIT-UNARMED` lines (section 7) and `DOOR-UNAUDITED` for a non-legacy decision row with no door outcome; and the brief classes `BRIEF-MISSING` / `BRIEF-STALE` / `BRIEF-FINDINGS <rules>` / `BRIEF-ORPHAN` / `DEFAULT-SUSPENDED <id> <date>` -- exit 1 when an open or commented card ABOVE the brief boundary reads one of the first three (legacy rows, orphans and suspensions never move the exit) |
 | `surface [--no-open]` | Print the open-decision lines + summary; proactive-open (once-per-id guard) |
 | `open [--all]` | Open `decisions.html` (`--all` also opens `DASHBOARD.md`) |
-| `--selftest` | The full loop in a throwaway git repo, plus the `retest_when` scenario (unknown predicate refused; an armed row fires `RETEST-DUE` only after its evidence commit; a "later" option with no trigger is `REVISIT-UNARMED`); exits 0 only if every assertion passes; plus the door wiring (a field-less card refused with exit 2, a self-declared two-way card appended with a D8 finding and exit 1, `show` rendering the door lines, the seeded git stall exit-neutral, `check` exempting legacy ids); plus the door evaluator (a zero-information two-way card RECORDED with its resolution pair and a 7-day veto window, never entering the surface state file, `resolve --deny --comment veto` flipping it to denied and running the undo that restores the tree, `show` rendering the outcome, a side-door row `DOOR-UNAUDITED` at exit 0, the crash seed rendering a card). `python3 scripts/selftest-decision-door-fields.py` runs this and the lint's own `--selftest` together; `python3 scripts/selftest-decision-door-evaluator.py` runs this and the evaluator's |
+| `--selftest` | The full loop in a throwaway git repo, plus the `retest_when` scenario (unknown predicate refused; an armed row fires `RETEST-DUE` only after its evidence commit; a "later" option with no trigger is `REVISIT-UNARMED`); exits 0 only if every assertion passes; plus the door wiring (a field-less card refused with exit 2, a self-declared two-way card appended with a D8 finding and exit 1, `show` rendering the door lines, the seeded git stall exit-neutral, `check` exempting legacy ids); plus the door evaluator (a zero-information two-way card RECORDED with its resolution pair and a 7-day veto window, never entering the surface state file, `resolve --deny --comment veto` flipping it to denied and running the undo that restores the tree, `show` rendering the outcome, a side-door row `DOOR-UNAUDITED` at exit 0, the crash seed rendering a card). `python3 scripts/selftest-decision-door-fields.py` runs this and the lint's own `--selftest` together; `python3 scripts/selftest-decision-door-evaluator.py` runs this and the evaluator's; plus the brief gate (a candidate without a brief refused with B0 and the three recipe lines byte-equal, nothing appended; a prose finding appended with exit 1 and one `BRIEF-FINDINGS` marker on `show`; a valid brief rendered brief-first; `append_line` refusing a stamp-less row above the boundary; a side-door row NOT READY everywhere with `check` exit 1; the silence policy's resolve refused while the card is unreadable and accepted after its retrofit brief; a stale brief NOT READY; an orphan sidecar exit-neutral; the legacy marker line byte-equal to the frozen string; `brief-skeleton` deterministic). `python3 scripts/selftest-decision-briefs.py` runs the brief stages together and a live pass over the repository |
 
 Flags `--no-commit` (stage the resolution uncommitted) and `--no-recompile` exist for
 tests. `resolve` refuses to run while the ledger has unrelated uncommitted changes — the
@@ -291,12 +353,12 @@ legacy rows render byte-identically.
 Every shipped writer of a `kind:"decision"` row passes the six fields and the lint, with values
 that say what its card is:
 
-| Writer | `undo` per option | `staged_artifact` | `evidence` | `externality` | `recommended` | `default_on_silence` | Lint result on these values |
-|---|---|---|---|---|---|---|---|
-| `retest-trigger.py` (rule-retest card) | `ledger-row`, `ledger-row` — a retest's verdict flips the registry by appended row, a retirement is an appended status row | `none` | the first committed `<path>@<sha40>#La-Lb` span the predicate matched (`context_pointers` carries every span) | `none` | `none` | `nothing-changes` | ESCALATE, appended: `D3 EVIDENCE-NOT-AN-AUTHORITY` (a stream span is a signal, not a verdict or ruling) and `D9 BLOCKING-TWO-WAY` (`blocks: ["rule/<id>"]`, the dedup key, beside two revertible options) |
-| `knob-observe.py` (gate-stance card) | `git-revert` (apply-plan: one node edit in its own commit), `ledger-row` (hold-advisory: the resolution row is the record) | the knob node path | `none-exists` (its pointers are a node path, a stream sha256 and a state-row key, none a committed span) | `none` | `apply-plan` | `nothing-changes` | PASS in a git consumer whose node is tracked |
-| `dispatch-gate.py ingest` (K-strikes quarantine row, class `spend`) | `ledger-row` (relaunch: the closing row lifts the quarantine), `git-revert` (retire: a spec-status commit) | `none` | `none-exists` (strike terminals are run artifacts) | `none` | `none` | `nothing-changes` (the quarantine stands) | ESCALATE, appended: `D9 BLOCKING-TWO-WAY` (the row gates the lane's relaunch); `amount_usd` is the declared per-run budget, else the recorded spend per run |
-| `reflex-surface file` (breach-autopsy row) | `git-revert` (fix-now: a remediation commit), `ledger-row` (accept-risk: the closing row) | `none` | `none-exists` (an incident dir has no committed span) | `none` | `none` | `nothing-changes` (the bucket keeps surfacing) | PASS |
+| Writer | `undo` per option | `staged_artifact` | `evidence` | `externality` | `recommended` | `default_on_silence` | Lint result on these values | brief |
+|---|---|---|---|---|---|---|---|---|
+| `retest-trigger.py` (rule-retest card) | `ledger-row`, `ledger-row` — a retest's verdict flips the registry by appended row, a retirement is an appended status row | `none` | the first committed `<path>@<sha40>#La-Lb` span the predicate matched (`context_pointers` carries every span) | `none` | `none` | `nothing-changes` | ESCALATE, appended: `D3 EVIDENCE-NOT-AN-AUTHORITY` (a stream span is a signal, not a verdict or ruling) and `D9 BLOCKING-TWO-WAY` (`blocks: ["rule/<id>"]`, the dedup key, beside two revertible options)  | none yet -- refused with `B0` and the recipe until the writer carries a brief ("The plain-English brief") |
+| `knob-observe.py` (gate-stance card) | `git-revert` (apply-plan: one node edit in its own commit), `ledger-row` (hold-advisory: the resolution row is the record) | the knob node path | `none-exists` (its pointers are a node path, a stream sha256 and a state-row key, none a committed span) | `none` | `apply-plan` | `nothing-changes` | PASS in a git consumer whose node is tracked  | none yet -- refused with `B0` and the recipe until the writer carries a brief ("The plain-English brief") |
+| `dispatch-gate.py ingest` (K-strikes quarantine row, class `spend`) | `ledger-row` (relaunch: the closing row lifts the quarantine), `git-revert` (retire: a spec-status commit) | `none` | `none-exists` (strike terminals are run artifacts) | `none` | `none` | `nothing-changes` (the quarantine stands) | ESCALATE, appended: `D9 BLOCKING-TWO-WAY` (the row gates the lane's relaunch); `amount_usd` is the declared per-run budget, else the recorded spend per run  | none yet -- refused with `B0` and the recipe until the writer carries a brief ("The plain-English brief") |
+| `reflex-surface file` (breach-autopsy row) | `git-revert` (fix-now: a remediation commit), `ledger-row` (accept-risk: the closing row) | `none` | `none-exists` (an incident dir has no committed span) | `none` | `none` | `nothing-changes` (the bucket keeps surfacing) | PASS  | none yet -- refused with `B0` and the recipe until the writer carries a brief ("The plain-English brief") |
 
 `retest-trigger.py` and `knob-observe.py` pass the flags to `add` and read the `added <id>:` line
 as the filed signal — exit 1 (ESCALATE) is a filed row, only exit 2 files nothing; the trigger
@@ -321,15 +383,109 @@ the plugin default `ledger/ledger.jsonl` (the sealed copy carried the lab path
 over it (the key and default `decisions.py` uses), `lint()` takes that resolved path when none is
 handed in and passes its repo-relative form to D3, whose decision-resolution authority is the
 configured ledger (`evidence_class` and `d3_evidence_resolves` gain a `ledger_rel` parameter).
-The shipped file's sha256 is `3268bb88cc408c591d69fdb19c7d812909712697ff737253b40507e8daeb694d`:
-14 lines removed and 49 added against the sealed copy — one docstring paragraph, the two constant
-lines, the resolver, two signatures and their two call sites, two lines in `lint()`, and the
-selftest's scratch repository configuring its ledger through `.claude/hyp.json` plus five new checks
-(64 to 69). Rules D0-D9, their vocabularies, the corroboration table and the output grammar are
-unchanged; the lab keeps its path because its `hyp.json` says `ledger/work-ledger.jsonl`. Still
+The same delta rides on the brief lane's sealed lint (rules B0-B11 seated in `shape_errors`; the lab's
+`scripts/decision_card_lint.py`, sha256 `24e5129de9617c6c12096af63dbe0d3dfa33f412adfddd43809ae42ef3d9ceb7`):
+the shipped file differs from it by the same 65 changed lines -- the docstring paragraph, the two
+constant lines, the resolver, two signatures and their two call sites, two lines in `lint()`, and the
+selftest's scratch repository configuring its ledger through `.claude/hyp.json` plus five checks -- and
+every B-rule function is byte-identical to the lab's. Rules D0-D9 and B0-B11, their vocabularies, the
+corroboration table and the output grammar are unchanged; the lab keeps its path because its `hyp.json`
+says `ledger/work-ledger.jsonl`. Still
 lab-shaped by the sealed treatment and left for a refine lane: the refusal sentence's
 `research/raw/...-grant.md` citation, `ledger/hook-denials.jsonl`, `research/raw/`, `program.md`,
 `experiments/runs/`, `hypotheses/` and the owned-repository set `LAB_OWNED_REPOS`.
+
+### The plain-English brief
+
+Ported from the source lab's H-DRAFT-1c840b86-decision-brief-gate (kept 2026-09-12 by the lineage rule:
+five counted looks, 131/131 planted single-defect mutants caught with their rule id and exit class,
+11/11 compliant briefs admitted, every legacy surface byte-identical against the unpatched kit except
+the enumerated marker lines, the unbriefed candidate refused at `add` and at `append_line` in both
+trees, US$0 on models). The door fields say what a card IS; the brief says what it MEANS, for an adult
+with general software knowledge and no context on this repository. A card cannot be filed without one,
+and a card without a valid one is never shown as a question.
+
+The brief is a JSON object passed as `add --brief <brief.json>` (or `brief <id> --brief <brief.json>` for
+a card already on file); `docs/decision-brief.schema.json` is its schema and `docs/decision-brief.exemplar.json`
+one sealed compliant example. Its fields, with the label the reader sees:
+
+| Field | Reader label | The lint reads |
+|---|---|---|
+| `decide` | DECIDE (DECIDED on a record) | exactly one sentence: the choice as an act, the deadline if one exists, the recommendation if one is on record |
+| `situation` | THE SITUATION | at most 5 sentences: what the thing is in ordinary nouns, what changed, how it is handled at present |
+| `yours_because` | WHY YOU (WHY THE LAB DID NOT ASK YOU on a record) | one or two sentences naming the door in words |
+| `choices[]` `{label, in_practice, undo}` | YOUR CHOICES, one line per option, each followed by its own `answer:` command | labels equal `ask.options[].label` one-to-one and in order; `in_practice` says what happens next; `undo` says how it is reversed or begins `cannot be undone:` |
+| `if_nothing` | IF YOU DO NOTHING | an ISO date and the outcome, the literal `nothing changes`, or the pipeline fact (no default is armed; the card stays open) |
+| `evidence_line` | WHAT WE KNOW | one or two sentences of evidence in words; pointers stay on the machine line |
+| `terms{}` | inline glosses (html tooltips) | the gloss for every house-only term or id the brief needed |
+| `sources[]` | machine line | one `<path>@<sha40>#L<a>-L<b>` pointer per authored statement, or a `pipeline-fact:` literal from the fixed list `no-default-armed`, `card-stays-open`, `append-only-ledger`, `class-never-auto-resolves`, `premise-shipped:<tag>` |
+| `card_sha` | machine line | sha256 over the canonical JSON of the card's reader-facing fields `{"title", "ask.question", "ask.options": [{"label", "description", "undo"}], "why_only_you", "recommended", "default_on_silence", "externality"}`, absent fields as `null`, serialised `json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)` UTF-8 -- what `brief-skeleton` writes and the exemplar carries (the lint also accepts the same fields nested under `ask`, flat, or as parallel lists) |
+| `provenance{}` | none | `{protocol: cold | inline | template, packet_sha, prompt_sha, writer_session, drafted_at_head}`, carried through as data; no rule reads it |
+| `lint` | none | written by the lint at filing, never by the author: `{tool, sha7, exit (0 or 1), brief_sha, findings[]}`; a stamp in a submitted file is dropped and recomputed |
+
+The rules, seated in `decision_card_lint.shape_errors` beside D0-D6 so the door evaluator's W1 and every
+in-process writer's `door_lint_row` refuse exactly what `add` refuses (no per-writer edit):
+
+| Exit | Rules | What fires |
+|---|---|---|
+| 2 -- `ADD-REFUSED<TAB>BRIEF-MALFORMED<TAB><rule><TAB><detail>`, nothing appended, then the three recipe lines `schema: docs/decision-brief.schema.json` / `draft: python3 scripts/decisions.py brief-skeleton <candidate.json>` / `exemplar: docs/decision-brief.exemplar.json` | B0 PRESENT (a brief absent or unreadable; an empty authored field; labels out of order or missing; a choice without `in_practice` or `undo`; no `sources[]`; an `UNKNOWN:` slot), B1 CARD-SHA (`card_sha` matches none of the accepted forms of the card's fields) | |
+| 1 -- `ADD-FINDING<TAB><id><TAB><rule><TAB><detail>`, appended with `brief.lint.findings`, renders brief-first with one `BRIEF-FINDINGS` marker | B2 a sentence over 25 words; B3 a field over 5 sentences or `decide` not exactly one; B4 the six authored fields over 120 words together (glosses included, labels excluded); B5 a house-only term or an id token unglossed at first use (a `terms{}` entry or a parenthesis within 80 characters); B7 `if_nothing` undated and neither the literal nor the pipeline fact, disagreeing with `default_on_silence`, or an automatic default on a `publish`, `spend`, `live-surface` or `schema` card; B8 a brief `undo` that contradicts the door's `undo` token (`none` needs `cannot be undone:`; a revertible token forbids it; a legacy card needs a well-formed source); B11 a `sources[]` pointer that does not resolve at HEAD or a literal outside the fixed list | |
+| 1 once admitted, else `ADD-REPORT<TAB><id><TAB><rule><TAB><detail>` (exit unchanged) | B6 machine text in an authored field (a path, a file name, a command, a URL, a commit hash, score shorthand, a relative-time word); B9 a `NEEDS-<Name>` tag or a full two-token git author string; B10 a banned tone token (`like a`, `as if`, `imagine`, `think of it as`, `!`, `simply`, `just`, `easy`, ...) | admission: `.claude/hyp.json` `decision_brief_admitted_rules`, a list among B6, B9, B10; absent: none admitted. A rule is admitted only after a compliant pass shows it silent (the lab admitted all three on its landing pass) |
+| report rows, never exit | R1 COINAGE (hyphenated compounds outside the vocabulary), R2 GLOSS-DENSITY (glosses, words, glosses per 100 words, preferred terms used and glossed) | printed as `ADD-REPORT` lines |
+
+Every git read (B9's author leg, B11's pointer leg) runs under the same timeout as the door rules; a stall
+is one exit-neutral `ADD-TIMEOUT<TAB><rule>` line.
+
+**The state table** (`scripts/decision_brief_render.py`, the one module behind `show`, the compiler and
+the resolver). The candidates for a card are the row's own `brief` and every `kind:"decision-brief"`
+row for its id, in ledger order, read from the latest back; the first that is valid or carries only
+findings wins:
+
+| State | When | Renders |
+|---|---|---|
+| `valid` | a brief with `lint.exit` 0 whose `card_sha` matches the card and whose `lint.brief_sha` matches its own bytes | brief-first (section 1a) |
+| `findings` | the same with `lint.exit` 1 | brief-first plus one `BRIEF-FINDINGS <rules>` marker line |
+| `legacy-missing` | id at or below the boundary, no brief, status open or commented | today's grammar byte for byte plus exactly one `BRIEF-MISSING` marker line |
+| `legacy-resolved` | id at or below the boundary, resolved, no brief | today's form, no marker |
+| `missing` | id above the boundary, no valid brief (a side-door row) | the NOT READY block; no `ask:`, option or `answer:` line |
+| `stale` | any id, a brief present whose `card_sha` or `brief_sha` no longer matches (or an unstamped brief) | NOT READY with `finding: BRIEF-STALE`; a stale brief is never printed as current |
+
+**The boundary.** `.claude/hyp.json` `decision_brief_legacy_max_id`: an integer N exempts every card whose
+numeric id is at or below N (set it to your highest pre-upgrade decision id at upgrade); absent, shape and
+order -- every decision row appended before the first row carrying a `brief.lint` stamp is legacy, and a
+stamp-less row appended after it is gated. It is separate from `decision_door_legacy_max_id`. Legacy rows
+are never re-validated; `add` exempts nothing (a candidate without a brief is refused whatever its id).
+
+**The gate at the ledger.** `append_line` in this kit refuses a `kind:"decision"` row above the boundary
+that carries no `brief.lint` stamp, the way it already refuses a row without a `door` object -- so no
+path, shipped or not, files an unbriefed card. `door_lint_row` stamps `brief.lint` beside the door object
+on PASS or ESCALATE, and an in-process writer carries its brief on the row before calling it.
+
+**`check` and the suspension.** `check` prints `DECISIONS-CHECK<TAB>BRIEF-MISSING|BRIEF-STALE|BRIEF-FINDINGS|BRIEF-ORPHAN<TAB><id><TAB><detail>`
+(the detail of a legacy `BRIEF-MISSING` is the fixed string `legacy card, no brief on file`) and
+`DECISIONS-CHECK<TAB>DEFAULT-SUSPENDED<TAB><id><TAB><armed date>` for an armed open card that is not
+readable (armed: its `default_on_silence` equals an option label, the date `requested_at` plus 14 days; or,
+with no `default_on_silence`, a matching `Armed for <id> ... parking backstop **<date>**` line in
+`operating-model/cause-n-effect/policies/decision-default-on-silence.md` under the root). `check` exits 1 only
+for an open or commented card above the boundary reading MISSING, STALE or FINDINGS. `resolve` refuses
+(`RESOLVE-REFUSED<TAB>DEFAULT-SUSPENDED<TAB><id>`, exit 2, nothing appended) a resolution whose `--comment`
+cites `decision-default-on-silence` while the card's state is not `valid` or `findings`: a pre-committed
+default never executes against a card nobody can read.
+
+**The sidecar row** (`brief <id> --brief`):
+
+```json
+{"kind": "decision-brief", "id": "DEC-NNN", "date": "YYYY-MM-DD",
+ "brief": {"decide": "...", "situation": "...", "yours_because": "...", "choices": [...], "if_nothing": "...",
+           "evidence_line": "...", "terms": {}, "sources": [...], "card_sha": "<sha256>", "provenance": {...},
+           "lint": {"tool": "decision_card_lint", "sha7": "<7 hex>", "exit": 0, "brief_sha": "<sha256>"}}}
+```
+
+**Writers.** The shipped writers (`retest-trigger.py`, `knob-observe.py`, `dispatch-gate.py ingest`,
+`reflex-surface file`) pass the six door fields but carry no brief yet, so each is refused with B0 and
+the recipe at `add` or `door_lint_row` until it authors one -- the brief column of the writers table
+above records this; the source lab's comprehension lane (`brief-draft`, a cold writer over a candidate)
+is the designed source of those briefs.
 
 ### Records vs cards
 
@@ -420,7 +576,9 @@ record fields are dropped.
 
 - `DASHBOARD.md` section `1b. DECIDED FOR YOU (veto open: N · recorded: N · vetoed: N · cards with findings: N)`:
   one block per live record -- `decided:`, `because:`, `undo:` (one command), `veto:` (one word) and the lab's
-  note when the row carries findings; `(none — ...)` when nothing has been recorded. `decisions.html` carries
+  note when the row carries findings; `(none — ...)` when nothing has been recorded. A record whose brief is
+  valid renders its brief instead (DECIDED, THE SITUATION, WHY THE LAB DID NOT ASK YOU, WHAT CHANGES, UNDO,
+  the veto line). `decisions.html` carries
   the same records in a `<section class="decided-for-you">` block before `</body>`. Both derive ages and windows
   from the header stamp, never the wall clock.
 - SessionStart, after the open cards: `DECISION-RECORD<TAB><id><TAB>veto-until <date> (open|closed)<TAB><title><TAB>undo=<line>`

@@ -79,6 +79,22 @@ record's undo line runs as an attributed follow-up. `check` reports DOOR-UNAUDIT
 non-legacy decision row that carries no door outcome (a side-door row). Every writer passes the evaluator
 too (door_evaluate_row after door_lint_row; on RECORD it appends door_record_row and opens nothing).
 
+decision briefs (decision-brief-gate lane): every candidate carries a machine-checked plain-English brief
+(docs/decision-brief.schema.json) passed as `add --brief <brief.json>`; scripts/decision_card_lint.py rules
+B0-B11 refuse a missing or malformed brief (ADD-REFUSED BRIEF-MALFORMED, exit 2, nothing appended, then the
+three recipe lines: schema, draft command, exemplar) and attach prose findings under brief.lint.findings (exit 1);
+`brief <id> --brief <brief.json>` files a kind:"decision-brief" sidecar row (a retrofit or a correction; the
+latest valid brief per id wins); `brief-skeleton <candidate.json>` prints a deterministic skeleton with the
+row's facts placed. append_line refuses a decision row above the brief boundary (.claude/hyp.json
+decision_brief_legacy_max_id; absent: shape and order) that carries no brief.lint stamp. One render module,
+scripts/decision_brief_render.py, decides every surface's state: `show` prints a valid brief brief-first, a
+legacy row byte-for-byte plus one BRIEF-MISSING marker line, a side-door or stale row as a NOT READY block
+(never as a question); `show --raw` prints today's grammar verbatim. `check` gains BRIEF-MISSING, BRIEF-STALE,
+BRIEF-FINDINGS, BRIEF-ORPHAN and DEFAULT-SUSPENDED and exits 1 when an open card above the boundary reads one
+of the first three; `resolve` refuses (RESOLVE-REFUSED DEFAULT-SUSPENDED, exit 2) a resolution citing the
+silence policy while the card's brief state is not valid or findings. Every writer shares the gate:
+door_lint_row stamps brief.lint beside the door object, and the in-process callers pass their brief on the row.
+
 Stdlib only. Never touches anything outside the ledger append and the write-once
 ruling capture ADDITIONS under the configured raw dir that `shadows` requires
 (create-only, never edit).
@@ -150,6 +166,14 @@ _CLOSES_WHEN = None
 # is absent, shape + order (the rows before the first row that carries a door object). The lint carries
 # no id literal, so the boundary lives here.
 DOOR_LEGACY_KEY = "decision_door_legacy_max_id"
+# decision briefs (decision-brief-gate lane): every decision candidate carries a machine-checked plain-English brief
+# (docs/decision-brief.schema.json), linted by rules B0-B11 seated in scripts/decision_card_lint.py; the brief boundary is
+# a number in .claude/hyp.json (decision_brief_legacy_max_id; absent: shape and order), never in the lint or here.
+BRIEF_LEGACY_KEY = "decision_brief_legacy_max_id"
+BRIEF_KINDS = ("decision-brief", "decision-brief-test")
+BRIEF_RECIPE = ("schema: docs/decision-brief.schema.json",
+                "draft: python3 scripts/decisions.py brief-skeleton <candidate.json>",
+                "exemplar: docs/decision-brief.exemplar.json")
 DOOR_GIT_TIMEOUT = 20
 DOOR_SELFTEST_ARGS = ["--undo", "git-revert", "--undo", "ledger-row", "--staged-artifact", "README.md",
                       "--evidence", "none-exists", "--externality", "none", "--recommended", "none",
@@ -157,6 +181,225 @@ DOOR_SELFTEST_ARGS = ["--undo", "git-revert", "--undo", "ledger-row", "--staged-
 _DOOR_LINT = None
 DOOR_RECORD_BASIS = "two-way-door"
 _DOOR_EVAL = None
+SILENCE_POLICY_RE = re.compile(r"decision-default-on-silence")
+SILENCE_POLICY_REL = os.path.join("operating-model", "cause-n-effect", "policies", "decision-default-on-silence.md")
+_BRIEF_RENDER = None
+
+
+def _brief_render():
+    """scripts/decision_brief_render.py imported from beside this file (the one render module behind every surface)."""
+    global _BRIEF_RENDER
+    if _BRIEF_RENDER is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        try:
+            import decision_brief_render  # noqa: the brief render module (the state table)
+        except ImportError:
+            raise SystemExit("FATAL: scripts/decision_brief_render.py (the brief render module) is not beside decisions.py")
+        _BRIEF_RENDER = decision_brief_render
+    return _BRIEF_RENDER
+
+
+def load_brief_file(path):
+    """-> (brief dict, None) or (None, detail) for the JSON a filer passes with --brief. A lint stamp inside the file
+    is dropped: the lint stamps the brief at filing."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return None, "brief file %s is unreadable or not JSON (%s)" % (path, exc)
+    if not isinstance(data, dict):
+        return None, "brief file %s is not a JSON object" % path
+    data.pop("lint", None)
+    return data, None
+
+
+def brief_audit_lines(rec, result):
+    """The audit lines `add` and `brief` print for a lint result, in order: ADD-TIMEOUT per stalled rule; on exit 2
+    the door ADD-REFUSED lines with the two door sentences (door defects) and the ADD-REFUSED BRIEF-MALFORMED lines
+    followed by the three recipe lines (brief defects); otherwise one ADD-FINDING per finding and one ADD-REPORT per
+    report row (an admission-tiered rule not yet admitted; R1 COINAGE; R2 GLOSS-DENSITY)."""
+    lines = ["ADD-TIMEOUT\t%s" % rule for rule in result.timeouts]
+    if result.exit_code == 2:
+        door = [(r, d) for r, d in result.malformed if not r.startswith("B")]
+        brief = [(r, d) for r, d in result.malformed if r.startswith("B")]
+        for rule, detail in door:
+            lines.append("ADD-REFUSED\t%s\t%s\t%s" % ("MALFORMED-BATCH" if rule == "D7" else "MALFORMED", rule, detail))
+        if door:
+            lines.append("Nothing was appended. A decision candidate carries per-option --undo, and --staged-artifact "
+                         "--evidence --externality --recommended --default-on-silence (spend: --amount-usd).")
+            lines.append("A card exists only for what depends on a preference or policy only the maintainer holds "
+                         "(research/raw/2026-08-18-decisions-are-two-way-doors-grant.md:18-20,26-27). Everything "
+                         "reversible proceeds without a card.")
+        for rule, detail in brief:
+            lines.append("ADD-REFUSED\tBRIEF-MALFORMED\t%s\t%s" % (rule, detail))
+        if brief:
+            lines.extend(BRIEF_RECIPE)
+        return lines
+    for rule, detail in result.findings:
+        lines.append("ADD-FINDING\t%s\t%s\t%s" % (rec.get("id"), rule, detail))
+    for rule, detail in getattr(result, "reports", []):
+        lines.append("ADD-REPORT\t%s\t%s\t%s" % (rec.get("id"), rule, detail))
+    return lines
+
+
+def stamp_brief(rec, result, lint):
+    """brief.lint {tool, sha7, exit, brief_sha[, findings]} on the row's brief: exit 1 iff a B-rule finding; the sha
+    covers every brief byte but the stamp itself (an in-place edit renders BRIEF-STALE)."""
+    brief = rec["brief"]
+    brief.pop("lint", None)
+    findings = ["%s:%s" % (r, d) for r, d in result.findings if r.startswith("B")]
+    stamp = {"tool": "decision_card_lint", "sha7": lint.self_sha7(), "exit": 1 if findings else 0,
+             "brief_sha": lint.brief_sha(brief)}
+    if findings:
+        stamp["findings"] = findings
+    brief["lint"] = stamp
+
+
+def brief_context(parsed, root):
+    """(render module, legacy id set, {id: [sidecar recs]}, {id: [test recs]}, silence policy text)."""
+    render = _brief_render()
+    in_order = [d["rec"] for d in sorted(parsed["decisions"], key=lambda d: d["order"])]
+    legacy = render.legacy_ids(in_order, render.load_config(root))
+    briefs = render.group_by_id([b["rec"] for b in sorted(parsed.get("briefs", []), key=lambda b: b["order"])])
+    tests = render.group_by_id([t["rec"] for t in sorted(parsed.get("brief_tests", []), key=lambda t: t["order"])])
+    try:
+        with open(os.path.join(root, SILENCE_POLICY_REL), encoding="utf-8") as fh:
+            policy = fh.read()
+    except OSError:
+        policy = ""
+    return render, legacy, briefs, tests, policy
+
+
+def brief_state_of(parsed, dec, status, root):
+    """-> (state, brief-or-None) for one decision row by the render module's state table."""
+    render, legacy, briefs, tests, _policy = brief_context(parsed, root)
+    return render.resolve_brief(dec["rec"], briefs.get(dec["id"], []), tests.get(dec["id"], []),
+                                legacy=dec["id"] in legacy, status=status)
+
+
+def brief_check_lines(parsed, joined, root):
+    """-> ([(class, id, detail)], gated). The brief classes of `check`: BRIEF-MISSING (an open or commented card with
+    no valid brief; a legacy card's detail is the fixed string), BRIEF-STALE, BRIEF-FINDINGS <rules>, BRIEF-ORPHAN (a
+    decision-brief row whose id has no decision row) and DEFAULT-SUSPENDED <id> <armed date> (an armed open card
+    that is not readable). gated is true when an open or commented card ABOVE the boundary reads BRIEF-MISSING,
+    BRIEF-STALE or BRIEF-FINDINGS (exit 1); legacy rows, BRIEF-ORPHAN and DEFAULT-SUSPENDED never move the exit."""
+    render, legacy, briefs, tests, policy = brief_context(parsed, root)
+    missing, stale, found, suspended = [], [], [], []
+    gated = False
+    for dec in parsed["decisions"]:
+        did = dec["id"]
+        status = joined[did][0]
+        is_legacy = did in legacy
+        is_open = status in ("open", "commented")
+        state, brief = render.resolve_brief(dec["rec"], briefs.get(did, []), tests.get(did, []),
+                                            legacy=is_legacy, status=status)
+        if state in ("legacy-missing", "missing") and is_open:
+            missing.append((did, "legacy card, no brief on file" if is_legacy else
+                            "decision row above the brief boundary carries no valid brief (filed outside add); it renders NOT READY"))
+            gated = gated or not is_legacy
+        elif state == "stale":
+            stale.append((did, "the brief on file no longer matches the card or its own lint stamp (card_sha or brief_sha); it renders NOT READY"))
+            gated = gated or (is_open and not is_legacy)
+        elif state == "findings":
+            found.append((did, render.findings_rules(brief)))
+            gated = gated or (is_open and not is_legacy)
+        when = render.armed_default(dec["rec"], status, policy)
+        if when and state not in ("valid", "findings"):
+            suspended.append((did, when))
+    known = {d["id"] for d in parsed["decisions"]}
+    orphans, seen = [], set()
+    for b in sorted(parsed.get("briefs", []), key=lambda b: b["order"]):
+        if b["id"] not in known and b["id"] not in seen:
+            seen.add(b["id"])
+            orphans.append((b["id"], "decision-brief row for an id with no decision row"))
+    lines = ([("BRIEF-MISSING", i, d) for i, d in missing] + [("BRIEF-STALE", i, d) for i, d in stale]
+             + [("BRIEF-FINDINGS", i, d) for i, d in found] + [("BRIEF-ORPHAN", i, d) for i, d in orphans]
+             + [("DEFAULT-SUSPENDED", i, d) for i, d in suspended])
+    return lines, gated
+
+
+def candidate_from_json(data):
+    """A candidate row from a JSON file: a kind:"decision"-shaped object, or the planter shape {legacy: {...}, door: {...}}
+    (title/question/options/... under legacy, the six door fields under door) folded into one row."""
+    if not isinstance(data, dict):
+        return {}
+    if isinstance(data.get("legacy"), dict):
+        leg = data["legacy"]
+        door = data.get("door") if isinstance(data.get("door"), dict) else {}
+        rec = {"kind": "decision", "title": leg.get("title"), "requested_at": leg.get("requested_at") or leg.get("date"),
+               "date": leg.get("date"), "requested_by": leg.get("requested_by"), "urgency": leg.get("urgency"),
+               "class": leg.get("class"), "why_only_you": leg.get("why_only_you"),
+               "context_pointers": leg.get("context_pointers") or [], "blocks": leg.get("blocks") or [],
+               "ask": {"question": leg.get("question"), "header": leg.get("header"), "multiSelect": bool(leg.get("multiSelect")),
+                       "options": [dict(o) for o in (leg.get("options") or []) if isinstance(o, dict)]}}
+        undos = door.get("undo") if isinstance(door.get("undo"), list) else []
+        for i, opt in enumerate(rec["ask"]["options"]):
+            if i < len(undos) and undos[i] not in (None, ""):
+                opt["undo"] = undos[i]
+        for k in ("staged_artifact", "evidence", "externality", "recommended", "default_on_silence", "amount_usd"):
+            if k in door:
+                rec[k] = door[k]
+        if isinstance(leg.get("id"), str):
+            rec["id"] = leg["id"]
+        return rec
+    return dict(data)
+
+
+def brief_skeleton(rec):
+    """A deterministic brief skeleton with the row's facts placed: the title as the one-sentence decide, the options
+    as choices (their descriptions as in_practice; an undo that begins "cannot be undone:" when the door says none),
+    if_nothing derived from default_on_silence (an armed label: its date fourteen days after requested_at; nothing-
+    changes: the literal; no default: the pipeline fact), the why_only_you clause as yours_because, and UNKNOWN: in
+    every slot the record does not supply -- so the lint refuses it (B0) until a writer fills them."""
+    lint = _door_lint()
+    ask = rec.get("ask") if isinstance(rec.get("ask"), dict) else {}
+    title = str(rec.get("title") or "").strip().rstrip(".")
+    choices = []
+    for opt in ask.get("options") or []:
+        if not isinstance(opt, dict):
+            continue
+        undo = opt.get("undo")
+        if undo == "none":
+            undo_text = "cannot be undone: UNKNOWN: what stays once this option is taken"
+        elif undo in ("git-revert", "flag", "amendment"):
+            undo_text = "Reverting the landing commit restores the previous state."
+        elif undo == "ledger-row":
+            undo_text = "A later resolution row supersedes this one."
+        else:
+            undo_text = "UNKNOWN: how this choice is reversed"
+        choices.append({"label": str(opt.get("label") or ""), "in_practice": str(opt.get("description") or "").strip() or "UNKNOWN: what happens next",
+                        "undo": undo_text})
+    labels = [c["label"] for c in choices]
+    dflt = rec.get("default_on_silence")
+    sources = []
+    if dflt == "nothing-changes":
+        if_nothing = "Nothing changes: the card stays open until you answer."
+        sources.append("pipeline-fact:card-stays-open")
+    elif isinstance(dflt, str) and dflt in labels:
+        try:
+            day = datetime.date.fromisoformat(str(rec.get("requested_at") or rec.get("date"))[:10])
+            when = (day + datetime.timedelta(days=14)).isoformat()
+        except (ValueError, TypeError):
+            when = "UNKNOWN: the armed date"
+        if_nothing = "Unanswered by %s, %s happens." % (when, dflt)
+    else:
+        if_nothing = "No default is armed; the card stays open and is listed at every session start."
+        sources.append("pipeline-fact:no-default-armed")
+    why = str(rec.get("why_only_you") or "").strip()
+    return {"decide": ("%s." % title) if title else "UNKNOWN: the choice as an act",
+            "situation": "UNKNOWN: what the thing is in ordinary nouns, what changed, how it is handled at present",
+            "yours_because": (why[0].upper() + why[1:] + ("" if why.endswith(".") else ".")) if why else "UNKNOWN: why this is yours",
+            "choices": choices,
+            "if_nothing": if_nothing,
+            "evidence_line": "UNKNOWN: the evidence in one or two sentences of words",
+            "terms": {},
+            "sources": sources,
+            "card_sha": lint.card_sha(rec),
+            "provenance": {"protocol": "inline"}}
+
+
 
 
 def _door_evaluator():
@@ -271,6 +514,36 @@ def door_legacy_max_id(root):
     return None
 
 
+def brief_legacy_max_id(root):
+    """The explicit brief boundary from <root>/.claude/hyp.json decision_brief_legacy_max_id (an int, or a string of
+    digits), else None: the boundary is then read from the ledger's shape and order."""
+    try:
+        with open(os.path.join(root, ".claude", "hyp.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    val = data.get(BRIEF_LEGACY_KEY) if isinstance(data, dict) else None
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, int):
+        return val
+    if isinstance(val, str) and val.strip().isdigit():
+        return int(val.strip())
+    return None
+
+
+def brief_gated(parsed, root, rec):
+    """True when a kind:"decision" row may land only with its brief.lint stamp: an explicit boundary (hyp.json
+    decision_brief_legacy_max_id) gates every numeric id above it; otherwise shape and order -- every row appended
+    before the first row carrying a brief.lint stamp is legacy, and a stamp-less row appended after it is gated."""
+    m = ID_RE.match(str(rec.get("id", "")))
+    max_id = brief_legacy_max_id(root)
+    if max_id is not None:
+        return bool(m) and int(m.group(1)) > max_id
+    return any(isinstance(d["rec"].get("brief"), dict) and isinstance(d["rec"]["brief"].get("lint"), dict)
+               for d in parsed["decisions"])
+
+
 def legacy_decision_ids(parsed, root):
     """The decision ids `check` never re-validates for door fields. Explicit boundary (hyp.json
     decision_door_legacy_max_id): every numeric id at or below it. Otherwise shape + order: every row
@@ -295,7 +568,7 @@ def legacy_decision_ids(parsed, root):
 def door_shape_errors(rec):
     """The exit-2 class over the six fields (presence, vocabulary, form; no git) -- what `check` re-validates
     on non-legacy rows."""
-    return ["%s %s" % (rule, detail) for rule, detail in _door_lint().shape_errors(rec)]
+    return ["%s %s" % (rule, detail) for rule, detail in _door_lint().shape_errors(rec) if not rule.startswith("B")]
 
 
 def _parse_amount(text):
@@ -343,13 +616,17 @@ def door_lint_row(rec, root, ledger=None, git_timeout=DOOR_GIT_TIMEOUT):
     passes: `add`, and the callers that append through append_line (dispatch-gate.py, reflex-surface). On
     PASS or ESCALATE the row is stamped with its door object (fields_sha; findings when any); on MALFORMED
     (exit_code 2) nothing is stamped and the caller appends nothing. -> the lint's result (.exit_code
-    0|1|2, .malformed, .findings, .timeouts); door_audit_lines renders it as `add` prints it."""
+    0|1|2, .malformed, .findings, .timeouts); door_audit_lines renders it as `add` prints it. Decision briefs: the
+    row's brief (rec["brief"], required by rule B0) is stamped brief.lint here too, so a caller's row passes
+    append_line's brief gate exactly as `add`'s does; brief findings live under brief.lint.findings, never door."""
     lint = _door_lint()
     result = lint.lint(rec, root, ledger or os.path.join(root, ledger_rel_for(root)), git_timeout=git_timeout)
     if result.exit_code != 2:
         rec["door"] = {"fields_sha": lint.fields_sha(rec)}
-        if result.findings:
-            rec["door"]["findings"] = ["%s:%s" % (rule, detail) for rule, detail in result.findings]
+        door_findings = [(rule, detail) for rule, detail in result.findings if not rule.startswith("B")]
+        if door_findings:
+            rec["door"]["findings"] = ["%s:%s" % (rule, detail) for rule, detail in door_findings]
+        stamp_brief(rec, result, lint)
     return result
 
 
@@ -358,17 +635,27 @@ def door_audit_lines(rec, result):
     the ADD-REFUSED lines with the two refusal sentences (exit 2) or one ADD-FINDING line per finding."""
     lines = ["ADD-TIMEOUT\t%s" % rule for rule in result.timeouts]
     if result.exit_code == 2:
-        for rule, detail in result.malformed:
+        door = [(r, d) for r, d in result.malformed if not r.startswith("B")]
+        brief = [(r, d) for r, d in result.malformed if r.startswith("B")]
+        for rule, detail in door:
             lines.append("ADD-REFUSED\t%s\t%s\t%s" % ("MALFORMED-BATCH" if rule == "D7" else "MALFORMED",
                                                      rule, detail))
-        lines.append("Nothing was appended. A decision candidate carries per-option --undo, and --staged-artifact "
-                     "--evidence --externality --recommended --default-on-silence (spend: --amount-usd).")
-        lines.append("A card exists only for what depends on a preference or policy only the maintainer holds "
-                     "(research/raw/2026-08-18-decisions-are-two-way-doors-grant.md:18-20,26-27). Everything "
-                     "reversible proceeds without a card.")
+        if door:
+            lines.append("Nothing was appended. A decision candidate carries per-option --undo, and --staged-artifact "
+                         "--evidence --externality --recommended --default-on-silence (spend: --amount-usd).")
+            lines.append("A card exists only for what depends on a preference or policy only the maintainer holds "
+                         "(research/raw/2026-08-18-decisions-are-two-way-doors-grant.md:18-20,26-27). Everything "
+                         "reversible proceeds without a card.")
+        # decision briefs: the brief refusal class and the three recipe lines (the same grammar as the lab's add)
+        for rule, detail in brief:
+            lines.append("ADD-REFUSED\tBRIEF-MALFORMED\t%s\t%s" % (rule, detail))
+        if brief:
+            lines.extend(BRIEF_RECIPE)
         return lines
     for rule, detail in result.findings:
         lines.append("ADD-FINDING\t%s\t%s\t%s" % (rec.get("id"), rule, detail))
+    for rule, detail in getattr(result, "reports", []):
+        lines.append("ADD-REPORT\t%s\t%s\t%s" % (rec.get("id"), rule, detail))
     return lines
 
 
@@ -384,6 +671,7 @@ def parse_ledger_v3(text):
     ({date,slug,hit,kind,order}); decisions/resolutions keep the raw line text for the
     git introducer search. malformed counts only truly-bad lines."""
     rows, decisions, resolutions, malformed = [], [], [], 0
+    briefs, brief_tests = [], []   # decision briefs: kind decision-brief / decision-brief-test sidecar rows
     for lineno, raw in enumerate((text or "").splitlines(), 1):
         line = raw.strip()
         if not line:
@@ -405,6 +693,9 @@ def parse_ledger_v3(text):
                 resolutions.append({"rec": rec, "raw": line, "order": lineno,
                                     "id": rec["id"],
                                     "disposition": rec["disposition"]})
+            elif kind in BRIEF_KINDS:
+                (briefs if kind == "decision-brief" else brief_tests).append(
+                    {"rec": rec, "raw": line, "order": lineno, "id": rec["id"]})
             elif "slug" in rec and "hit" in rec:            # legacy shape
                 if kind not in LEGACY_KINDS:
                     raise ValueError("unsupported kind")
@@ -423,7 +714,7 @@ def parse_ledger_v3(text):
         except (KeyError, TypeError, ValueError):
             malformed += 1
     return {"rows": rows, "decisions": decisions, "resolutions": resolutions,
-            "malformed": malformed}
+            "malformed": malformed, "briefs": briefs, "brief_tests": brief_tests}
 
 
 def read_ledger(root, ledger=None):
@@ -716,6 +1007,13 @@ def append_line(root, rec, ledger=None):
                              "before appending (add does; a MALFORMED card is never appended)" % rec.get("id"))
         if any(d["id"] == rec["id"] for d in parsed["decisions"]):
             raise SystemExit("FATAL: id %s already on file (race check)" % rec["id"])
+        # decision briefs: above the brief boundary a row lands only with its brief.lint stamp (the lint stamps it; a
+        # refused brief is never appended) -- the one side door every writer shares closes here
+        if brief_gated(parsed, root, rec) and not (isinstance(rec.get("brief"), dict)
+                                                   and isinstance(rec["brief"].get("lint"), dict)):
+            raise SystemExit("FATAL: decision row %s is above the brief boundary and carries no brief.lint stamp -- "
+                             "every writer runs the brief lint before appending (add --brief does; a refused brief is "
+                             "never appended)" % rec.get("id"))
     line = json.dumps(rec, ensure_ascii=False)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
@@ -844,6 +1142,14 @@ def cmd_add(args, root, ledger):
     if getattr(args, "retest_when", None):
         rec[RETEST_WHEN_FIELD] = args.retest_when
     door_fields_from_args(args, rec)
+    if getattr(args, "brief", None):
+        brief, problem = load_brief_file(args.brief)
+        if problem:
+            print("ADD-REFUSED\tBRIEF-MALFORMED\tB0\t%s" % problem)
+            for line in BRIEF_RECIPE:
+                print(line)
+            return 2
+        rec["brief"] = brief
     errs = validate_decision(rec)
     if errs:
         for e in errs:
@@ -922,11 +1228,31 @@ def cmd_show(args, root, ledger):
     status, _ = join_status([dec], chain)[args.id]
     rec = dec["rec"]
     ask = rec.get("ask", {})
-    print("[%s | %s | %s | asked-by %s | class %s]%s"
-          % (dec["id"], rec.get("urgency", "?"),
-             "status " + status, rec.get("requested_by", "?"),
-             rec.get("class", "?"),
-             " | pick many" if ask.get("multiSelect") else ""))
+    raw = bool(getattr(args, "raw", False))
+    state, brief = (None, None) if raw else brief_state_of(parsed, dec, status, root)
+    if state in ("missing", "stale"):
+        # NOT READY: the AskUserQuestion grammar is not emitted for a card above the boundary without a valid brief
+        row = dict(rec)
+        row["brief_state"] = state
+        for line in _brief_render().not_ready_lines([row], today_str()):
+            print(line)
+        _show_resolution_lines(chain)
+        return 0
+    chip = ("[%s | %s | %s | asked-by %s | class %s]%s"
+            % (dec["id"], rec.get("urgency", "?"),
+               "status " + status, rec.get("requested_by", "?"),
+               rec.get("class", "?"),
+               " | pick many" if ask.get("multiSelect") else ""))
+    if state in ("valid", "findings"):
+        render = _brief_render()
+        print(chip)
+        for line in render.card_lines(rec, brief, today_str()):
+            print(line)
+        for line in render.marker_lines(rec, state, brief=brief):
+            print(line)
+        _show_resolution_lines(chain)
+        return 0
+    print(chip)
     print("  ask: %s" % ask.get("question", rec.get("title", "")))
     for opt in ask.get("options", []):
         print("  [ ] %s — %s" % (opt.get("label", "?"), opt.get("description", "")))
@@ -948,6 +1274,21 @@ def cmd_show(args, root, ledger):
                      (" | hard %s" % rec["door"]["hard"]) if rec["door"].get("hard") else ""))
         for finding in rec["door"].get("findings", []):
             print("  door-finding: %s" % finding)
+    _show_resolution_lines(chain)
+    if state == "legacy-missing":
+        for line in _brief_render().marker_lines(rec, state):
+            print(line)
+    if status in ("open", "commented"):
+        first = (ask.get("options") or [{}])[0].get("label", "<label>")
+        print("  answer: python3 scripts/decisions.py resolve %s --accept \"%s\" "
+              "[--comment \"...\"]" % (dec["id"], first))
+        print("          deny: python3 scripts/decisions.py resolve %s --deny · comment: "
+              "python3 scripts/decisions.py resolve %s --comment \"...\""
+              % (dec["id"], dec["id"]))
+    return 0
+
+
+def _show_resolution_lines(chain):
     for res in sorted(chain, key=lambda r: r["order"]):
         r = res["rec"]
         if res.get("staged", True):
@@ -961,14 +1302,6 @@ def cmd_show(args, root, ledger):
                                               prov,
                                               (" — \"%s\"" % r["comment"])
                                               if r.get("comment") else ""))
-    if status in ("open", "commented"):
-        first = (ask.get("options") or [{}])[0].get("label", "<label>")
-        print("  answer: python3 scripts/decisions.py resolve %s --accept \"%s\" "
-              "[--comment \"...\"]" % (dec["id"], first))
-        print("          deny: python3 scripts/decisions.py resolve %s --deny · comment: "
-              "python3 scripts/decisions.py resolve %s --comment \"...\""
-              % (dec["id"], dec["id"]))
-    return 0
 
 
 def _ledger_pre_dirty(root, ledger_rel):
@@ -1049,6 +1382,15 @@ def cmd_resolve(args, root, ledger):
         for e in errs:
             print("RESOLVE-INVALID\t%s" % e)
         return 1
+    # decision briefs: the silence policy's armed default never executes against a card that is not readable
+    if args.comment and SILENCE_POLICY_RE.search(args.comment):
+        state, _brief = brief_state_of(parsed, dec, status, root)
+        if state not in ("valid", "findings"):
+            print("RESOLVE-REFUSED\tDEFAULT-SUSPENDED\t%s" % args.id)
+            print("The silence policy cannot execute against %s while it is not readable (brief state %s). File its "
+                  "brief first -- python3 scripts/decisions.py brief %s --brief brief.json -- then resolve again. "
+                  "Nothing was appended." % (args.id, state, args.id))
+            return 2
 
     committing = inside and not args.no_commit
     if committing and _ledger_pre_dirty(root, ledger_rel):
@@ -1151,11 +1493,16 @@ def cmd_check(args, root, ledger):
         print("DECISIONS-CHECK\t%s\t%s" % (RETEST_DUE_CLASS, line))
     for line in unarmed_lines:
         print("DECISIONS-CHECK\t%s\t%s" % (REVISIT_UNARMED_CLASS, line))
+    # decision briefs: BRIEF-MISSING / BRIEF-STALE / BRIEF-FINDINGS gate the exit for open cards above the boundary;
+    # legacy rows, BRIEF-ORPHAN and DEFAULT-SUSPENDED are exit-neutral (the DOOR-UNAUDITED precedent)
+    brief_lines, brief_gated_open = brief_check_lines(parsed, joined, root)
+    for cls, did, detail in brief_lines:
+        print("DECISIONS-CHECK\t%s\t%s\t%s" % (cls, did, detail))
     print("decisions-check: %d decision(s) (%d open, %d closed), %d resolution(s), "
           "%d truly-malformed ledger line(s), %d finding(s)"
           % (len(parsed["decisions"]), len(opens), len(closed),
              len(parsed["resolutions"]), parsed["malformed"], len(findings)))
-    return 1 if findings else 0
+    return 1 if (findings or brief_gated_open) else 0
 
 
 def cmd_surface(args, root, ledger):
@@ -1207,6 +1554,51 @@ def cmd_migrate(argv_rest, root):
     return subprocess.call([sys.executable, script, "--root", root] + argv_rest)
 
 
+def cmd_brief(args, root, ledger):
+    """A kind:"decision-brief" sidecar row for a card on file (a retrofit or a correction): the same lint, the same
+    exits; the latest valid brief per id wins at render. Opens nothing (the card was already surfaced)."""
+    parsed = parse_ledger_v3(read_ledger(root, ledger))
+    dec = next((d for d in parsed["decisions"] if d["id"] == args.id), None)
+    if dec is None:
+        print("BRIEF-INVALID\tno decision row with id %s" % args.id)
+        return 1
+    brief, problem = load_brief_file(args.brief)
+    if problem:
+        print("ADD-REFUSED\tBRIEF-MALFORMED\tB0\t%s" % problem)
+        for line in BRIEF_RECIPE:
+            print(line)
+        return 2
+    rec = dict(dec["rec"])
+    rec["brief"] = brief
+    lint = _door_lint()
+    result = lint.lint(rec, root, ledger or os.path.join(root, ledger_rel_for(root)),
+                       git_timeout=getattr(args, "door_git_timeout", DOOR_GIT_TIMEOUT), brief_only=True)
+    for line in brief_audit_lines(rec, result):
+        print(line)
+    if result.exit_code == 2:
+        return 2
+    stamp_brief(rec, result, lint)
+    row = {"kind": "decision-brief", "id": args.id, "date": today_str(), "brief": rec["brief"]}
+    ledger_rel = os.path.relpath(ledger or os.path.join(root, ledger_rel_for(root)), root)
+    append_line(root, row, ledger)
+    print("briefed %s: %s — one JSONL line appended to %s (kind decision-brief; the latest valid brief per id wins)"
+          % (args.id, dec["rec"].get("title", ""), ledger_rel))
+    return 1 if result.findings else 0
+
+
+def cmd_brief_skeleton(args, root, ledger):
+    """Print a deterministic brief skeleton for a candidate JSON (a decision-row-shaped object or the planter shape)."""
+    try:
+        with open(args.candidate, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        print("BRIEF-SKELETON-INVALID\t%s" % exc)
+        return 2
+    rec = candidate_from_json(data)
+    print(json.dumps(brief_skeleton(rec), ensure_ascii=False, indent=1))
+    return 0
+
+
 # ---------- selftest ----------
 
 def selftest():
@@ -1256,19 +1648,54 @@ def selftest():
             return subprocess.run([sys.executable, me, "--root", root] + list(a),
                                   capture_output=True, text=True, env=env, **kw)
 
+        def bf(tag, title, question, options, why, undos=("git-revert", "ledger-row"), recommended="none",
+               default="nothing-changes", externality="none"):
+            """A compliant brief for the card the CLI builds from these add arguments (its card_sha included)."""
+            opts = []
+            for i, spec in enumerate(options):
+                label, _sep, desc = spec.partition(":")
+                o = {"label": label.strip(), "description": desc.strip()}
+                if i < len(undos):
+                    o["undo"] = undos[i]
+                opts.append(o)
+            crec = {"title": title, "ask": {"question": question, "options": opts}, "why_only_you": why,
+                    "recommended": recommended, "default_on_silence": default, "externality": externality}
+            undo_text = {"git-revert": "Reverting the landing commit restores the previous state.",
+                         "ledger-row": "A later resolution row supersedes this one.",
+                         "none": "cannot be undone: the effect stays.",
+                         "flag": "Turning the flag back restores the previous state.",
+                         "amendment": "A later amendment restores the previous state."}
+            brief = {"decide": "Decide which of the %d options this card takes." % len(opts),
+                     "situation": "A small change is ready and nothing else depends on it.",
+                     "yours_because": "You hold the one part of this that no script can do.",
+                     "choices": [{"label": o["label"], "in_practice": "The %s option happens next." % o["label"],
+                                  "undo": undo_text.get(o.get("undo"), "A later resolution row supersedes this one.")} for o in opts],
+                     "if_nothing": ("Nothing changes: the card stays open until you answer." if default == "nothing-changes"
+                                    else "Unanswered by 2026-09-11, %s happens." % default),
+                     "evidence_line": "The selftest built this card and nothing else is on record.",
+                     "terms": {}, "sources": ["pipeline-fact:card-stays-open"],
+                     "card_sha": _door_lint().card_sha(crec), "provenance": {"protocol": "inline"}}
+            path = os.path.join(root, "briefs", "%s.json" % tag)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(brief, fh, ensure_ascii=False, indent=1)
+            return path
+
         # add
         r = cli("add", "--title", "Selftest gate", "--question",
                 "Ship the selftest gate?", "--header", "Gate",
                 "--option", "go:ship it", "--option", "hold:wait a wave",
                 "--requested-by", "lane SELFTEST", "--urgency", "high",
                 "--class", "plan", "--why-only-you", "only you hold the key",
-                "--pointer", "README.md", "--no-open", *DOOR_SELFTEST_ARGS)
+                "--pointer", "README.md", "--no-open", *DOOR_SELFTEST_ARGS,
+                "--brief", bf("gate", "Selftest gate", "Ship the selftest gate?", ["go:ship it", "hold:wait a wave"], "only you hold the key"))
         ok("add", r.returncode == 0 and "added DEC-001" in r.stdout,
            r.stdout.strip().splitlines()[0] if r.stdout else r.stderr[:120])
         r = cli("add", "--id", "DEC-001", "--title", "dup", "--question", "dup?",
                 "--header", "Dup", "--option", "a:b", "--option", "c:d",
                 "--requested-by", "x", "--urgency", "low", "--class", "plan",
-                "--why-only-you", "y", "--no-open", *DOOR_SELFTEST_ARGS)
+                "--why-only-you", "y", "--no-open", *DOOR_SELFTEST_ARGS,
+                "--brief", bf("dup", "dup", "dup?", ["a:b", "c:d"], "y"))
         ok("add-id-race-check", r.returncode != 0 and "already on file" in
            (r.stdout + r.stderr))
         # list
@@ -1345,7 +1772,8 @@ def selftest():
                 "--option", "no:keep it", "--requested-by", "lane SELFTEST",
                 "--urgency", "normal", "--class", "hygiene",
                 "--why-only-you", "one word", "--shadows",
-                "maintainer-ruling=selftest-shadow", "--no-open", *DOOR_SELFTEST_ARGS)
+                "maintainer-ruling=selftest-shadow", "--no-open", *DOOR_SELFTEST_ARGS,
+                "--brief", bf("shadow", "Shadow test", "Close the shadow?", ["yes:close it", "no:keep it"], "one word"))
         ok("add-shadowed", r.returncode == 0 and "DEC-002" in r.stdout)
         subprocess.run(["git", "-C", root, "commit", "-qm", "ledger: DEC-002",
                         "--", DEFAULT_LEDGER_REL], check=True)
@@ -1383,13 +1811,16 @@ def selftest():
                 "--option", "wait-for-evidence:the row re-presents itself once two "
                 "checkpoints have compiled", "--requested-by", "lane SELFTEST",
                 "--urgency", "low", "--class", "plan", "--why-only-you", "z",
-                "--retest-when", "event-count=event/selftest-compiled>=2", "--no-open", *DOOR_SELFTEST_ARGS)
+                "--retest-when", "event-count=event/selftest-compiled>=2", "--no-open", *DOOR_SELFTEST_ARGS,
+                "--brief", bf("armed", "Wait for two compiled checkpoints", "Act now or wait for the evidence?",
+                              ["act-now:do it now", "wait-for-evidence:the row re-presents itself once two checkpoints have compiled"], "z"))
         ok("retest-when-armed-add", r.returncode == 0 and "added DEC-003" in r.stdout,
            r.stdout.strip()[:120])
         r = cli("add", "--title", "Unarmed wait", "--question", "Now or not now?",
                 "--header", "Unarmed", "--option", "now:do it",
                 "--option", "later:the card waits", "--requested-by", "lane SELFTEST",
-                "--urgency", "low", "--class", "plan", "--why-only-you", "z", "--no-open", *DOOR_SELFTEST_ARGS)
+                "--urgency", "low", "--class", "plan", "--why-only-you", "z", "--no-open", *DOOR_SELFTEST_ARGS,
+                "--brief", bf("unarmed", "Unarmed wait", "Now or not now?", ["now:do it", "later:the card waits"], "z"))
         ok("revisit-unarmed-add", r.returncode == 0 and "added DEC-004" in r.stdout)
         subprocess.run(["git", "-C", root, "commit", "-qm",
                         "ledger: DEC-003 armed + DEC-004 unarmed", "--", DEFAULT_LEDGER_REL],
@@ -1443,22 +1874,24 @@ def selftest():
         r = cli("add", "--title", "Door: self-declared two-way", "--question", "Escalates?", "--header", "Door2",
                 "--option", "a:first", "--option", "b:second", "--requested-by", "x", "--urgency", "low",
                 "--class", "plan", "--why-only-you", "the lane proceeds under the standing grant", "--no-open",
-                *DOOR_SELFTEST_ARGS)
+                *DOOR_SELFTEST_ARGS, "--brief", bf("door2", "Door: self-declared two-way", "Escalates?", ["a:first", "b:second"],
+                                                    "the lane proceeds under the standing grant"))
         fnd = [l for l in r.stdout.splitlines() if l.startswith("ADD-FINDING\t")]
         ok("door-self-declared-escalates", r.returncode == 1 and len(fnd) == 1 and "\tD8\t" in fnd[0]
            and "added " in r.stdout, r.stdout.strip()[:160])
         last = json.loads(read_ledger(root).strip().splitlines()[-1])
         ok("door-object-on-row", isinstance(last.get("door"), dict) and len(last["door"].get("fields_sha", "")) == 64
            and last["door"].get("findings") and last["door"]["findings"][0].startswith("D8:"))
-        r = cli("show", last["id"])
+        r = cli("show", last["id"], "--raw")
         ok("door-show-renders", r.returncode == 0 and "  door: externality=none" in r.stdout and "  door-finding: D8:" in r.stdout)
         r = cli("add", "--title", "Door: stall", "--question", "Files?", "--header", "Stall",
                 "--option", "a:first", "--option", "b:second", "--requested-by", "x", "--urgency", "low",
                 "--class", "plan", "--why-only-you", "stall", "--no-open", "--door-git-timeout", "0",
                 "--undo", "ledger-row", "--undo", "ledger-row", "--staged-artifact", "none", "--evidence", "none-exists",
-                "--externality", "none", "--recommended", "none", "--default-on-silence", "nothing-changes")
+                "--externality", "none", "--recommended", "none", "--default-on-silence", "nothing-changes",
+                "--brief", bf("stall", "Door: stall", "Files?", ["a:first", "b:second"], "stall", undos=("ledger-row", "ledger-row")))
         ok("door-stall-exit-neutral", r.returncode == 0 and r.stdout.splitlines()[0] == "ADD-TIMEOUT\tD7"
-           and r.stdout.count("ADD-TIMEOUT") == 1, r.stdout.strip()[:120])
+           and r.stdout.count("ADD-TIMEOUT") == 2, r.stdout.strip()[:120])
         r = cli("check")
         ok("door-check-exempts-legacy-ids", r.returncode == 0, r.stdout.strip()[-140:])
         # ---- door evaluator (decision-door-evaluator): a two-way card is RECORDED and opens nothing; the veto
@@ -1471,8 +1904,12 @@ def selftest():
                             "--why-only-you", "nothing here is only yours",
                             "--undo", "git-revert", "--undo", "ledger-row", "--staged-artifact", "README.md",
                             "--evidence", "none-exists", "--externality", "none", "--recommended", "adopt",
-                            "--default-on-silence", "adopt"], capture_output=True, text=True, env=env_rec)
-        first = r.stdout.splitlines()[0] if r.stdout else ""
+                            "--default-on-silence", "adopt",
+                            "--brief", bf("record", "Door: two-way record", "Adopt the default?",
+                                          ["adopt:flip the README line (one commit)", "hold:leave it"],
+                                          "nothing here is only yours", recommended="adopt", default="adopt")],
+                           capture_output=True, text=True, env=env_rec)
+        first = next((l for l in r.stdout.splitlines() if l.startswith("DECISION-DOOR\t")), "")
         ok("door-evaluator-records-two-way", r.returncode == 0 and first.startswith("DECISION-DOOR\tDEC-007\tRECORD\t")
            and "recorded DEC-007:" in r.stdout and "added DEC-007" not in r.stdout
            and "Proceed now. Do not wait on this row, and never gate a driver on it." in r.stdout,
@@ -1515,7 +1952,7 @@ def selftest():
         ok("door-veto-deny-wins-join", r.returncode == 0 and subj.startswith('Revert "landing: decision-record=DEC-007')
            and any(l.startswith("DEC-007 ") and " denied " in l for l in r.stdout.splitlines()),
            subj + " | " + r.stdout.strip()[:120])
-        r = cli("show", "DEC-007")
+        r = cli("show", "DEC-007", "--raw")
         ok("door-show-renders-outcome", r.returncode == 0 and "  door-outcome: RECORD | evaluator " in r.stdout
            and "  resolution: denied [] " in r.stdout, r.stdout.strip()[-200:])
         # a side-door row: lint-stamped, appended outside add -> DOOR-UNAUDITED, exit-neutral
@@ -1527,20 +1964,32 @@ def selftest():
                 "context_pointers": [], "blocks": [], "urgency": "low", "class": "plan", "why_only_you": "side door",
                 "staged_artifact": "none", "evidence": "none-exists", "externality": "none", "recommended": "none",
                 "default_on_silence": "nothing-changes", "door": {"fields_sha": "0" * 64}}
-        append_line(root, side)
+        with open(os.path.join(root, DEFAULT_LEDGER_REL), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(side, ensure_ascii=False) + "\n")   # the side door append_line cannot see (it refuses a stamp-less row)
         r = cli("check")
         unaud = [l for l in r.stdout.splitlines() if l.startswith("DECISIONS-CHECK\tDOOR-UNAUDITED\t")]
-        ok("door-check-reports-side-door-row", r.returncode == 0 and len(unaud) == 1
-           and unaud[0].startswith("DECISIONS-CHECK\tDOOR-UNAUDITED\tDEC-008\t") and "0 finding(s)" in r.stdout,
+        ok("door-check-reports-side-door-row", r.returncode == 1 and len(unaud) == 1
+           and unaud[0].startswith("DECISIONS-CHECK\tDOOR-UNAUDITED\tDEC-008\t") and "0 finding(s)" in r.stdout
+           and "DECISIONS-CHECK\tBRIEF-MISSING\tDEC-008\t" in r.stdout,
            " | ".join(unaud)[:200] + " " + r.stdout.strip()[-120:])
+        # decision briefs: the side-door row reads NOT READY (exit 1 above the boundary) until a retrofit brief is filed
+        r = cli("brief", "DEC-008", "--brief", bf("side8", "side-door row (no evaluator)", "q?", ["a:first", "b:second"], "side door",
+                                                  undos=("ledger-row", "ledger-row")))
+        ok("door-side-door-row-retrofit-brief", r.returncode == 0 and "briefed DEC-008" in r.stdout, r.stdout.strip()[:160])
+        r = cli("check")
+        ok("door-side-door-row-readable-after-retrofit", r.returncode == 0 and len([l for l in r.stdout.splitlines()
+           if l.startswith("DECISIONS-CHECK\tDOOR-UNAUDITED\tDEC-008\t")]) == 1 and "BRIEF-MISSING\tDEC-008" not in r.stdout,
+           r.stdout.strip()[-160:])
         # the crash seed: an exception inside the evaluator renders a card (fail-closed), never a record
         r = cli("add", "--title", "Door: crash seed", "--question", "Renders?", "--header", "Crash",
                 "--option", "adopt:flip", "--option", "hold:leave", "--requested-by", "x", "--urgency", "low",
                 "--class", "plan", "--why-only-you", "the crash seed", "--no-open", "--door-inject-fault",
                 "--undo", "git-revert", "--undo", "ledger-row", "--staged-artifact", "README.md", "--evidence", "none-exists",
-                "--externality", "none", "--recommended", "adopt", "--default-on-silence", "adopt")
+                "--externality", "none", "--recommended", "adopt", "--default-on-silence", "adopt",
+                "--brief", bf("crash", "Door: crash seed", "Renders?", ["adopt:flip", "hold:leave"], "the crash seed",
+                              recommended="adopt", default="adopt"))
         last = json.loads(read_ledger(root).strip().splitlines()[-1])
-        first = r.stdout.splitlines()[0] if r.stdout else ""
+        first = next((l for l in r.stdout.splitlines() if l.startswith("DECISION-DOOR\t")), "")
         ok("door-crash-seed-renders-a-card", r.returncode == 0 and first.startswith("DECISION-DOOR\tDEC-009\tCARD\tfail-closed\t")
            and "added DEC-009:" in r.stdout and last.get("id") == "DEC-009" and last.get("kind") == "decision"
            and last["door"].get("outcome") == "CARD"
@@ -1577,7 +2026,8 @@ def selftest():
             subprocess.run(["git", "-C", root2, "commit", "-qm", "two pre-upgrade cards"], check=True)
             r = cli2("add", "--title", "First door card", "--question", "Upgraded?", "--header", "Door", "--option", "a:first",
                      "--option", "b:second", "--requested-by", "x", "--urgency", "low", "--class", "plan",
-                     "--why-only-you", "post-upgrade", "--no-open", *DOOR_SELFTEST_ARGS)
+                     "--why-only-you", "post-upgrade", "--no-open", *DOOR_SELFTEST_ARGS,
+                     "--brief", bf("upgrade", "First door card", "Upgraded?", ["a:first", "b:second"], "post-upgrade"))
             ok("door-legacy-first-door-row-added", r.returncode == 0 and "added DEC-003" in r.stdout, r.stdout.strip()[:120])
             with open(os.path.join(root2, DEFAULT_LEDGER_REL), "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(legacy_row(4)) + "\n")
@@ -1586,11 +2036,11 @@ def selftest():
                "flagged=%s exit %d" % (flagged(r), r.returncode))
             os.makedirs(os.path.join(root2, ".claude"))
             with open(os.path.join(root2, ".claude", "hyp.json"), "w") as fh:
-                json.dump({DOOR_LEGACY_KEY: 4}, fh)
+                json.dump({DOOR_LEGACY_KEY: 4, BRIEF_LEGACY_KEY: 4}, fh)   # both boundaries: the door's and the brief's
             r = cli2("check")
             ok("door-legacy-explicit-boundary-exempts-at-or-below", r.returncode == 0 and flagged(r) == [], "flagged=%s" % flagged(r))
             with open(os.path.join(root2, ".claude", "hyp.json"), "w") as fh:
-                json.dump({DOOR_LEGACY_KEY: 1}, fh)
+                json.dump({DOOR_LEGACY_KEY: 1, BRIEF_LEGACY_KEY: 1}, fh)
             r = cli2("check")
             ok("door-legacy-explicit-boundary-gates-above", r.returncode == 1 and flagged(r) == ["DEC-002", "DEC-004"],
                "flagged=%s" % flagged(r))
@@ -1607,9 +2057,13 @@ def selftest():
                                "recommended": "none", "default_on_silence": "nothing-changes"})
             for opt in caller_row["ask"]["options"]:
                 opt["undo"] = "ledger-row"
+            with open(bf("caller", "legacy card 5", "q?", ["a:first", "b:second"], "legacy 5", undos=("ledger-row", "ledger-row")),
+                      encoding="utf-8") as fh:
+                caller_row["brief"] = json.load(fh)   # an in-process writer carries its brief on the row
             res = door_lint_row(caller_row, root2)
             ok("door-lint-row-stamps-a-caller-row", res.exit_code == 0 and len(caller_row.get("door", {}).get("fields_sha", "")) == 64
-               and door_audit_lines(caller_row, res) == [], str(res.findings)[:160])
+               and [l for l in door_audit_lines(caller_row, res) if not l.startswith("ADD-REPORT\t")] == []
+               and caller_row["brief"].get("lint", {}).get("exit") == 0, str(res.findings)[:160])
             append_line(root2, caller_row)
             ok("door-lint-row-then-append-line-lands", json.loads(read_ledger(root2).strip().splitlines()[-1])["id"] == "DEC-005")
             bad = legacy_row(6)
@@ -1619,6 +2073,185 @@ def selftest():
                and sum(1 for l in lines if l.startswith("ADD-REFUSED\tMALFORMED\t")) >= 6, "%d line(s)" % len(lines))
         finally:
             shutil.rmtree(root2, ignore_errors=True)
+        # ---- decision briefs (decision-brief-gate): the gate at add, the sidecar, the surfaces, check, the suspension ----
+        def led():
+            return read_ledger(root)
+        before = led()
+        r = cli("add", "--title", "Brief: none", "--question", "Refused?", "--header", "Brief", "--option", "a:first",
+                "--option", "b:second", "--requested-by", "x", "--urgency", "low", "--class", "plan", "--why-only-you", "w",
+                "--no-open", *DOOR_SELFTEST_ARGS)
+        out = r.stdout.splitlines()
+        refused = [l for l in out if l.startswith("ADD-REFUSED\t")]
+        ok("brief-missing-refused", r.returncode == 2 and len(refused) == 1
+           and refused[0].startswith("ADD-REFUSED\tBRIEF-MALFORMED\tB0\t"), "%d refusal line(s), exit %d" % (len(refused), r.returncode))
+        i = out.index(refused[0]) if refused else -1
+        ok("brief-refusal-recipe-byte-equal", i >= 0 and out[i + 1:i + 4] == list(BRIEF_RECIPE) and out[i + 1:i + 4] == [
+            "schema: docs/decision-brief.schema.json",
+            "draft: python3 scripts/decisions.py brief-skeleton <candidate.json>",
+            "exemplar: docs/decision-brief.exemplar.json"], str(out[i + 1:i + 4]))
+        ok("brief-refusal-appends-nothing", led() == before)
+        # a prose finding: exit 1, appended with brief.lint.findings, exactly one BRIEF-FINDINGS marker line on show
+        p = bf("long", "Brief: long sentence", "Files?", ["a:first", "b:second"], "w")
+        with open(p, encoding="utf-8") as fh:
+            b = json.load(fh)
+        b["situation"] = " ".join(["word"] * 26) + "."
+        with open(p, "w", encoding="utf-8") as fh:
+            json.dump(b, fh)
+        r = cli("add", "--title", "Brief: long sentence", "--question", "Files?", "--header", "Brief", "--option", "a:first",
+                "--option", "b:second", "--requested-by", "x", "--urgency", "low", "--class", "plan", "--why-only-you", "w",
+                "--no-open", *DOOR_SELFTEST_ARGS, "--brief", p)
+        fnd = [l for l in r.stdout.splitlines() if l.startswith("ADD-FINDING\t")]
+        ok("brief-finding-exit-1", r.returncode == 1 and [l.split("\t")[2] for l in fnd] == ["B2"] and "added " in r.stdout,
+           r.stdout.strip()[:200])
+        last = json.loads(led().strip().splitlines()[-1])
+        st = last.get("brief", {}).get("lint", {})
+        ok("brief-stamp-on-row", st.get("exit") == 1 and st.get("findings", [""])[0].startswith("B2:")
+           and len(st.get("brief_sha", "")) == 64 and len(last["brief"].get("card_sha", "")) == 64 and st.get("tool") == "decision_card_lint")
+        long_id = last["id"]
+        r = cli("show", long_id)
+        ok("brief-show-findings-marker", r.returncode == 0 and sum(1 for l in r.stdout.splitlines() if "BRIEF-FINDINGS" in l) == 1
+           and "  DECIDE: " in r.stdout and "  details: python3 scripts/decisions.py show %s --raw" % long_id in r.stdout, r.stdout[:300])
+        r = cli("show", long_id, "--raw")
+        ok("brief-show-raw-is-todays-grammar", "  ask: Files?" in r.stdout and "  DECIDE: " not in r.stdout
+           and "BRIEF-FINDINGS" not in r.stdout, r.stdout[:200])
+        subprocess.run(["git", "-C", root, "commit", "-qm", "ledger: brief selftest rows", "--", DEFAULT_LEDGER_REL], check=True)
+        r = cli("resolve", long_id, "--accept", "a", "--no-recompile")
+        ok("brief-findings-card-resolves", r.returncode == 0, r.stdout.strip()[:120])
+        # a valid brief renders brief-first: the seven labels in order, one answer per choice, no ask: line
+        p = bf("ok", "Brief: valid", "Ship it?", ["yes:ship", "no:wait"], "w")
+        r = cli("add", "--title", "Brief: valid", "--question", "Ship it?", "--header", "Brief", "--option", "yes:ship",
+                "--option", "no:wait", "--requested-by", "x", "--urgency", "low", "--class", "plan", "--why-only-you", "w",
+                "--no-open", *DOOR_SELFTEST_ARGS, "--brief", p)
+        ok("brief-valid-exit-0", r.returncode == 0 and not [l for l in r.stdout.splitlines() if l.startswith("ADD-FINDING")],
+           r.stdout.strip()[:200])
+        vid = json.loads(led().strip().splitlines()[-1])["id"]
+        r = cli("show", vid)
+        lines = r.stdout.splitlines()
+        seven = ("DECIDE", "THE SITUATION", "WHY YOU", "YOUR CHOICES", "IF YOU DO NOTHING", "WHAT WE KNOW", "UNDO")
+        labels = [l.strip().split(":")[0] for l in lines if l.strip().split(":")[0] in seven]
+        ok("brief-show-brief-first", labels == list(seven) and sum(1 for l in lines if l.startswith("  answer: ")) == 2
+           and "  ask:" not in r.stdout, str(labels))
+        # the side door: a stamp-less row above the boundary is refused by append_line, and a direct file write renders
+        # NOT READY everywhere while check exits 1
+        parsed = parse_ledger_v3(led())
+        sid = next_free_id(parsed)
+        side = {"kind": "decision", "id": sid, "date": "2026-08-28", "requested_at": "2026-08-20", "requested_by": "side door",
+                "title": "Side door", "ask": {"question": "Side?", "header": "Side", "multiSelect": False,
+                                              "options": [{"label": "in", "description": "d", "undo": "ledger-row"},
+                                                          {"label": "out", "description": "d", "undo": "ledger-row"}]},
+                "context_pointers": [], "blocks": [], "urgency": "normal", "class": "plan", "why_only_you": "w",
+                "staged_artifact": "none", "evidence": "none-exists", "externality": "none", "recommended": "none",
+                "default_on_silence": "in", "door": {"fields_sha": "0" * 64}}
+        try:
+            append_line(root, dict(side))
+            ok("append-line-refuses-stamp-less-row", False, "no SystemExit")
+        except SystemExit as exc:
+            ok("append-line-refuses-stamp-less-row", "brief.lint" in str(exc) and sid not in led(), str(exc)[:120])
+        with open(os.path.join(root, DEFAULT_LEDGER_REL), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(side, ensure_ascii=False) + "\n")
+        r = cli("show", sid)
+        ok("side-door-not-ready-block", r.stdout.splitlines()[0] == "- [%s | normal | 8d old | NOT READY]" % sid
+           and "  finding: BRIEF-MISSING" in r.stdout and "  fix: python3 scripts/decisions.py brief %s --brief brief.json" % sid in r.stdout
+           and "ask:" not in r.stdout and "[ ]" not in r.stdout and "answer:" not in r.stdout, r.stdout[:200])
+        r = cli("check")
+        ok("check-brief-missing-gated", r.returncode == 1 and "DECISIONS-CHECK\tBRIEF-MISSING\t%s\t" % sid in r.stdout
+           and "DECISIONS-CHECK\tDEFAULT-SUSPENDED\t%s\t2026-09-03" % sid in r.stdout and "0 finding(s)" in r.stdout,
+           r.stdout.strip()[-300:])
+        # the suspension: the armed default (row-armed leg) cannot execute while the card is not readable
+        subprocess.run(["git", "-C", root, "commit", "-qm", "ledger: side door", "--", DEFAULT_LEDGER_REL], check=True)
+        cite = "parking backstop per operating-model/cause-n-effect/policies/decision-default-on-silence.md"
+        r = cli("resolve", sid, "--accept", "in", "--comment", cite, "--no-recompile")
+        ok("resolve-suspended", r.returncode == 2 and r.stdout.splitlines()[0] == "RESOLVE-REFUSED\tDEFAULT-SUSPENDED\t%s" % sid
+           and not [l for l in led().splitlines() if '"decision-resolution"' in l and '"%s"' % sid in l], r.stdout[:200])
+        # the sidecar repair: brief <id> --brief; the latest valid brief wins; check exits 0; the same resolve is accepted
+        p = bf("side", "Side door", "Side?", ["in:d", "out:d"], "w", undos=("ledger-row", "ledger-row"), default="in")
+        with open(p, encoding="utf-8") as fh:
+            b = json.load(fh)
+        b["if_nothing"] = "Unanswered by 2026-09-03, in happens and the row parks."
+        with open(p, "w", encoding="utf-8") as fh:
+            json.dump(b, fh)
+        r = cli("brief", sid, "--brief", p)
+        ok("brief-sidecar-appended", r.returncode == 0 and "briefed %s" % sid in r.stdout, r.stdout.strip()[:200])
+        last = json.loads(led().strip().splitlines()[-1])
+        ok("brief-sidecar-shape", last["kind"] == "decision-brief" and last["id"] == sid and last["brief"]["lint"]["exit"] == 0)
+        r = cli("show", sid)
+        ok("brief-sidecar-renders-brief-first", "  DECIDE: " in r.stdout and "NOT READY" not in r.stdout)
+        r = cli("check")
+        ok("check-exit-0-after-repair", r.returncode == 0 and "BRIEF-MISSING\t%s" % sid not in r.stdout
+           and "DEFAULT-SUSPENDED" not in r.stdout, r.stdout.strip()[-300:])
+        subprocess.run(["git", "-C", root, "commit", "-qm", "ledger: side door brief", "--", DEFAULT_LEDGER_REL], check=True)
+        r = cli("resolve", sid, "--accept", "in", "--comment", cite, "--no-recompile")
+        ok("resolve-accepted-after-brief", r.returncode == 0 and "committed JUST that line" in r.stdout, r.stdout.strip()[:200])
+        # stale: an in-place edit of a brief turns the card NOT READY with BRIEF-STALE and gates check
+        lines = led().splitlines()
+
+        def _row(l):
+            try:
+                return json.loads(l)
+            except ValueError:
+                return {}
+        idx = next(i for i, l in enumerate(lines) if _row(l).get("kind") == "decision" and _row(l).get("id") == vid)
+        edited = json.loads(lines[idx])
+        edited["brief"]["decide"] = "Edited in place."
+        lines[idx] = json.dumps(edited, ensure_ascii=False)
+        with open(os.path.join(root, DEFAULT_LEDGER_REL), "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        r = cli("show", vid)
+        ok("stale-not-ready", "  finding: BRIEF-STALE" in r.stdout and "answer:" not in r.stdout, r.stdout[:200])
+        r = cli("check")
+        ok("check-stale-gated", r.returncode == 1 and "DECISIONS-CHECK\tBRIEF-STALE\t%s\t" % vid in r.stdout, r.stdout.strip()[-200:])
+        subprocess.run(["git", "-C", root, "checkout", "-q", "--", DEFAULT_LEDGER_REL], check=True)
+        # orphan: a decision-brief row for an id with no decision row is reported and never moves the exit
+        with open(os.path.join(root, DEFAULT_LEDGER_REL), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"kind": "decision-brief", "id": "DEC-%03d" % 990, "date": "2026-08-28", "brief": {"decide": "x"}}) + "\n")
+        r = cli("check")
+        ok("check-brief-orphan-exit-neutral", r.returncode == 0 and "DECISIONS-CHECK\tBRIEF-ORPHAN\tDEC-%03d\t" % 990 in r.stdout,
+           r.stdout.strip()[-300:])
+        r = cli("list")
+        ok("list-carries-brief-kinds-silently", r.returncode == 0 and "malformed" not in r.stdout.lower())
+        subprocess.run(["git", "-C", root, "checkout", "-q", "--", DEFAULT_LEDGER_REL], check=True)
+        # the legacy boundary: a stamp-less row at or below decision_brief_legacy_max_id renders today's grammar plus
+        # exactly one marker line (byte-equal to the frozen string) and stays exit-neutral in check
+        parsed = parse_ledger_v3(led())
+        lid = next_free_id(parsed)
+        leg = dict(side, id=lid, title="Legacy card", requested_at="2026-08-28")
+        leg.pop("default_on_silence")
+        with open(os.path.join(root, DEFAULT_LEDGER_REL), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(leg, ensure_ascii=False) + "\n")
+        os.makedirs(os.path.join(root, ".claude"), exist_ok=True)
+        with open(os.path.join(root, ".claude", "hyp.json"), "w", encoding="utf-8") as fh:
+            json.dump({BRIEF_LEGACY_KEY: int(lid.split("-")[1]), DOOR_LEGACY_KEY: int(lid.split("-")[1])}, fh)   # the consumer's two boundaries
+        r = cli("show", lid)
+        raw = cli("show", lid, "--raw")
+        marker = ("  brief: BRIEF-MISSING — no brief on file; a default never executes against this card while it is not "
+                  "readable; retrofit: python3 scripts/decisions.py brief %s --brief brief.json" % lid)
+        got = r.stdout.splitlines()
+        ok("legacy-marker-line-frozen", got.count(marker) == 1 and [l for l in got if l != marker] == raw.stdout.splitlines()
+           and "  ask: Side?" in r.stdout, r.stdout[:300])
+        r = cli("check")
+        ok("legacy-check-exit-neutral", r.returncode == 0
+           and "DECISIONS-CHECK\tBRIEF-MISSING\t%s\tlegacy card, no brief on file" % lid in r.stdout, r.stdout.strip()[-300:])
+        with open(os.path.join(root, ".claude", "hyp.json"), "w", encoding="utf-8") as fh:
+            json.dump({BRIEF_LEGACY_KEY: int(lid.split("-")[1]) - 1, DOOR_LEGACY_KEY: int(lid.split("-")[1])}, fh)   # only the brief boundary moves
+        r = cli("check")
+        ok("boundary-moves-gating", r.returncode == 1 and "DECISIONS-CHECK\tBRIEF-MISSING\t%s\t" % lid in r.stdout, r.stdout.strip()[-200:])
+        os.remove(os.path.join(root, ".claude", "hyp.json"))
+        subprocess.run(["git", "-C", root, "checkout", "-q", "--", DEFAULT_LEDGER_REL], check=True)
+        # brief-skeleton: deterministic, the row's facts placed, refused until its UNKNOWN: slots are filled
+        cand = os.path.join(root, "candidate.json")
+        with open(cand, "w", encoding="utf-8") as fh:
+            json.dump(side, fh)
+        s1 = cli("brief-skeleton", cand)
+        s2 = cli("brief-skeleton", cand)
+        sk = json.loads(s1.stdout)
+        ok("brief-skeleton-deterministic", s1.returncode == 0 and s1.stdout == s2.stdout and sk["card_sha"] == _door_lint().card_sha(side)
+           and [c["label"] for c in sk["choices"]] == ["in", "out"] and "UNKNOWN:" in json.dumps(sk)
+           and sk["if_nothing"] == "Unanswered by 2026-09-03, in happens.", s1.stdout[:200])
+        with open(cand, "w", encoding="utf-8") as fh:
+            json.dump(sk, fh)
+        r = cli("brief", sid, "--brief", cand)
+        ok("brief-skeleton-refused-until-filled", r.returncode == 2 and "ADD-REFUSED\tBRIEF-MALFORMED\tB0\t" in r.stdout
+           and r.stdout.splitlines()[-3:] == list(BRIEF_RECIPE), r.stdout[-300:])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("selftest: %d failure(s)" % len(failures))
@@ -1672,12 +2305,15 @@ def main(argv=None):
                    help="seconds per git read in the door lint (tests: 0 seeds a stall)")
     p.add_argument("--door-inject-fault", dest="door_inject_fault", action="store_true",
                    help="harness fault injection inside the door evaluator (tests: the crash seed must render a card)")
+    p.add_argument("--brief", metavar="BRIEF_JSON",
+                   help="the plain-English brief (docs/decision-brief.schema.json); a candidate without one is refused (B0)")
 
     p = sub.add_parser("list", help="all decisions with derived status")
     p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("show", help="one full card with git-derived provenance")
     p.add_argument("id")
+    p.add_argument("--raw", action="store_true", help="today's grammar verbatim (machine readers; the selftest anchors)")
 
     p = sub.add_parser("resolve", help="accept/deny/comment; commits JUST the row")
     p.add_argument("id", nargs="?")
@@ -1701,6 +2337,15 @@ def main(argv=None):
 
     sub.add_parser("migrate", help="shim: delegates to scripts/migrate-decisions.py")
 
+    p = sub.add_parser("brief", help="file a decision-brief sidecar row (a retrofit or a correction) for a card on file")
+    p.add_argument("id")
+    p.add_argument("--brief", required=True, metavar="BRIEF_JSON")
+    p.add_argument("--door-git-timeout", dest="door_git_timeout", type=int, default=DOOR_GIT_TIMEOUT,
+                   help="seconds per git read in the brief lint (tests: 0 seeds a stall)")
+
+    p = sub.add_parser("brief-skeleton", help="print a deterministic brief skeleton with the candidate's facts placed")
+    p.add_argument("candidate", metavar="CANDIDATE_JSON")
+
     if argv and argv[0] == "migrate":
         # passthrough shim keeps migrate's own flags intact
         root_idx = None
@@ -1721,7 +2366,8 @@ def main(argv=None):
         return cmd_migrate([], root)
     return {"add": cmd_add, "list": cmd_list, "show": cmd_show,
             "resolve": cmd_resolve, "check": cmd_check, "surface": cmd_surface,
-            "open": cmd_open}[args.cmd](args, root, ledger)
+            "open": cmd_open, "brief": cmd_brief,
+            "brief-skeleton": cmd_brief_skeleton}[args.cmd](args, root, ledger)
 
 
 if __name__ == "__main__":

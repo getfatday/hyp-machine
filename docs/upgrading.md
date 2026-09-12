@@ -26,3 +26,16 @@ is allocated at land by `scripts/id-rectify.py`. Nothing about an existing corpu
 upgrade; every landed `H-NNN` and fragment id keeps resolving exactly as it does today, and the
 new rule only governs registrations made after you upgrade. See `docs/id-allocation.md` for the
 full contract.
+
+From the release that carries the decision-brief gate, every new decision card needs a plain-English
+brief (`decisions.py add --brief <brief.json>`; `docs/decisions.md`, "The plain-English brief"), and a
+card without a valid one is never shown as a question. Cards already on file are exempt by id: set
+`decision_brief_legacy_max_id` in `.claude/hyp.json` to your highest pre-upgrade decision id (absent,
+the boundary is shape and order: every card appended before the first briefed one is legacy). Each open
+legacy card renders exactly as before plus one `brief: BRIEF-MISSING` line naming the retrofit command
+(`decisions.py brief <id> --brief brief.json`); resolved cards render byte for byte as before. The three
+admission-tiered prose rules (B6, B9, B10) are report-only until you list them in
+`decision_brief_admitted_rules`; the shipped writers that file cards (`retest-trigger.py`,
+`knob-observe.py`, `dispatch-gate.py ingest`, `reflex-surface file`) are refused with the recipe until each
+carries a brief. `python3 scripts/selftest-decision-briefs.py --live .` checks the marker rendering over your
+own ledger.

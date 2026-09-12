@@ -641,8 +641,30 @@ def _selftest():
             c["ask"]["options"][i]["undo"] = v
             return c
 
-        def go(c, timeout=20, fault=False):
-            return run(c, tmp, ledger, git_timeout=timeout, inject_fault=fault)
+        def briefed(c):
+            """decision briefs: the compliant brief W1's seat (decision_card_lint.shape_errors, rules B0/B1) requires on
+            every candidate, built from the card's own facts so its card_sha matches whatever the test changed."""
+            undo_text = {"git-revert": "Reverting the landing commit restores the previous state.",
+                         "ledger-row": "A later resolution row supersedes this one.",
+                         "none": "cannot be undone: the effect stays.",
+                         "flag": "Turning the flag back restores the previous state.",
+                         "amendment": "A later amendment restores the previous state."}
+            opts = c.get("ask", {}).get("options", [])
+            dflt = c.get("default_on_silence")
+            c["brief"] = {"decide": "Decide which of the %d options this card takes." % len(opts),
+                          "situation": "A small change is ready and nothing else depends on it.",
+                          "yours_because": "You hold the one part of this that no script can do.",
+                          "choices": [{"label": o.get("label"), "in_practice": "The %s option happens next." % o.get("label"),
+                                       "undo": undo_text.get(o.get("undo"), "A later resolution row supersedes this one.")} for o in opts],
+                          "if_nothing": ("Nothing changes: the card stays open until you answer." if dflt == "nothing-changes"
+                                         else "Unanswered by 2026-01-24, %s happens." % dflt),
+                          "evidence_line": "The selftest built this card and nothing else is on record.",
+                          "terms": {}, "sources": ["pipeline-fact:card-stays-open"],
+                          "card_sha": _lint().card_sha(c), "provenance": {"protocol": "inline"}}
+            return c
+
+        def go(c, timeout=20, fault=False, brief=True):
+            return run(briefed(c) if brief else c, tmp, ledger, git_timeout=timeout, inject_fault=fault)
 
         r = go(card()); ok("clean-zero-information-records", r.outcome == "RECORD" and r.record["basis"] == RECORD_BASIS and r.record["veto_open_until"] == "2026-01-17"
                              and r.stdout_lines[0].startswith("DECISION-DOOR\tX-9\tRECORD\t") and r.stdout_lines[-1] == "Proceed now. Do not wait on this row, and never gate a driver on it.", str(r.clauses))
@@ -681,6 +703,7 @@ def _selftest():
             fh.write(spec)
         r = go(card(staged_artifact=["hypotheses/spec-new.md"])); ok("new-spec-no-frozen-span-records", r.outcome == "RECORD", str(r.findings))
         # W1 / W2
+        r = go(card(), brief=False); ok("w1-brief-missing-refused", r.outcome == "MALFORMED" and r.exit_code == 2 and any(d.startswith("B0 ") for _c, d in r.defects) and r.stdout_lines[0].startswith("ADD-REFUSED\tMALFORMED\tW1\tB0 "), str(r.defects))
         r = go(card(evidence=None)); ok("w1-malformed-lists-defects", r.outcome == "MALFORMED" and r.exit_code == 2 and r.stdout_lines[0].startswith("ADD-REFUSED\tMALFORMED\tW1\t"), str(r.defects))
         with open(ledger, "a") as fh:
             for i in (2, 3):
@@ -721,15 +744,15 @@ def _selftest():
         with open(os.path.join(tmp, "ledger", "ledger.jsonl"), "w") as fh:
             fh.write("")
         sh("add", "-A"); sh("commit", "-qm", "consumer ledger")
-        r = run(undo(card(staged_artifact=["ledger/ledger.jsonl"]), 0, "ledger-row"), tmp); ok("consumer-ledger-row-records-through-hyp-json", r.outcome == "RECORD" and r.ledger_rel == "ledger/ledger.jsonl" and r.undo_class == "ledger-row" and r.record["undo"].startswith("python3 scripts/decisions.py resolve X-9 --deny"), str(r.clauses))
-        r = run(undo(card(staged_artifact=["ledger/work-ledger.jsonl"]), 0, "ledger-row"), tmp); ok("consumer-ledger-row-on-lab-path-uncorroborated", r.outcome == "CARD" and any(f.startswith("UNDO-UNCORROBORATED") for f in r.findings), str(r.findings))
+        r = run(briefed(undo(card(staged_artifact=["ledger/ledger.jsonl"]), 0, "ledger-row")), tmp); ok("consumer-ledger-row-records-through-hyp-json", r.outcome == "RECORD" and r.ledger_rel == "ledger/ledger.jsonl" and r.undo_class == "ledger-row" and r.record["undo"].startswith("python3 scripts/decisions.py resolve X-9 --deny"), str(r.clauses))
+        r = run(briefed(undo(card(staged_artifact=["ledger/work-ledger.jsonl"]), 0, "ledger-row")), tmp); ok("consumer-ledger-row-on-lab-path-uncorroborated", r.outcome == "CARD" and any(f.startswith("UNDO-UNCORROBORATED") for f in r.findings), str(r.findings))
         os.remove(os.path.join(tmp, ".claude", "hyp.json"))
         # the CLI contract
         me = os.path.abspath(__file__)
-        p = subprocess.run([sys.executable, "-B", me, "--root", tmp, "--ledger", ledger], input=json.dumps(card()), capture_output=True, text=True)
+        p = subprocess.run([sys.executable, "-B", me, "--root", tmp, "--ledger", ledger], input=json.dumps(briefed(card())), capture_output=True, text=True)
         last = p.stdout.strip().splitlines()[-1]
         ok("cli-contract", p.returncode == 0 and p.stdout.startswith("DECISION-DOOR\t") and last.startswith("DOOR-JSON\t") and json.loads(last.split("\t", 1)[1])["door"]["outcome"] == "RECORD", p.stdout[:120] + p.stderr[-200:])
-        p = subprocess.run([sys.executable, "-B", me, "--root", tmp, "--ledger", ledger, "--inject-fault"], input=json.dumps(card()), capture_output=True, text=True)
+        p = subprocess.run([sys.executable, "-B", me, "--root", tmp, "--ledger", ledger, "--inject-fault"], input=json.dumps(briefed(card())), capture_output=True, text=True)
         ok("cli-inject-fault-cards", p.returncode == 0 and "\tCARD\tfail-closed\t" in p.stdout.splitlines()[0], p.stdout[:160])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
