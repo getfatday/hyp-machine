@@ -41,30 +41,37 @@ jargon list glossed at first use, zero bare slugs, curly double quotes reserved 
 artifact quotes, no timestamps, no invented aggregates (per-run figures only — a sum
 appears in no artifact of record, so no sum appears here).
 
-H-225 CANDIDATE — the optional `--vocab` gloss-lookup join (default OFF; absent
-flag = the shipped code path, byte-unchanged):
-  * `--vocab <path>` names a house-vocabulary JSON (v2 schema; v1 files load with
-    defaults) read as a SUPERSET of the frozen jargon floor by construction: the
-    floor keeps its hardcoded page glosses and its unchanged lint; the vocabulary
-    only ever ADDS glosses, never edits the floor.
+The vocabulary gloss-lookup join (H-225, KEPT 2026-08-31, 2x5/5) — ON BY DEFAULT
+since decision record DEC-037 (2026-09-11); `--no-vocab` opts out:
+  * default (no flag): the renderer reads the house vocabulary shipped beside it
+    (house-vocabulary.json, v2 schema; v1 files load with defaults) and the pinned
+    wordlist beside that vocabulary (vocab-wordlist.txt). The vocabulary is read as
+    a SUPERSET of the frozen jargon floor by construction: the floor keeps its
+    hardcoded page glosses and its unchanged lint; the vocabulary only ever ADDS
+    glosses, never edits the floor.
+  * `--vocab <path>` glosses from a different vocabulary file instead (its pinned
+    wordlist must sit beside it). `--no-vocab` skips the join entirely and
+    reproduces the pre-DEC-037 page byte-for-byte. The two flags are mutually
+    exclusive.
   * trigger: files in the pinned source bundle BEYOND the fact table (extra
     artifacts). For each house-only vocabulary term those extra artifacts use in
     prose, the page's FIRST bare prose use of that term (same span exclusions as
     the content lint) gains the vocabulary gloss byte-for-byte: `term (gloss)`.
     A bundle that is exactly the fact table — the counted reference — is a
     structural no-op: the page reproduces byte-identically with and without the
-    flag.
+    join.
   * unregistered coinages in extra artifacts (tokens resolving through neither
     the pinned wordlist beside the vocabulary nor the vocabulary's own forms,
     used twice or more in one artifact) are REPORTED on stdout
     (VOCAB-REPORT\tunregistered-coinage\t...) and never glossed: no gloss text
     is ever invented — every inserted byte comes from a vocabulary entry.
-  * fail-closed: an unreadable vocabulary, a missing pinned wordlist, or a
-    triggered gloss that would break the page grammar (digits, parens, brackets,
-    quote characters, under ten characters) REFUSES the render loudly. The
-    frozen self-checks below run UNCHANGED on the final (joined) page.
+  * fail-closed: an unreadable vocabulary (the shipped default included), a
+    missing pinned wordlist, or a triggered gloss that would break the page grammar
+    (digits, parens, brackets, quote characters, under ten characters) REFUSES the
+    render loudly. The frozen self-checks below run UNCHANGED on the final (joined)
+    page.
 
-CLI: render_case_study.py --source <fixture/source> --out <dir> [--vocab <vocabulary.json>]
+CLI: render_case_study.py --source <fixture/source> --out <dir> [--no-vocab | --vocab <vocabulary.json>]
 """
 import argparse
 import json
@@ -92,15 +99,17 @@ OUTPUTS = ("case-study.md", "extraction-manifest.json")
 FACT_RELS = (SPEC, F0196, F0198, F0200, F0201, RR1, SC1, RR2, SC2)
 
 # ---------------------------------------------------------------------------
-# The --vocab gloss-lookup join (H-225 candidate). Everything above and below
-# this block is the shipped renderer byte-unchanged (per-keep constants aside);
+# The vocabulary gloss-lookup join (H-225, kept; on by default since DEC-037).
+# Everything above and below this block is the shipped renderer byte-unchanged
+# (per-keep constants aside);
 # the Renderer class, content laws, and fail-closed self-checks are untouched.
 # Term matching, span exclusions, and the coinage scan are vendored VERBATIM
 # from the staged clarity-lint-v2 (the artifact-language program's L12
 # machinery) and from content_lint's frozen prose-span semantics.
 # ---------------------------------------------------------------------------
 
-VOCAB_WORDLIST_NAME = "vocab-wordlist.txt"
+VOCAB_DEFAULT_NAME = "house-vocabulary.json"  # the shipped vocabulary, read from HERE by default
+VOCAB_WORDLIST_NAME = "vocab-wordlist.txt"     # the pinned wordlist, required beside any vocabulary
 
 _TECH_COMMON = frozenset("""
 admin ai api apis ascii auth bash bool boolean backlog byte bytes cert certs changelog
@@ -489,17 +498,24 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--vocab", default=None,
-                    help="optional house-vocabulary JSON read as a superset of "
-                         "the frozen jargon floor (default off = shipped path)")
+    vocab_mode = ap.add_mutually_exclusive_group()
+    vocab_mode.add_argument("--vocab", default=None, metavar="PATH",
+                            help="gloss from this house-vocabulary JSON instead of "
+                                 "the shipped house-vocabulary.json beside this "
+                                 "script (vocab-wordlist.txt must sit beside it)")
+    vocab_mode.add_argument("--no-vocab", action="store_true",
+                            help="skip the vocabulary gloss join: the bare page, "
+                                 "byte-identical to the pre-DEC-037 default")
     o = ap.parse_args()
     source_dir = os.path.abspath(o.source)
     out_dir = os.path.abspath(o.out)
 
     page, manifest = render(source_dir)
     vocab_report = []
-    if o.vocab:
-        page, vocab_report = vocab_join(page, source_dir, os.path.abspath(o.vocab))
+    if not o.no_vocab:
+        vocab_path = (os.path.abspath(o.vocab) if o.vocab
+                      else os.path.join(HERE, VOCAB_DEFAULT_NAME))
+        page, vocab_report = vocab_join(page, source_dir, vocab_path)
 
     # fail-closed self-checks: the frozen fidelity grammar + the content lint
     fid = fact_fidelity.check(page, manifest, source_dir)

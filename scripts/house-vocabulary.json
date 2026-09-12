@@ -3,11 +3,11 @@
   "_schema": "v2 (additive). Per entry: gloss (one clause, plain words, <= 25 words, no ids, no score shorthand, no house-only coinages from other entries; pattern keys exempt from the id/score scans because they define those patterns); variants (exact strings the lint also matches, including deprecated spellings); known_equivalent (the established external name for the same or nearest concept, or null); anchor (ONE stable https URL defining the known concept - prefer en.wikipedia.org, rfc-editor.org, ISO, vendor canon; no implementation artifacts in paths - or null); anchor_waiver (required one-line reason when a house-only entry has anchor null); status (preferred | house-only | deprecated-alias-of:<headword>); first_defined (optional provenance: hypothesis id or artifact path where coined). v1 entries stay loadable: absent fields default to known_equivalent null, anchor null, status house-only.",
   "_admission": "The naming law for new terms, in strict order: (1) if a known term fits, the known term is the headword and any house coinage for the same concept enters as deprecated-alias-of it; (2) a house term that stays anchors externally to the nearest well-known concept so a glance gives context; (3) every gloss passes the gloss lint - the glossary itself reads plain. Entries land agent-drafted, maintainer-ratified.",
   "_status_semantics": "preferred: the headword IS the known or plain name (borrowed like andon, or plain English in its ordinary sense); free to use, gloss-on-first-use still applies in reader-facing modes. house-only: a coinage with no adequate known name; legal only with gloss on first use; must carry known_equivalent plus anchor or anchor_waiver; density counted per artifact (title ceiling: max 1). deprecated-alias-of:<headword>: never written in new artifacts; any use is a finding naming the canonical headword; old write-once artifacts are never edited - the alias entry is the tombstone a reader resolves through.",
-  "_source": "v1: insider terms surfaced by the 2026-08-28 decision-clarity audit. v2 upgrade + additions: the 2026-08-29 artifact-language census (live unregistered coinages) under the maintainer language-integrity directive.",
+  "_source": "v1: insider terms surfaced by the 2026-08-28 decision-clarity audit. v2 upgrade + additions: the 2026-08-29 artifact-language census (live unregistered coinages) under the maintainer language-integrity directive. 2026-09-11 (decision record DEC-037, the case-study default flip): the eight house-only glosses that carried digits or parentheses were reworded to the case-study renderer's page-grammar rule (no digits, parens, brackets or quote characters inside a gloss), meaning unchanged; 'counted runs' added as a variant of 'counted run' so the renderer recognises the frozen floor's own gloss of that phrase instead of refusing the page.",
   "_target_path": "scripts/house-vocabulary.json (byte-mirrored to experiments/deploy/hyp-machine/scripts/house-vocabulary.json; parity-checked)",
   "terms": {
     "lane": {
-      "gloss": "one experiment's full pipeline (write-up, runs, scoring, verdict) executed by automated agents",
+      "gloss": "one experiment's full pipeline, from write-up through runs and scoring to verdict, executed by automated agents",
       "variants": [
         "lanes",
         "lane chain"
@@ -77,9 +77,10 @@
       "status": "preferred"
     },
     "counted run": {
-      "gloss": "a run whose scores count toward the verdict (practice or broken runs are excluded)",
+      "gloss": "a run whose scores count toward the verdict, unlike practice runs or broken runs",
       "variants": [
         "counted",
+        "counted runs",
         "counted window",
         "counted lanes"
       ],
@@ -326,7 +327,7 @@
       "status": "preferred"
     },
     "bracket": {
-      "gloss": "a pre-registered follow-up that opens automatically when a result lands (if the result passes, then ...)",
+      "gloss": "a pre-registered follow-up that opens automatically when a result lands: if the result passes, then the next step named in advance",
       "variants": [
         "brackets",
         "on-keep bracket",
@@ -597,7 +598,7 @@
       "status": "preferred"
     },
     "score notation": {
-      "gloss": "NxM/M means: passed M of M checks in each of N scored runs (2x5/5 = all 5 checks passed in both runs)",
+      "gloss": "NxM/M means M of M checks passed in each of N scored runs; two times five over five means all five passed in both runs",
       "variants": [
         "2x5/5",
         "2x4/4",
@@ -639,7 +640,7 @@
       "status": "preferred"
     },
     "H-NNN": {
-      "gloss": "a numbered testable idea with pass/fail checks declared before any run (an experiment id)",
+      "gloss": "the id of one experiment: a numbered testable idea with pass/fail checks declared before any run",
       "variants": [
         "hypothesis id"
       ],
@@ -649,7 +650,7 @@
       "status": "house-only"
     },
     "DEC-NNN": {
-      "gloss": "a numbered open question waiting on the maintainer (a decision id)",
+      "gloss": "the id of one decision: a numbered open question waiting on the maintainer",
       "variants": [
         "decision id",
         "DEC row"
@@ -660,7 +661,7 @@
       "status": "house-only"
     },
     "N-id": {
-      "gloss": "a numbered design-note item, not yet an experiment (N5, N13, ...)",
+      "gloss": "a numbered design-note item, not yet an experiment, written as N followed by its number",
       "variants": [
         "N5/N6",
         "N13",
@@ -748,7 +749,7 @@
       "first_defined": "H-193"
     },
     "chain": {
-      "gloss": "a scripted sequence of unattended agent steps (run, score, verdict) executed one after another",
+      "gloss": "a scripted sequence of unattended agent steps, run then score then verdict, executed one after another",
       "variants": [
         "chains",
         "chain terminal",
