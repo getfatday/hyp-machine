@@ -4,6 +4,12 @@ Newest first. This file is written by `scripts/release.py` from the pending
 `.changeset/*.md` files on every push to main; do not edit it by hand (see
 `.changeset/README.md`).
 
+## 0.26.0 (2026-09-12)
+
+### Added
+
+- Decision cards now need a plain-English brief before they can be filed. A decision card is a question the plugin writes into your ledger for a person to answer; from this release `decisions.py add` refuses a card that does not come with a brief (`--brief brief.json`): seven short fields saying what is being decided, the situation, why it is the reader's call, the choices with what each one does and how it is undone, what happens if nobody answers, and what is known. A script checks the brief before anything is written: a missing or malformed brief is refused with three lines pointing at the schema (`docs/decision-brief.schema.json`), the draft command (`decisions.py brief-skeleton`) and a worked example (`docs/decision-brief.exemplar.json`); a brief with prose problems is filed, with the findings stamped on the card. Every surface that shows a card (`decisions.py show`, the compiled dashboard, the session-start resolver) now shows the brief first, and a card that reached the ledger without one renders as a NOT READY block rather than as a question, with any pre-committed default suspended until the card is readable. Cards already on file are exempt: set `decision_brief_legacy_max_id` in `.claude/hyp.json` to your highest existing card id, and each open older card renders exactly as before plus one `brief: BRIEF-MISSING` line naming the retrofit command (`decisions.py brief <id> --brief brief.json`) until it is re-briefed; resolved cards render unchanged. Details in `docs/decisions.md` ("The plain-English brief") and `docs/upgrading.md`; `python3 scripts/selftest-decision-briefs.py --live .` checks the rendering over your own ledger. Why: the cause-n-effect lab kept hypothesis H-DRAFT-1c840b86 on 2026-09-12 (five counted looks, every assertion passing; its VERDICT.json is in that repository's run directory for the hypothesis) and landed the same change in its own checkout first (cause-n-effect PR #38, merge bbfc84fe59ce69b617f4d08a5f4b7c0e6076cf02). To undo: revert this pull request's merge commit; the brief is the only new requirement, so nothing else needs to change. (decision-briefs.md)
+
 ## 0.25.0 (2026-09-12)
 
 ### Added
