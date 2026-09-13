@@ -7,7 +7,10 @@ because the shipped code cites them). The kit's parts:
 
 | Part | Role |
 |---|---|
-| `scripts/decisions.py` | The CLI: add / list / show / resolve / check / surface / open (+ `--selftest`, the port's own end-to-end proof in a throwaway git repo) |
+| `scripts/decisions.py` | The CLI: add / list / show / resolve / check / surface / open, and the three queue delegates queue / queue-answer / announce (+ `--selftest`, the port's own end-to-end proof in a throwaway git repo) |
+| `scripts/decision_queue.py` | The decision queue (section 8): the stateless per-caller projection of the ledger (`queue --json\|--text`), the answer seam over the single-line committer (`queue-answer`), the session-start count line (`announce --hook`), and the role ladder, the caller helper and the attribution walk that `decisions.py` imports for `show`, `check` and `resolve` (standard library; `--selftest` in throwaway repositories; `--live <root>` a read-only census) |
+| `skills/decisions/SKILL.md` | `/hyp:decisions`: walks the caller's own queue through the ask-user prompt and records each answer as one committed row through `queue-answer`; text mode only in a session without the prompt (section 8.2) |
+| `scripts/selftest-decision-queue.py` | The queue's regression test: the module's, the kit's and the render module's selftests, the announce hook row, the scaffold's union attribute, the harden advisory and the CLI delegates in a throwaway consumer |
 | `scripts/decision_card_lint.py` | The door-field lint, rules D0-D9 with the corroboration table, and the brief rules B0-B11 (the plain-English brief every candidate carries), called by `decisions.py add` after the shape check (standard library; `--selftest`, synthetic cards in a throwaway git repo); see "The six door fields" and "The plain-English brief" below |
 | `scripts/decision_door_check.py` | The door evaluator, called by `decisions.py add` after the lint: every candidate is RECORDED as a two-way decision (with a veto window and a one-line undo) or RENDERED as a card carrying the findings, fail-closed (standard library; `--selftest`; a stdin/argv CLI); see "Records vs cards" below |
 | `scripts/compile-dashboard.py` | Renders `DASHBOARD.md` sections 1 (DECISIONS WAITING: a briefed card brief-first, a legacy card as today plus one `brief: BRIEF-MISSING` line, an unbriefed card above the boundary as a NOT READY block) and 1b (DECIDED FOR YOU: the door's records with their veto windows) and regenerates `decisions.html` (the cards with their brief state, plus the records block) from the template at every compile |
@@ -167,8 +170,9 @@ latest `commented` row = `commented` (STAYS OPEN); the latest `accepted`/`denied
 
 **The attribution law (multi-user).** Who decided, when, and in which commit are NEVER
 stored in the row — they derive from the git commit that introduced the resolution line
-(the compiler binary-searches the ledger-touching commits; the store is append-only, so
-a line's presence is monotone). This is the source lab's H-084 keep plus its
+(the introducing commit of a row is the commit whose ledger blob carries the row's line
+and none of whose parents' do -- `decision_queue.attribute_rows`, one history walk and one
+`cat-file --batch`, order-independent under merges). This is the source lab's H-084 keep plus its
 name-neutrality ruling applied to decisions: git author identity is the only identity,
 a stored name could drift from it, and an uncommitted resolution honestly renders as
 `staged (provenance pending its commit)`. Because attribution is the commit author,
@@ -176,10 +180,12 @@ every decider resolves under their own `git config` identity — multiple users 
 store with zero coordination beyond ordinary commits, and `.mailmap` /
 `contributors.json` (see the README's identity section) make the rendered names legible.
 
-**Routing (optional).** A `DECIDERS` JSONL file beside the ledger routes cards:
-`{"match": "<DEC-id or class>", "owner": "<who>"}`. Unrouted rows default to owner
-`you` — absence of routing fails toward asking, never toward silence. Section 1's header
-counts `yours N | others N` from these routes.
+**Routing.** Section 1's `yours N | others N` header and the YOURS-first sort follow the
+addressee ladder of section 8.3 (`decision_queue.owner_label`: `you` when the compiling
+identity holds the card's role or the role is unmapped, else the role token). Only when
+`scripts/decision_queue.py` is absent beside the compiler does the legacy `DECIDERS` JSONL file
+beside the ledger route cards (`{"match": "<DEC-id or class>", "owner": "<who>"}`); unrouted
+rows default to owner `you` — absence of routing fails toward asking, never toward silence.
 
 ## 4. The `decision-resolved` closes-when predicate
 
@@ -234,9 +240,13 @@ session start). Never edit a landed row in place — a resolution is a new row j
   then exception lines only (`BRIEF-MISSING\t<id>`, `BRIEF-STALE\t<id>`, `BRIEF-FINDINGS\t<id>\t<rules>`,
   `DEFAULT-SUSPENDED\t<id>\t<armed date>`), then one line per open decision (the hook pipes
   through `head -40`), then the summary, then unresolved ledger rows:
-  `DECISION-LEDGER\t<id>\t<urgency>\t<title>\t<blocks>` … `DECISIONS-OPEN\t<count>\toldest <id> <age>d`,
+  `DECISION-LEDGER\t<id>\t<urgency>\t<title>\t<blocks>` … `DECISIONS-OPEN\t<count>\toldest <id> <age>d — answer them: /hyp:decisions`
+  (the open set comes from the role-aware join of section 8.3, followed by its finding lines),
   then one `DECISION-RECORD\t<id>\tveto-until <date> (open|closed)\t<title>\tundo=<line>` per live record
   and `DECISION-RECORDS-OPEN\t<open windows>\toldest <id> <age>d`.
+- SessionStart, said to the person — the announce row (section 8.5) prints one JSON object whose
+  `systemMessage` is the caller's own count, `Decisions: <n> are yours (...) — acting as <role>
+  (<basis>). Answer them: /hyp:decisions`, at every source (`startup|resume|clear|compact|fork`).
 - Proactive open — `decisions.py add`/`surface` run `proactive-open.sh`: recompile,
   open `decisions.html` once per NEW id, notify; a crash before the state write re-fires
   safely; a surface with no new ids does nothing (no re-open spam). A recorded id is never
@@ -267,29 +277,231 @@ holds (`docs/review-cadence.md`). Arming an already-filed decision is an appende
 edit. Kept in the source lab as H-DRAFT-d564bb31-decision-retest-when (5/5 twice); the wider
 story is `docs/decision-durability.md`.
 
+## 8. The decision queue (`/hyp:decisions`)
+
+Ported from the source lab's decision-queue-projection lane (H-DRAFT-015cb9c8, kept 2026-09-13 by the
+lineage rule: five counted looks each 5/5 over 96 compliant items, 266 planted single-defect mutants in
+21 classes caught with their finding token and exit, 18 union-merge cases attributed to the true author
+in both orders, 20 announce cells inside the row's deadline; the unpatched v0.26.0 kit separated none of
+them). One question answered per card, by the person the card is addressed to, as one committed row.
+
+### 8.1 The projection (`queue`)
+
+`decisions.py queue --json` (delegating to `scripts/decision_queue.py`) is a pure function of the
+committed ledger and the working tree, `.claude/hyp.json` `decision_roles`, CODEOWNERS,
+`contributors.json`, `.mailmap`, the caller's resolved git identity and one stamp (`--stamp`, else
+`DECISIONS_TODAY`, else today). It reads no state file and writes none; the only process it spawns
+is `git`; every card line it prints comes from `decision_brief_render.py`. The envelope, keys in this
+order:
+
+| Key | Meaning |
+|---|---|
+| `schema_version`, `stamp` | `"1"`; the date the ages and windows are computed against |
+| `identity` | `{email, canonical_email, roles, basis, resolved}` — `git var GIT_AUTHOR_IDENT` canonicalized through `git check-mailmap`; `roles` are the roles the caller holds (`maintainer` first), `basis` the rung that resolved the first one |
+| `can_record`, `block_reason` | false with `IDENTITY-UNRESOLVED` (git yields no email — the caller is view-only, exit 1), `NO-HEAD` (no commit yet) or `RESOLVE-BUSY <pid>` (a live answer lock) |
+| `counts` | `open` (every role), `mine` (n: the open, unparked cards addressed to the caller's roles plus every unmapped card, whatever their brief state), `others`, `new` (k: the cards absent from the ledger blob at the caller's last queue act; null when the hook printed `new ?`), `returned`, `waiting`, `to_glance` (records inside their veto window), `behind_commits`, `behind_rows` |
+| `items` | the askable cards (brief state `valid` or `findings`) in rank order (urgency, oldest ask, id): `{id, status, urgency, class, requested_by, blocks, requested_at, age_days, brief_state, accountable: {role, basis, mine}, card_lines, answer_commands, ask, controls, notice, set_match, resolutions}` |
+| `awaiting_brief` | legacy cards without a brief: the `BRIEF-MISSING` marker line and the retrofit command |
+| `not_ready` | side-door or stale cards: the NOT READY block, never a question |
+| `waiting` | cards parked by a `later when <predicate>` row whose predicate is still false at HEAD (`{id, predicate, since}`); a fired predicate returns the card to `items` |
+| `contested` | two holders closed one card: `{id, rows: [sha-a, sha-b], settle_command}` |
+| `records` | with `--records`: the door's records inside their veto window, each with its `record_lines` and one-word `veto_command` |
+| `batches` | lists of item ids, at most 4 per batch, no two cards with the same question in one batch (skip-and-defer), askable cards only (`mine` true or null) |
+| `free_text_routes`, `routes_help` | the route table of 8.4 as data, and the one fixed sentence the skill prints once |
+| `announce` | `{system_message, machine_line, exceptions}` — the bytes the hook row prints (8.5), computed over the unfiltered projection |
+
+The `ask` object of an item is exactly the ask-user tool contract — `{header, question, multiSelect,
+options[{label, description}]}` — built from the brief: `question` is the brief's `decide`, the options
+are its `choices` (`label`, `in_practice`) in order, followed by the visible controls of the slot rule
+(`decision_brief_render.control_options`): `go deeper` is a visible option iff the card has at most 3 own
+options, then `later` iff at most 2; a `multiSelect` card gets no visible control (both ride the Other
+route). `controls` says where each control sits (`option` or `other`). Nothing here decides anything:
+filter, rank, batch size, readiness, refusals, row shape and commit all live in the script.
+
+`--mine` (the default) lists the cards whose role the caller holds plus every unmapped card (`mine`
+null); `--all` adds the other roles' cards with `mine: false` — visible, never batched, never
+answerable by that caller. `--text` (or `HYP_DECISIONS=surface`) prints the same projection as lines:
+the machine count line, `DECISION-QUEUE\t<id>\t<urgency>\t<age>d\t<status>\t<role> (<basis>)\tmine=<json>`
+followed by the card's lines, the `AWAITING-BRIEF` / `NOT-READY` / `WAITING` / `CONTESTED` / `RECORD`
+entries, the finding lines, `routes_help` and `DECISION-QUEUE\tbatches\t<json>` — the mode a session
+without the prompt runs. JSON is `indent=1`, insertion-ordered, byte-deterministic for a given stamp.
+
+### 8.2 Subsets — one filter, rank unchanged
+
+| Flag | Keeps a card when |
+|---|---|
+| `--set <token> ...` | one of the card's lane or workflow tokens is in the set — `H-NNN`, `H-DRAFT-<8 hex>`, `DESIGN-<slug>`, `wf_<8 hex>-<3 hex>`, the lane segment after `experiments/runs/`, the stem of `hypotheses/<stem>.md`, read from `requested_by`, `blocks[]`, `context_pointers[]`, `staged_artifact`, `evidence`; `set_match` lists the hits |
+| `--since [<ref>]` | the card's tokens name a lane whose `experiments/runs/<lane>/VERDICT.json` changed since `<ref>` (a rev, or an ISO date through `git log --since`); bare `--since` = since the caller's last queue act |
+| `--age past-own-date\|in-window\|no-clock` | the card's own clock (its armed default, or a record's `veto_open_until`) against the stamp |
+| `--class <c> ...`, `--ids <id> ...` | the row's class or id |
+| `--state <s> ...` | `open`, `commented`, `waiting`, `contested`, `unauthorized-attempt` (a card carrying an UNAUTHORIZED row), `record-veto-open`, `record-challenged`, `deeper`, `returned` |
+| `--records` | adds the `records` list |
+
+Filters change only `items`, `batches`, `awaiting_brief`, `not_ready`, `waiting`, `contested` and
+`records`; `counts` and `announce` are always computed over the unfiltered projection, so the header
+never shrinks. An unknown flag prints `QUEUE-INVALID\tflag <flag>` and exits 2.
+
+The skill (`/hyp:decisions`) passes the caller's flags through untouched, prints the count line, the
+awaiting-brief markers, the NOT READY blocks, the waiting and contested entries, then asks one batch at
+a time with the `ask` objects exactly as emitted, records each answer through `queue-answer` before the
+next is touched, prints every refusal verbatim (never a retry with other flags, never `--no-commit`,
+`--reopen` or a ledger edit), re-runs `queue` until `batches` is empty, summarizes, and recompiles once.
+In a session without the ask-user tool (a `-p` run, a subagent, a workflow child) it runs the text mode
+only: nothing is asked, nothing is appended. Four eval cases under `evals/decisions/` hold the guards
+(headless surface only, NOT READY never a question, no invented options, the dirty-ledger single-line
+commit).
+
+### 8.3 Addressing — the accountable role per card, from committed bytes
+
+A `kind:"decision"` row may carry `"addressee": {"role": "<token>"}` (`add --addressee <role>`; the
+record row a RECORD lands inherits it); a token is `[a-z][a-z0-9-]*` or `owner:<repo-relative path>`;
+a missing field reads `maintainer`. A role resolves to identities through a four-rung ladder, and the
+rung that answered is the card's `basis`:
+
+| Rung | Source | `basis` |
+|---|---|---|
+| R1 | `.claude/hyp.json` `decision_roles`: `{"<role>": ["<canonical email>", ...]}` | `decision_roles` |
+| R2 | CODEOWNERS (`.github/CODEOWNERS`, `CODEOWNERS`, `docs/CODEOWNERS`): `maintainer` = the owners of the last pattern matching the repository root (`*`, `**`, `/`, `/*`, `/**`); `owner:<path>` = the owners of the last pattern matching `<path>` (gitignore-style); an email owner as-is, an `@handle` through `contributors.json` `{"<email>": {"github": "<handle>"}}`, an `@org/team` unresolvable | `codeowners` |
+| R3 | the ledger's committed history carries exactly one canonical author email (`git log --use-mailmap --format=%aE -- <ledger>`): that identity holds every role | `single-identity` |
+| R4 | none of the above | `unmapped` |
+
+Configure it once per repository — the maintainer's canonical email is an identifier, never a name:
+
+```json
+{"decision_roles": {"maintainer": ["<git config user.email>"], "lane-owner": ["<another canonical email>"]}}
+```
+
+The caller is `git var GIT_AUTHOR_IDENT` (the env-then-config chain) canonicalized through `.mailmap`
+(`git check-mailmap`). An unmapped role's cards are visible to every resolved identity and answerable by
+any of them (the row is marked `addressee_basis: "unmapped"`), and every surface prints the recipe
+`ADDRESSEE-UNMAPPED <role> — add decision_roles.<role> to .claude/hyp.json: ["<canonical email>"]`.
+
+**What a non-addressee may do.** Comment (`resolve --comment`, the queue's free-text and `go deeper`
+routes): the card stays open to everyone. Close: refused before anything is appended —
+`RESOLVE-REFUSED\tNOT-ADDRESSEE\t<id>\trole=<role>\tyou=<basis>`, exit 2, the ledger byte-unchanged
+(`you=` names the rung that resolved the caller's own primary role, `unmapped` when none). A holder of
+`maintainer` may answer another role's card only with `resolve --override "<committed pointer>"`
+(`<path>` or `<path>@<sha40>#La-Lb`, resolvable at HEAD): the row carries `override: {role, basis}` and
+every reader prints `OVERRIDE <id> by <role> basis <pointer>`; an unresolvable pointer or a non-admin is
+`UNAUTHORIZED <id> <basis>`, exit 2.
+
+**The join, with attribution.** `derive_attribution` attaches to every resolution row its introducing
+commit (the commit whose ledger blob carries the row's raw line and none of whose parents' blobs do),
+its mailmap-canonical author email and author time; chains order by that time, then file order, and an
+uncommitted (staged) closing row never decides over a committed one. Among closing rows the precedence
+is: a settling row (`settles: [sha-a, sha-b]`) > the addressee's own rows > a valid override > an
+unmapped (R4) row > the lab's record (`basis: two-way-door`). Among the addressee's rows one identity's
+latest decides (a change of mind); two holders' rows read the EARLIER committed one and the pair is
+`CONTESTED <id> <sha-a> <sha-b>` on every surface until a holder settles it
+(`resolve <id> --accept <label> --settles <sha-a>,<sha-b>`; prefixes of 7+ hex accepted, `--reopen`
+implied). A closing row from a non-holder never changes status: `UNAUTHORIZED <id> <basis>`. The
+addressee's own row over an override, an unmapped row or a record is admitted without `--reopen` and
+prints `SUPERSEDED-BY-ADDRESSEE <id>` (over a record it runs the record's undo once, as the veto does).
+`check` prints every class as an exit-neutral `DECISIONS-CHECK\t<finding>` line, plus
+`LEDGER-BEHIND <upstream> <commits> <rows>` (the fetched upstream carries decision rows HEAD lacks) and
+`MULTI-ROW-COMMIT <sha> <ids>` (one commit introduced closing rows for two or more cards — a squash
+merge attributes every row to the merger); `show` and the board's card blocks carry the card's lines; the
+board's section 1c lists the decided cards that carry one.
+
+### 8.4 Answering — one row, one single-line commit, whatever else is dirty
+
+`decisions.py queue-answer <id> (--label <L> [--label <L>] | --text <T> | --response <T>)` applies the
+route table — first match wins, case-insensitive, trimmed — then the kit's own `resolve` path with
+`via: "decisions-queue"` on the row:
+
+| Typed | Row appended |
+|---|---|
+| an own option label (`--label`, repeatable on a `multiSelect` card; or the same text) | `accepted`, `chosen_options: [label]` |
+| `answer: <text>` / `accept: <text>` | `accepted`, `chosen_options: [text]` |
+| `deny`, `deny: <words>` | `denied` (+ `comment`) |
+| `later` | nothing; exit 0 (the card is listed first next pass) |
+| `later when <predicate>` | `commented` with `retest_when: <predicate>` in the shared grammar (section 7); malformed: `QUEUE-INVALID\tretest-when`, exit 1, nothing appended |
+| `go deeper`, `go deeper: <words>` | `commented` with `comment: "go deeper: <words>"` — the prose fallback of this release: the card stays open and the comment is the pushback on record; the typed `deeper` disposition with its obligation, task and return row is the sibling lane's variable (decision-queue-pushback) and ships only with its own keep |
+| any other text | `commented` with the text; the card stays open |
+| `--response <text>` | nothing (printed back) |
+
+A `--label` that is neither an own option nor a control is `QUEUE-INVALID\tlabel <text>`, exit 1.
+Exit codes: 0 recorded or nothing to record; 1 invalid (`QUEUE-INVALID`, `RESOLVE-INVALID`,
+`IDENTITY-UNRESOLVED`, `COMMIT-FAILED`, `WORKTREE-APPEND-FAILED`); 2 refused (`RESOLVE-REFUSED`,
+`RESOLVE-BUSY`, `UNAUTHORIZED`). The seam recompiles nothing unless `--recompile` is passed (the skill
+recompiles once per pass).
+
+**The committer** (every caller of `resolve`, so `RESOLVE-BLOCKED` is retired): lock
+`<gitdir>/hyp-decisions.lock` (`mkdir`-atomic, holder pid recorded, stale after 20 s and reclaimed;
+a held lock prints `RESOLVE-BUSY <pid>`, exit 2) → a temporary index from `HEAD` → the new ledger blob
+= `HEAD:<ledger>` plus the one canonical row line → `write-tree` → `commit-tree -p HEAD` (`-S` iff
+`commit.gpgsign` is true) → `update-ref HEAD <new> <old>` as a compare-and-swap → only then the row is
+appended to the working-tree file → unlock. The commit adds exactly one line whatever else is dirty or
+staged; a failing step prints `COMMIT-FAILED <step>: <stderr tail>` and changes nothing (exit 1). The
+message is `decision: <id> <disposition> — decision-resolved=<id>` plus ` via=decisions-queue` when
+the seam wrote the row. `--no-commit` appends only.
+
+**Two writers, one file.** Two checkouts' end-of-file appends merge without conflict markers only under
+`<ledger> merge=union` in `.gitattributes`; `/hyp:init` writes that line for the configured ledger and
+`harden-check.sh` prints `ADVISORY-36 merge-attributes` while it is missing. Status and
+attribution do not depend on the merged row order (the introducing commit decides).
+
+### 8.5 The announce — the count said to the person at every session start
+
+`hooks/hooks.json` carries one SessionStart row under the matcher `startup|resume|clear|compact|fork`,
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decision_queue.py" announce --hook`, its own `timeout: 10`,
+never inside the session-start budget wrapper and never cached. It reads the hook payload (`source`,
+`cwd`), resolves the checkout the way the resolver does (`hyp_config.worktree_root`), reads COMMITTED
+bytes only and prints one JSON object:
+
+- `systemMessage` (shown to the person): `Decisions: <n> are yours (<k> new since you last answered;
+  <d> returned with evidence; <w> waiting on your pushback; <r> record(s) to glance at) — acting as
+  <role> (<basis>). Answer them: /hyp:decisions`; `Decisions: none are yours — acting as <role> (<basis>)`
+  at n = 0 (zero is said too; silence is never the signal); ` behind <upstream> by <b> commits, <m>
+  decision row(s) unseen` appended when the fetched upstream carries rows HEAD lacks; ` — interactive
+  session required to answer` when the payload names a headless run.
+- `hookSpecificOutput.additionalContext` (agent context): `DECISIONS-YOURS\t<n>\tnew <k>\treturned <d>\twaiting <w>\tto-glance <r>\trole <role> (<basis>)\tbehind <b>\tanswer: /hyp:decisions`,
+  then one exception line per class present, the earliest instance in ledger order:
+  `ADDRESSEE-UNMAPPED <role>`, `CONTESTED <id>` (`DEEPER-UNFILED <id>` is the pushback lane's).
+
+`d` and `w` are 0 in this release (the pushback lane's states). `k` comes from one bounded
+`git log -1 --author=<canonical email> --use-mailmap --grep=via=decisions-queue -- <ledger>` (the
+caller's last queue act; a view is not an act); no such commit → k = n. The git calls are enumerated and
+run in a fixed order under ONE deadline, 7.8 s from interpreter start — the row's 10 s timeout divided by
+the 1.28 headroom ratio the kept H-310 placed between the worst observed hook wall and its 60 s limit,
+rounded down, leaving 2.2 s for interpreter start and the write — each call's timeout being the budget
+remaining, so the calls never sum past the row. A last-act call exhausting the budget prints `new ?`
+(`counts.new` null); any earlier exhaustion, a missing HEAD, an unresolved identity or any exception
+prints `Decisions: count unavailable — ANNOUNCE-FAILED <reason>; run /hyp:decisions` — always exit 0, a
+hook that blocks a session start being worse than a missed line. `HYP_DECISIONS=off` prints nothing
+(set only by a harness on fixture children). The resolver's `DECISIONS-OPEN` line gains the suffix
+` — answer them: /hyp:decisions` and its open set comes from the same join, so the two surfaces cannot
+disagree; the resolver's hook wrapper prints `RESOLVER-FAILED rc=<n> empty-reading|see-output ...` when
+the resolver exits non-zero or prints nothing (expected only for a ledger with nothing to surface) —
+the disclosed amendment for the silent 0-byte readings the lab observed.
+
 ## CLI reference (`python3 scripts/decisions.py ...`)
 
 | Command | Effect |
 |---|---|
-| `add --title ... --question ... --header ... --option L:D --option L:D --requested-by ... --class ... --why-only-you ... --undo U --undo U --staged-artifact P\|CMD\|none --evidence PTR\|none-exists --externality CLASS --recommended LABEL\|none --default-on-silence LABEL\|nothing-changes --brief BRIEF_JSON [--amount-usd N] [--urgency high] [--pointer P] [--blocks "a, b"] [--shadows maintainer-ruling=slug] [--multi] [--no-open] [--door-git-timeout S] [--door-inject-fault]` | Validate (shape, then the door lint D0-D9 and the brief rules B0-B11, then the door evaluator) + append one decision row (id race-checked) — and, when the evaluator RECORDS it, its resolution row right after (`recorded <id>:`, no card opens) — then proactive-open for a CARD (`added <id>:`). Exit 0 PASS; 1 ESCALATE (appended with `door.findings` and/or `brief.lint.findings`, one `ADD-FINDING` line per finding first, `ADD-REPORT` lines for report-only rules); 2 MALFORMED / MALFORMED-BATCH / BRIEF-MALFORMED (`ADD-REFUSED` lines, nothing appended; a brief refusal is followed by the three recipe lines) |
+| `add --title ... --question ... --header ... --option L:D --option L:D --requested-by ... --class ... --why-only-you ... --undo U --undo U --staged-artifact P\|CMD\|none --evidence PTR\|none-exists --externality CLASS --recommended LABEL\|none --default-on-silence LABEL\|nothing-changes --brief BRIEF_JSON [--amount-usd N] [--urgency high] [--pointer P] [--blocks "a, b"] [--shadows maintainer-ruling=slug] [--addressee ROLE] [--multi] [--no-open] [--door-git-timeout S] [--door-inject-fault]` | Validate (shape, then the door lint D0-D9 and the brief rules B0-B11, then the door evaluator) + append one decision row (id race-checked) — and, when the evaluator RECORDS it, its resolution row right after (`recorded <id>:`, no card opens) — then proactive-open for a CARD (`added <id>:`). Exit 0 PASS; 1 ESCALATE (appended with `door.findings` and/or `brief.lint.findings`, one `ADD-FINDING` line per finding first, `ADD-REPORT` lines for report-only rules); 2 MALFORMED / MALFORMED-BATCH / BRIEF-MALFORMED (`ADD-REFUSED` lines, nothing appended; a brief refusal is followed by the three recipe lines) |
 | `brief <id> --brief BRIEF_JSON` | File a `kind:"decision-brief"` sidecar row for a card already on file (a retrofit of a legacy card, or a correction): the same brief lint, the same exits, `briefed <id>:` on success; the latest valid brief per id wins at render; opens nothing |
 | `brief-skeleton CANDIDATE_JSON` | Print a deterministic brief skeleton for a candidate (a decision-row-shaped object, or `{legacy: {...}, door: {...}}`) with the row's facts placed and `UNKNOWN:` in every slot the record does not supply -- the lint refuses it until a writer fills them |
 | `list [--json]` | One line per decision with derived status (join, no git) |
 | `show <id> [--raw]` | The full card: brief-first when its brief is valid, today's grammar plus one marker line on a legacy card, the NOT READY block on an unreadable card; with git-derived resolution provenance and, on an evaluated row, the `door-outcome:` line. `--raw` prints today's grammar verbatim |
-| `resolve <id> --accept "<label-or-free-text>" [--comment "..."]` | Accept (repeat `--accept` when multiSelect); commits JUST the resolution line |
+| `resolve <id> --accept "<label-or-free-text>" [--comment "..."]` | Accept (repeat `--accept` when multiSelect); commits JUST the resolution line through the committer of section 8.4, whatever else is dirty; refused with `RESOLVE-REFUSED NOT-ADDRESSEE` (exit 2, nothing appended) when the caller holds none of the card's role |
+| `resolve <id> ... --via TOKEN \| --override POINTER \| --settles SHA,SHA \| --retest-when PRED` | The queue's admitted fields (section 8.3-8.4): the writer marker (`queue-answer` writes `decisions-queue`); a `maintainer` holder answering another role's card with the committed pointer that licenses it; settling a CONTESTED card (implies `--reopen`); parking the card on committed evidence (a `commented` row that may carry `retest_when` alone) |
 | `resolve <id> --deny [--comment "..."]` | Deny and close. On a recorded id (`basis: two-way-door`) this is the veto: accepted without `--reopen`, the deny wins the join, and the record's undo runs as an attributed follow-up (`VETO` line) |
 | `resolve <id> --comment "..."` | Comment — the decision STAYS OPEN |
 | `resolve <id> ... --reopen` | Append another closing row over an already-closed id |
 | `resolve --legacy <slug> --accept "done"` | Compat shim: answer a legacy maintainer-ruling bracket with no decision row (emits + commits the raw-dir ruling capture) |
 | `check` | Schema + join validation over every row; exit 1 on findings; also prints the exit-neutral `RETEST-DUE` / `REVISIT-UNARMED` lines (section 7) and `DOOR-UNAUDITED` for a non-legacy decision row with no door outcome; and the brief classes `BRIEF-MISSING` / `BRIEF-STALE` / `BRIEF-FINDINGS <rules>` / `BRIEF-ORPHAN` / `DEFAULT-SUSPENDED <id> <date>` -- exit 1 when an open or commented card ABOVE the brief boundary reads one of the first three (legacy rows, orphans and suspensions never move the exit) |
 | `surface [--no-open]` | Print the open-decision lines + summary; proactive-open (once-per-id guard) |
+| `queue [--json\|--text] [--mine\|--all] [--set T ...] [--since [REF]] [--age B] [--class C ...] [--ids ID ...] [--state S ...] [--records] [--stamp DATE]` | The caller's decision queue (section 8.1-8.2; delegates to `decision_queue.py`): the JSON envelope, or the text mode; exit 1 when the identity is unresolved (the envelope still prints, `can_record` false), 2 on an unknown flag |
+| `queue-answer <id> (--label L [--label L] \| --text T \| --response T) [--override POINTER] [--settles A,B] [--no-commit] [--recompile]` | Record one answer through the route table of section 8.4 as one single-line commit carrying `via: decisions-queue`; refusals printed, never handled |
+| `announce --hook` | The session-start count line (section 8.5): the hook payload on stdin, ONE JSON object on stdout, exit 0 always; nothing under `HYP_DECISIONS=off` |
 | `open [--all]` | Open `decisions.html` (`--all` also opens `DASHBOARD.md`) |
 | `--selftest` | The full loop in a throwaway git repo, plus the `retest_when` scenario (unknown predicate refused; an armed row fires `RETEST-DUE` only after its evidence commit; a "later" option with no trigger is `REVISIT-UNARMED`); exits 0 only if every assertion passes; plus the door wiring (a field-less card refused with exit 2, a self-declared two-way card appended with a D8 finding and exit 1, `show` rendering the door lines, the seeded git stall exit-neutral, `check` exempting legacy ids); plus the door evaluator (a zero-information two-way card RECORDED with its resolution pair and a 7-day veto window, never entering the surface state file, `resolve --deny --comment veto` flipping it to denied and running the undo that restores the tree, `show` rendering the outcome, a side-door row `DOOR-UNAUDITED` at exit 0, the crash seed rendering a card). `python3 scripts/selftest-decision-door-fields.py` runs this and the lint's own `--selftest` together; `python3 scripts/selftest-decision-door-evaluator.py` runs this and the evaluator's; plus the brief gate (a candidate without a brief refused with B0 and the three recipe lines byte-equal, nothing appended; a prose finding appended with exit 1 and one `BRIEF-FINDINGS` marker on `show`; a valid brief rendered brief-first; `append_line` refusing a stamp-less row above the boundary; a side-door row NOT READY everywhere with `check` exit 1; the silence policy's resolve refused while the card is unreadable and accepted after its retrofit brief; a stale brief NOT READY; an orphan sidecar exit-neutral; the legacy marker line byte-equal to the frozen string; `brief-skeleton` deterministic). `python3 scripts/selftest-decision-briefs.py` runs the brief stages together and a live pass over the repository |
 
 Flags `--no-commit` (stage the resolution uncommitted) and `--no-recompile` exist for
-tests. `resolve` refuses to run while the ledger has unrelated uncommitted changes — the
-resolution commit must contain just the resolution line (pass `--no-commit` to stage
-instead).
+tests. A dirty ledger never blocks `resolve`: the committer builds the commit from `HEAD`'s
+ledger blob plus the one row (section 8.4), so the resolution commit contains just the
+resolution line whatever else is uncommitted (`RESOLVE-BLOCKED` is retired).
 
 ## What a decision is for
 

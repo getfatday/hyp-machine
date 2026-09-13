@@ -401,7 +401,67 @@ def parse_deciders(text):
     return routes
 
 
+_QUEUE_STATE = {}
+
+
+def _queue_module(root):
+    """scripts/decision_queue.py under the consumer root, else beside this compiler; None when absent (the compiler
+    never raises on it and falls back to the DECIDERS routes)."""
+    for cand in (os.path.join(root, "scripts"), os.path.dirname(os.path.abspath(__file__))):
+        if os.path.isfile(os.path.join(cand, "decision_queue.py")):
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            try:
+                import decision_queue  # noqa
+                return decision_queue
+            except Exception:
+                return None
+    return None
+
+
+def apply_queue_join(root, ledger_rel, decision_rows, resolution_rows, logical):
+    """decision queue (decision-queue-projection lane): the shared routing function -- statuses and finding lines from the
+    queue module's attributed, role-aware join; owner_of routes YOURS/OTHERS through the same identity and ladder."""
+    _QUEUE_STATE.clear()
+    dq = _queue_module(root)
+    if dq is None:
+        return
+    try:
+        joined, routing, identity = dq.route_status(root, ledger_rel.replace(os.sep, "/"),
+                                                    {"decisions": decision_rows, "resolutions": resolution_rows})
+    except Exception:
+        return
+    _QUEUE_STATE["owner"] = lambda row: dq.owner_label(joined, routing, identity, row)
+    for row in logical:
+        j = joined.get(row.get("id"))
+        if j is None:
+            continue
+        row["status"] = j["status"]
+        row["queue_findings"] = list(j["findings"])
+
+
+def render_decided_findings_section(decisions_logical):
+    """decision queue (decision-queue-projection lane, amendment #5 F2): section 1c -- DECIDED CARDS WITH FINDINGS. One chip per
+    card the routed join reads as decided (accepted or denied) that carries a multi-user finding, then one `  <finding>` line
+    each (OVERRIDE, CONTESTED, UNAUTHORIZED, SUPERSEDED-BY-ADDRESSEE; the byte grammar of CONTRACT 26), so the compiled board
+    carries for a decided card the lines show, check and the resolver print -- section 1 lists open cards only."""
+    rows = [r for r in (decisions_logical or []) if r.get("status") in ("accepted", "denied") and r.get("queue_findings")]
+    lines = ["## 1c. DECIDED CARDS WITH FINDINGS (%d)" % len(rows), ""]
+    if not rows:
+        lines.append("(none — no decided card carries a multi-user finding)")
+        return lines
+    for row in rows:
+        lines.append("- [%s | %s | class %s | asked by %s]" % (row.get("id"), row.get("status"), row.get("class", "?"),
+                                                              row.get("requested_by", "?")))
+        lines.extend("  " + f for f in row["queue_findings"])
+        lines.append("")
+    lines.pop()
+    return lines
+
+
 def owner_of(row, routes):
+    if _QUEUE_STATE.get("owner") is not None:
+        return _QUEUE_STATE["owner"](row)
     for match, owner in routes:
         if match == row.get("id") or match == row.get("class"):
             return owner
@@ -521,6 +581,7 @@ def render_decision_section(stamp, head_short, ledger_rel, ledger_missing,
             not_ready.append((row, state))
             continue
         block = ["- [%s]" % " | ".join(chip)]
+        block.extend("  " + f for f in (row.get("queue_findings") or []))   # decision queue: the multi-user findings
         if state in ("valid", "findings"):
             # decision briefs: brief-first (the seven labels, one answer per choice, evidence, details), one marker on findings
             brief = snap["brief_of"].get(row["id"])
@@ -939,6 +1000,7 @@ def compile_text(root):
     if resolution_rows:
         derive_attribution(root, ledger_rel, resolution_rows)
     decisions_logical = join_decisions(decision_rows, resolution_rows)
+    apply_queue_join(root, ledger_rel, decision_rows, resolution_rows, decisions_logical)
     # decision briefs: the state of every logical row by the one render module (never raises); snap carries the
     # keys the brief path reads (the lab compiler's snapshot dict), so the renderers' brief lines are byte-identical
     snap = {"root": root, "stamp": stamp, "decision_rows": decision_rows, "decisions_logical": decisions_logical,
@@ -986,6 +1048,9 @@ def compile_text(root):
     out.append("")
     # door evaluator: section 1b -- DECIDED FOR YOU (records with an open veto window; never a pop-up)
     out.extend(render_decision_records_section(decisions_logical, stamp, snap=snap))
+    out.append("")
+    # decision queue: section 1c -- the decided cards' multi-user finding lines (section 1 lists open cards only)
+    out.extend(render_decided_findings_section(decisions_logical))
     out.append("")
 
     decisions_html = None

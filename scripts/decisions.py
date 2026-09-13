@@ -95,6 +95,22 @@ of the first three; `resolve` refuses (RESOLVE-REFUSED DEFAULT-SUSPENDED, exit 2
 silence policy while the card's brief state is not valid or findings. Every writer shares the gate:
 door_lint_row stamps brief.lint beside the door object, and the in-process callers pass their brief on the row.
 
+decision queue (decision-queue-projection lane): `queue`, `queue-answer` and `announce` delegate to
+scripts/decision_queue.py beside this file -- the stateless per-caller projection (only the cards addressed to
+the caller's role, resolved through .claude/hyp.json decision_roles, CODEOWNERS, the ledger's single author or
+unmapped), the answer seam and the session-start announce. Every kind:"decision" row may carry
+addressee: {role} (`add --addressee <role>`; a missing field reads maintainer). `resolve` refuses a closing row
+from a non-addressee before anything is appended (RESOLVE-REFUSED NOT-ADDRESSEE, exit 2), admits --override
+<committed pointer> for a holder of the default-owner role, marks an R4 answer addressee_basis: unmapped, and
+commits every row through one re-plumbed committer: a mkdir lock (.git/hyp-decisions.lock; RESOLVE-BUSY <pid>),
+a temporary index built from HEAD's ledger blob plus the one row, commit-tree, and a compare-and-swap update-ref
+-- so the commit adds exactly one line whatever else is dirty (RESOLVE-BLOCKED is retired) and a failed commit
+changes nothing (COMMIT-FAILED). The introducing commit of a row is the commit whose ledger blob carries the
+row and none of whose parents' do (the walk in decision_queue.py); chains order by introducing-commit author
+time then file order, an uncommitted row never deciding over a committed one; the multi-user readers print
+UNAUTHORIZED, CONTESTED, SUPERSEDED-BY-ADDRESSEE, ADDRESSEE-UNMAPPED, OVERRIDE, LEDGER-BEHIND and
+MULTI-ROW-COMMIT (check: exit-neutral).
+
 Stdlib only. Never touches anything outside the ledger append and the write-once
 ruling capture ADDITIONS under the configured raw dir that `shadows` requires
 (create-only, never edit).
@@ -108,6 +124,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 DEFAULT_LEDGER_REL = os.path.join("ledger", "ledger.jsonl")
 DEFAULT_RAW_DIR = os.path.join("research", "raw")
@@ -184,6 +201,155 @@ _DOOR_EVAL = None
 SILENCE_POLICY_RE = re.compile(r"decision-default-on-silence")
 SILENCE_POLICY_REL = os.path.join("operating-model", "cause-n-effect", "policies", "decision-default-on-silence.md")
 _BRIEF_RENDER = None
+# decision queue (decision-queue-projection lane): the addressee object, the seam marker, the admitted resolution
+# fields and the answer lock; the ladder, the caller helper and the join rules live in scripts/decision_queue.py
+ADDRESSEE_FIELD = "addressee"
+DEFAULT_ROLE = "maintainer"
+VIA_FIELD = "via"
+VIA_VALUE = "decisions-queue"
+VIA_SUFFIX = " via=decisions-queue"
+ADMITTED_RESOLUTION_FIELDS = ("via", "override", "retest_when", "addressee_basis", "settles")
+LOCK_DIR_NAME = "hyp-decisions.lock"
+LOCK_HOLDER_FILE = "holder"
+QUEUE_COMMANDS = ("queue", "queue-answer", "announce")
+_QUEUE = None
+
+
+def _queue():
+    """scripts/decision_queue.py imported from beside this file (the projection, the ladder, the caller helper)."""
+    global _QUEUE
+    if _QUEUE is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        try:
+            import decision_queue  # noqa: the decision queue module
+        except ImportError:
+            raise SystemExit("FATAL: scripts/decision_queue.py (the decision queue module) is not beside decisions.py")
+        _QUEUE = decision_queue
+    return _QUEUE
+
+
+def _git_dir(root):
+    g = os.path.join(root, ".git")
+    if os.path.isdir(g):
+        return g
+    if os.path.isfile(g):
+        try:
+            with open(g, encoding="utf-8") as fh:
+                line = fh.read().strip()
+        except OSError:
+            return g
+        if line.startswith("gitdir:"):
+            path = line[len("gitdir:"):].strip()
+            return path if os.path.isabs(path) else os.path.normpath(os.path.join(root, path))
+    return g
+
+
+def acquire_answer_lock(root):
+    """mkdir-atomic; the holder's pid recorded; stale after GIT_TIMEOUT and reclaimed. -> (True, None) | (False, holder)"""
+    path = os.path.join(_git_dir(root), LOCK_DIR_NAME)
+    for _attempt in (1, 2):
+        try:
+            os.mkdir(path)
+            with open(os.path.join(path, LOCK_HOLDER_FILE), "w", encoding="utf-8") as fh:
+                fh.write("%d\n" % os.getpid())
+            return True, None
+        except FileExistsError:
+            try:
+                age = time.time() - os.stat(path).st_mtime
+            except OSError:
+                age = 0
+            holder = "?"
+            try:
+                with open(os.path.join(path, LOCK_HOLDER_FILE), encoding="utf-8") as fh:
+                    holder = fh.read().strip() or "?"
+            except OSError:
+                pass
+            if age > GIT_TIMEOUT:
+                shutil.rmtree(path, ignore_errors=True)
+                continue
+            return False, holder
+        except OSError:
+            return False, "?"
+    return False, "?"
+
+
+def release_answer_lock(root):
+    shutil.rmtree(os.path.join(_git_dir(root), LOCK_DIR_NAME), ignore_errors=True)
+
+
+def _git_bytes(root, args, env=None, stdin=None):
+    try:
+        proc = subprocess.run(["git", "-C", root] + list(args), capture_output=True, timeout=GIT_TIMEOUT, env=env, input=stdin)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, b"", str(exc).encode("utf-8")
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def commit_single_row(root, ledger_rel, line, msg):
+    """The committer: the new ledger blob is HEAD:<ledger> plus the one canonical row line, written through a temporary
+    index (read-tree HEAD; hash-object -w; update-index --cacheinfo; write-tree; commit-tree -p HEAD [-S iff
+    commit.gpgsign]; update-ref HEAD <new> <old> as a compare-and-swap) -- exactly one added line whatever else is dirty
+    or staged; nothing changes on failure. -> (sha, None) | (None, "COMMIT-FAILED <stderr tail>")"""
+    gitdir = _git_dir(root)
+    fd, tmp_index = tempfile.mkstemp(prefix="hyp-decisions-index-", dir=gitdir if os.path.isdir(gitdir) else None)
+    os.close(fd)
+    os.unlink(tmp_index)
+    env = dict(os.environ)
+    env["GIT_INDEX_FILE"] = tmp_index
+
+    def fail(step, err):
+        tail = (err.decode("utf-8", "replace") if isinstance(err, bytes) else str(err)).strip().replace("\n", " ")[-200:]
+        return None, "COMMIT-FAILED %s: %s" % (step, tail or "exit non-zero")
+    try:
+        rc, out, err = _git_bytes(root, ["rev-parse", "HEAD"])
+        if rc != 0:
+            return fail("rev-parse", err)
+        old = out.decode("utf-8").strip()
+        rc, out, err = _git_bytes(root, ["read-tree", "HEAD"], env=env)
+        if rc != 0:
+            return fail("read-tree", err)
+        rc, base, err = _git_bytes(root, ["show", "HEAD:%s" % ledger_rel])
+        base = base if rc == 0 else b""
+        if base and not base.endswith(b"\n"):
+            base += b"\n"
+        new_blob = base + line.encode("utf-8") + b"\n"
+        rc, out, err = _git_bytes(root, ["hash-object", "-w", "--stdin"], stdin=new_blob)
+        if rc != 0:
+            return fail("hash-object", err)
+        blob = out.decode("utf-8").strip()
+        rc, out, err = _git_bytes(root, ["update-index", "--add", "--cacheinfo", "100644,%s,%s" % (blob, ledger_rel)], env=env)
+        if rc != 0:
+            return fail("update-index", err)
+        rc, out, err = _git_bytes(root, ["write-tree"], env=env)
+        if rc != 0:
+            return fail("write-tree", err)
+        tree = out.decode("utf-8").strip()
+        rc, out, _err = _git_bytes(root, ["config", "--bool", "--get", "commit.gpgsign"])
+        sign = ["-S"] if rc == 0 and out.decode("utf-8").strip() == "true" else []
+        rc, out, err = _git_bytes(root, ["commit-tree", tree, "-p", old] + sign + ["-m", msg])
+        if rc != 0:
+            return fail("commit-tree", err)
+        new = out.decode("utf-8").strip()
+        rc, out, err = _git_bytes(root, ["update-ref", "HEAD", new, old])
+        if rc != 0:
+            return fail("update-ref", err)
+        # the real index: when its ledger entry still names the old HEAD blob, point it at the new one, so `git status`
+        # reads the same shape `git commit -- <ledger>` leaves (only the working tree's unrelated rows stay dirty) and a
+        # follow-up revert (the veto's undo) finds a clean index; a staged ledger hunk of the caller's is left alone
+        rc, out, _err = _git_bytes(root, ["ls-files", "-s", "--", ledger_rel])
+        entry = out.decode("utf-8", "replace").split() if rc == 0 else []
+        rc, out, _err = _git_bytes(root, ["rev-parse", "%s:%s" % (old, ledger_rel)])
+        old_blob = out.decode("utf-8", "replace").strip() if rc == 0 else None
+        if len(entry) >= 2 and entry[1] == old_blob:
+            _git_bytes(root, ["update-index", "--cacheinfo", "%s,%s,%s" % (entry[0], blob, ledger_rel)])
+        return new, None
+    finally:
+        try:
+            os.unlink(tmp_index)
+        except OSError:
+            pass
 
 
 def _brief_render():
@@ -726,14 +892,30 @@ def read_ledger(root, ledger=None):
         return ""
 
 
-def join_status(decisions, resolutions):
-    """-> {id: (status, [resolution dicts in file order])}."""
+def join_status(decisions, resolutions, routing=None, findings=None):
+    """-> {id: (status, [resolution dicts])}. The chain orders by the order rule when the rows carry attribution
+    (introducing-commit author time, then file order; an uncommitted row after every committed one), else by file
+    order. With a routing (decision_queue.Routing) the multi-user rules decide status -- a non-addressee's closing row
+    never changes it (UNAUTHORIZED), two holders' rows read the earlier committed one (CONTESTED), the addressee's row
+    supersedes an override, an unmapped row or the lab's record (SUPERSEDED-BY-ADDRESSEE) -- and `findings`, when a
+    dict is passed, receives {id: [finding lines]}. Without a routing: the latest accepted/denied decides (the kit's
+    legacy join, byte-identical for one writer)."""
+    if routing is not None:
+        rich = _queue().join_with_rules(decisions, resolutions, routing)
+        joined = {}
+        for did, j in rich.items():
+            joined[did] = (j["status"], j["chain"])
+            if findings is not None and j["findings"]:
+                findings[did] = list(j["findings"])
+        return joined
     by_id = {}
     for res in resolutions:
         by_id.setdefault(res["id"], []).append(res)
+    attributed = any(r.get("introduced_at") is not None for r in resolutions)
     joined = {}
     for dec in decisions:
-        chain = sorted(by_id.get(dec["id"], []), key=lambda r: r["order"])
+        chain = sorted(by_id.get(dec["id"], []),
+                       key=(_queue().chain_order_key if attributed else (lambda r: r["order"])))
         closing = [r for r in chain if r["disposition"] in ("accepted", "denied")]
         status = closing[-1]["disposition"] if closing else (
             "commented" if chain else "open")
@@ -784,35 +966,12 @@ def git(root, args, check=False):
 
 
 def derive_attribution(root, ledger_rel, resolutions):
-    """Attach decided_by/decided_at/resolution_commit (or staged=True). Append-only store
-    => presence is monotone => binary search over ledger-touching commits."""
-    code, out, _ = git(root, ["log", "--reverse", "--format=%H\x1f%an\x1f%aI",
-                              "--", ledger_rel])
-    commits = ([tuple(l.split("\x1f")) for l in out.splitlines()
-                if l.count("\x1f") == 2] if code == 0 else [])
-    cache = {}
-
-    def blob(sha):
-        if sha not in cache:
-            c, b, _ = git(root, ["show", "%s:%s" % (sha, ledger_rel)])
-            cache[sha] = b if c == 0 else ""
-        return cache[sha]
-
-    for res in resolutions:
-        res["staged"] = True
-        res["decided_by"] = res["decided_at"] = res["resolution_commit"] = None
-        if not commits or res["raw"] not in blob(commits[-1][0]):
-            continue
-        lo, hi = 0, len(commits) - 1
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if res["raw"] in blob(commits[mid][0]):
-                hi = mid
-            else:
-                lo = mid + 1
-        sha, author, when = commits[lo]
-        res.update({"staged": False, "decided_by": author, "decided_at": when,
-                    "resolution_commit": sha[:7]})
+    """Attach decided_by/decided_at/resolution_commit (or staged=True) plus introducing_sha / author_email /
+    introduced_at / parents. The introducing commit of a row is a commit whose ledger blob contains the row's raw
+    line and none of whose parents' blobs do -- resolved from the blobs by decision_queue.attribute_rows (one history
+    walk, one cat-file batch), order-independent under merges; identical to the retired date-ordered binary search
+    under one writer."""
+    _queue().attribute_rows(root, ledger_rel, resolutions)
 
 
 # ---------- retest_when: evidence trigger + revisit lint (decision-retest-when lane) ----------
@@ -963,6 +1122,10 @@ def validate_decision(rec):
                     errs.append("option %d needs label + description" % (i + 1))
     if RETEST_WHEN_FIELD in rec:
         errs.extend(validate_retest_when(rec[RETEST_WHEN_FIELD]))
+    if ADDRESSEE_FIELD in rec:
+        obj = rec[ADDRESSEE_FIELD]
+        if not (isinstance(obj, dict) and _queue().valid_role_token(obj.get("role"))):
+            errs.append("addressee must be {\"role\": \"<token>\"} with a token [a-z][a-z0-9-]* or owner:<path>, got %r" % (obj,))
     for field in FORBIDDEN_RESOLUTION_FIELDS:
         if field in rec:
             errs.append("%s must never be stored (derived from git, H-084)" % field)
@@ -979,6 +1142,21 @@ def validate_resolution(rec, known_ids):
     if rec.get("disposition") == "accepted" and not rec.get("chosen_options") \
             and not str(rec.get("comment") or "").strip():
         errs.append("accepted with neither chosen_options nor comment text")
+    # decision queue: the admitted fields (who and when still derive from the commit)
+    if VIA_FIELD in rec and not (isinstance(rec[VIA_FIELD], str) and rec[VIA_FIELD].strip()):
+        errs.append("via must be a non-empty string")
+    if "override" in rec:
+        ov = rec["override"]
+        if not (isinstance(ov, dict) and isinstance(ov.get("role"), str) and isinstance(ov.get("basis"), str)):
+            errs.append("override must be {\"role\": <token>, \"basis\": <committed pointer>}")
+    if RETEST_WHEN_FIELD in rec:
+        errs.extend(validate_retest_when(rec[RETEST_WHEN_FIELD]))
+    if "addressee_basis" in rec and rec["addressee_basis"] != "unmapped":
+        errs.append("addressee_basis %r is not unmapped" % (rec["addressee_basis"],))
+    if "settles" in rec:
+        st = rec["settles"]
+        if not (isinstance(st, list) and len(st) >= 2 and all(isinstance(s, str) and re.match(r"^[0-9a-f]{7,40}$", s) for s in st)):
+            errs.append("settles must list at least two commit shas")
     for field in FORBIDDEN_RESOLUTION_FIELDS:
         if field in rec:
             errs.append("%s must never be stored (derived from git, H-084)" % field)
@@ -1162,6 +1340,8 @@ def cmd_add(args, root, ledger):
         rec["note"] = args.note
     if getattr(args, "retest_when", None):
         rec[RETEST_WHEN_FIELD] = args.retest_when
+    if getattr(args, "addressee", None):
+        rec[ADDRESSEE_FIELD] = {"role": args.addressee.strip()}
     door_fields_from_args(args, rec)
     if getattr(args, "brief", None):
         brief, problem = load_brief_file(args.brief)
@@ -1191,7 +1371,10 @@ def cmd_add(args, root, ledger):
     ledger_rel = os.path.relpath(ledger or os.path.join(root, ledger_rel_for(root)), root)
     append_line(root, rec, ledger)
     if door.outcome == "RECORD":
-        append_line(root, door_record_row(door), ledger)
+        record_row = door_record_row(door)
+        if ADDRESSEE_FIELD in rec:
+            record_row[ADDRESSEE_FIELD] = dict(rec[ADDRESSEE_FIELD])
+        append_line(root, record_row, ledger)
         print("recorded %s: %s (accepted=%s basis=%s) — two JSONL lines appended to %s; no card opens"
               % (rec["id"], rec["title"], rec.get("recommended"), DOOR_RECORD_BASIS, ledger_rel))
         return 1 if result.findings else 0
@@ -1246,7 +1429,11 @@ def cmd_show(args, root, ledger):
     chain = [r for r in parsed["resolutions"] if r["id"] == args.id]
     if not ledger_rel.startswith(".."):
         derive_attribution(root, ledger_rel.replace(os.sep, "/"), chain)
-    status, _ = join_status([dec], chain)[args.id]
+    queue_findings = {}
+    routing = _queue().Routing(root, ledger_rel.replace(os.sep, "/")) if not ledger_rel.startswith("..") else None
+    status, _ = join_status([dec], chain, routing=routing, findings=queue_findings)[args.id]
+    for line in queue_findings.get(args.id, []):
+        print(line)
     rec = dec["rec"]
     ask = rec.get("ask", {})
     raw = bool(getattr(args, "raw", False))
@@ -1368,10 +1555,29 @@ def cmd_resolve(args, root, ledger):
     if dec is None:
         print("RESOLVE-INVALID\tno decision row with id %s" % args.id)
         return 1
-    status, _chain = join_status([dec], [r for r in parsed["resolutions"]
-                                         if r["id"] == args.id])[args.id]
-    record_row = _door_record_row(_chain) if args.deny else None   # a veto: --deny on a two-way-door record
-    if status in ("accepted", "denied") and not args.reopen and record_row is None:
+    _chain = [r for r in parsed["resolutions"] if r["id"] == args.id]
+    queue = _queue()
+    routing = queue.Routing(root, ledger_rel) if inside else None
+    if inside:
+        derive_attribution(root, ledger_rel, _chain)
+    rich = queue.join_with_rules([dec], _chain, routing)[args.id] if routing is not None else None
+    status = rich["status"] if rich is not None else join_status([dec], _chain)[args.id][0]
+    settles = [s.strip() for s in str(getattr(args, "settles", "") or "").split(",") if s.strip()]
+    # a veto (--deny) or a contradicting answer over the lab's standing record runs the record's undo once
+    standing = rich["deciding"]["rec"] if (rich is not None and rich["kind"] == "record") else None
+    if standing is None and rich is None:
+        standing = _door_record_row(_chain) if args.deny else None
+    record_row = standing if (args.deny or (args.accept and standing is not None
+                                           and list(args.accept) != list(standing.get("chosen_options") or []))) else None
+    # CONTRACT 25 (amendment #5, F3): the addressee's own closing row ranks above a recorded override and above an R4
+    # (addressee_basis unmapped) row -- a holder of the card's role is admitted over either without --reopen and every
+    # reader then prints SUPERSEDED-BY-ADDRESSEE <id>; the veto over the lab's record keeps its own path (record_row)
+    _ident = None
+    superseding = False
+    if rich is not None and rich["kind"] in ("override", "unmapped") and (args.accept or args.deny):
+        _ident = queue.caller_identity(root)
+        superseding = bool(_ident["resolved"]) and routing.is_holder(queue.role_of(dec["rec"]), _ident["canonical_email"]) is True
+    if status in ("accepted", "denied") and not args.reopen and record_row is None and not settles and not superseding:
         print("RESOLVE-INVALID\t%s is already %s (latest accepted/denied wins; pass "
               "--reopen to append another closing row anyway)" % (args.id, status))
         return 1
@@ -1384,8 +1590,8 @@ def cmd_resolve(args, root, ledger):
         if len(chosen) > 1 and not dec["rec"].get("ask", {}).get("multiSelect"):
             print("RESOLVE-INVALID\t%s is single-select; pass ONE --accept" % args.id)
             return 1
-    elif args.comment:
-        disposition = "commented"   # stays open
+    elif args.comment or getattr(args, "retest_when", None):
+        disposition = "commented"   # stays open (a later-when row may carry retest_when alone)
         chosen = []
     else:
         print("RESOLVE-INVALID\tneed --accept \"<label-or-free-text>\" (repeatable when "
@@ -1398,6 +1604,37 @@ def cmd_resolve(args, root, ledger):
         rec["chosen_options"] = chosen
     if args.comment:
         rec["comment"] = args.comment
+    # decision queue: the seam marker and the admitted fields; the addressee refusal before anything is appended
+    via = getattr(args, "via", None)
+    if via:
+        rec[VIA_FIELD] = via
+    if getattr(args, "retest_when", None):
+        rec[RETEST_WHEN_FIELD] = args.retest_when
+    if settles:
+        rec["settles"] = settles
+    if disposition in ("accepted", "denied") and inside:
+        ident = _ident if _ident is not None else queue.caller_identity(root)
+        if not ident["resolved"]:
+            print(queue.F_IDENTITY_UNRESOLVED)
+            return 1
+        me = ident["canonical_email"]
+        role = queue.role_of(dec["rec"])
+        _holders, basis = routing.holders(role)
+        mine = routing.is_holder(role, me)
+        override = getattr(args, "override", None)
+        if mine is not True and override:
+            if not routing.is_holder(DEFAULT_ROLE, me) or not routing.pointer_resolves(override):
+                print(queue.F_UNAUTHORIZED.format(id=args.id, basis=basis))
+                return 2
+            rec["override"] = {"role": role, "basis": override}
+        elif mine is None:
+            rec["addressee_basis"] = "unmapped"
+        elif mine is False:
+            universe = queue.role_universe([d["rec"] for d in parsed["decisions"]], routing)
+            my_roles = routing.roles_of(me, universe)
+            you = routing.holders(my_roles[0])[1] if my_roles else "unmapped"
+            print(queue.F_NOT_ADDRESSEE.format(id=args.id, role=role, basis=you))
+            return 2
     errs = validate_resolution(rec, {d["id"] for d in parsed["decisions"]})
     if errs:
         for e in errs:
@@ -1414,24 +1651,37 @@ def cmd_resolve(args, root, ledger):
             return 2
 
     committing = inside and not args.no_commit
-    if committing and _ledger_pre_dirty(root, ledger_rel):
-        print("RESOLVE-BLOCKED\t%s already has uncommitted changes — the resolution "
-              "commit must contain JUST the resolution line. Commit or stash the pending "
-              "ledger changes first (or pass --no-commit to stage the row uncommitted)."
-              % ledger_rel)
-        return 1
-    append_line(root, rec, ledger)
-    print("appended %s %s to %s" % (args.id, disposition, ledger_rel))
-
     res_sha = None
     if committing:
-        msg = "decision: %s %s — decision-resolved=%s" % (args.id, disposition, args.id)
-        git(root, ["commit", "-m", msg, "--", ledger_rel], check=True)
-        code, out, _ = git(root, ["rev-parse", "--short", "HEAD"])
-        res_sha = out.strip() if code == 0 else None
+        # the re-plumbed committer: lock, temporary index from HEAD's blob plus this row, commit-tree, compare-and-swap;
+        # the row reaches the working tree only after the commit stands -- a dirty ledger never blocks
+        locked, holder = acquire_answer_lock(root)
+        if not locked:
+            print(queue.F_RESOLVE_BUSY.format(pid=holder))
+            return 2
+        try:
+            line = json.dumps(rec, ensure_ascii=False)
+            msg = "decision: %s %s — decision-resolved=%s%s" % (args.id, disposition, args.id, VIA_SUFFIX if via else "")
+            sha, err = commit_single_row(root, ledger_rel, line, msg)
+            if sha is None:
+                print(err)
+                return 1
+            res_sha = sha[:7]
+            try:
+                with open(ledger_path, "a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+            except OSError:
+                print(queue.F_WORKTREE_APPEND_FAILED.format(row=line))
+                print("committed JUST that line: %s (%s) — decided-by/at derive from this commit" % (msg, res_sha))
+                return 1
+        finally:
+            release_answer_lock(root)
+        print("appended %s %s to %s" % (args.id, disposition, ledger_rel))
         print("committed JUST that line: %s (%s) — decided-by/at derive from this commit"
-              % (msg, res_sha or "?"))
+              % (msg, res_sha))
     else:
+        append_line(root, rec, ledger)
+        print("appended %s %s to %s" % (args.id, disposition, ledger_rel))
         print("resolution left uncommitted — it renders as staged until its commit")
     if record_row is not None:
         _door_execute_undo(root, args.id, record_row, committing)
@@ -1477,7 +1727,19 @@ def cmd_check(args, root, ledger):
     for res in parsed["resolutions"]:
         for e in validate_resolution(res["rec"], known):
             findings.append("resolution@line%d: %s" % (res["order"], e))
-    joined = join_status(parsed["decisions"], parsed["resolutions"])
+    # decision queue: attribution then the routed join -- the multi-user classes below are exit-neutral
+    queue_findings, queue_lines = {}, []
+    ledger_rel = os.path.relpath(ledger or os.path.join(root, ledger_rel_for(root)), root).replace(os.sep, "/")
+    routing = None
+    if not ledger_rel.startswith(".."):
+        derive_attribution(root, ledger_rel, parsed["resolutions"])
+        routing = _queue().Routing(root, ledger_rel)
+        queue_lines.extend(_queue().multi_row_commit_findings(parsed["resolutions"]))
+        _up, _b, _m = _queue().behind_upstream(_queue().Git(root), root, ledger_rel,
+                                              {d["id"] for d in parse_ledger_v3(_queue().Git(root).run(["show", "HEAD:%s" % ledger_rel])[1])["decisions"]})
+        if _b > 0:
+            queue_lines.append(_queue().F_LEDGER_BEHIND.format(upstream=_up, commits=_b, rows=_m))
+    joined = join_status(parsed["decisions"], parsed["resolutions"], routing=routing, findings=queue_findings)
     opens = [i for i, (s, _c) in joined.items() if s in ("open", "commented")]
     closed = [i for i, (s, _c) in joined.items() if s in ("accepted", "denied")]
     # shadowed brackets: a CLOSED decision that shadows a bracket should have its ruling
@@ -1508,6 +1770,11 @@ def cmd_check(args, root, ledger):
                  and not (isinstance(dec["rec"].get("door"), dict) and dec["rec"]["door"].get("outcome"))]
     for line in findings:
         print("DECISIONS-CHECK\tFAIL\t%s" % line)
+    for dec in parsed["decisions"]:
+        for line in queue_findings.get(dec["id"], []):
+            print("DECISIONS-CHECK\t%s" % line)
+    for line in queue_lines:
+        print("DECISIONS-CHECK\t%s" % line)
     for did in unaudited:
         print("DECISIONS-CHECK\tDOOR-UNAUDITED\t%s\tdecision row carries no door outcome (filed outside add, or before the evaluator)" % did)
     for line in due_lines:
@@ -1753,10 +2020,13 @@ def selftest():
         else:
             ok("surface-once-guard", False, "proactive-open.sh not staged beside me")
 
-        # resolve blocked while ledger dirty
-        r = cli("resolve", "DEC-001", "--accept", "go", "--no-recompile")
-        ok("resolve-scoop-guard", r.returncode != 0
-           and "RESOLVE-BLOCKED" in r.stdout, r.stdout.strip()[:100])
+        # the dirty ledger no longer blocks: the committer builds the commit from HEAD's blob plus the one row
+        r = cli("resolve", "DEC-001", "--comment", "dirty-ledger comment", "--no-recompile")
+        shown0 = subprocess.run(["git", "-C", root, "show", "--stat", "HEAD", "--format="],
+                                capture_output=True, text=True).stdout
+        ok("resolve-dirty-ledger-single-line", r.returncode == 0 and "committed JUST that line" in r.stdout
+           and "1 insertion" in shown0 and "dirty-ledger comment" in read_ledger(root)
+           and '"id": "DEC-001", "date"' in read_ledger(root), r.stdout.strip()[:140])
         subprocess.run(["git", "-C", root, "add", "--", DEFAULT_LEDGER_REL],
                        check=True)
         subprocess.run(["git", "-C", root, "commit", "-qm",
@@ -2328,6 +2598,8 @@ def main(argv=None):
                    help="harness fault injection inside the door evaluator (tests: the crash seed must render a card)")
     p.add_argument("--brief", metavar="BRIEF_JSON",
                    help="the plain-English brief (docs/decision-brief.schema.json); a candidate without one is refused (B0)")
+    p.add_argument("--addressee", metavar="ROLE",
+                   help="the role accountable for the answer (a token [a-z][a-z0-9-]* or owner:<path>; default maintainer)")
 
     p = sub.add_parser("list", help="all decisions with derived status")
     p.add_argument("--json", action="store_true")
@@ -2347,8 +2619,17 @@ def main(argv=None):
     p.add_argument("--no-recompile", action="store_true")
     p.add_argument("--reopen", action="store_true",
                    help="append another closing row over an already-closed id")
+    p.add_argument("--via", metavar="TOKEN", help="the writer marker on the row (the queue seam writes decisions-queue)")
+    p.add_argument("--override", metavar="POINTER",
+                   help="a holder of the default-owner role answering another role's card: the committed pointer that licenses it")
+    p.add_argument("--settles", metavar="SHA,SHA", help="settle a CONTESTED card: the two contested commits")
+    p.add_argument("--retest-when", dest="retest_when", metavar="PREDICATE=ARGUMENT",
+                   help="park the card until committed evidence satisfies the predicate (a commented row)")
 
     sub.add_parser("check", help="schema + join validation; exit 1 on findings")
+    sub.add_parser("queue", help="the per-caller decision queue (delegates to decision_queue.py; --json|--text, --mine|--all, subsets)")
+    sub.add_parser("queue-answer", help="record one answer through the route table (delegates to decision_queue.py)")
+    sub.add_parser("announce", help="the session-start count line (delegates to decision_queue.py; --hook)")
 
     p = sub.add_parser("surface", help="print open-decision lines; proactive open")
     p.add_argument("--no-open", action="store_true")
@@ -2367,6 +2648,21 @@ def main(argv=None):
     p = sub.add_parser("brief-skeleton", help="print a deterministic brief skeleton with the candidate's facts placed")
     p.add_argument("candidate", metavar="CANDIDATE_JSON")
 
+    # the three delegates: the projection, the seam and the announce live in scripts/decision_queue.py; --root and
+    # --ledger may precede the command (the kit's own flag order) or trail it
+    _rest, _root, _i = [], ".", 0
+    while _i < len(argv):
+        if argv[_i] == "--root" and _i + 1 < len(argv):
+            _root = argv[_i + 1]
+            _i += 2
+            continue
+        if argv[_i] == "--ledger" and _i + 1 < len(argv):
+            _i += 2
+            continue
+        _rest.append(argv[_i])
+        _i += 1
+    if _rest and _rest[0] in QUEUE_COMMANDS:
+        return _queue().main(_rest + ["--root", os.path.abspath(_root)])
     if argv and argv[0] == "migrate":
         # passthrough shim keeps migrate's own flags intact
         root_idx = None

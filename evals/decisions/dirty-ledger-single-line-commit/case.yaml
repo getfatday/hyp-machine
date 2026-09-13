@@ -1,0 +1,50 @@
+schema_version: "1.0"
+name: decisions-dirty-ledger-single-line-commit
+description: >
+  Deterministic case. With an uncommitted intent row dirtying the ledger, a recorded
+  answer through the seam commits exactly one added ledger line (the resolution row
+  carrying via decisions-queue) and leaves the intent row uncommitted.
+tags: [decisions, transaction, single-line-commit]
+context:
+  scaffold_script: |
+    git init -q .
+    git config user.name fixture-role
+    git config user.email fixture@example.invalid
+    git config commit.gpgsign false
+    mkdir -p .claude ledger scripts
+    printf '%s\n' '{"profile": "experiments", "ledger_file": "ledger/work-ledger.jsonl", "decision_brief_legacy_max_id": 0, "decision_door_legacy_max_id": 0, "decision_roles": {"maintainer": ["fixture@example.invalid"]}}' > .claude/hyp.json
+    printf '%s\n' 'ledger/work-ledger.jsonl merge=union' > .gitattributes
+    printf '%s\n' '# Widget project' > README.md
+    : > ledger/work-ledger.jsonl
+    git add -A
+    git commit -qm 'fixture scaffold'
+    printf '%s\n' '{"kind": "decision", "id": "DEC-001", "date": "2026-01-01", "requested_at": "2026-01-01", "requested_by": "lane FIXTURE", "title": "Fixture card", "urgency": "normal", "class": "plan", "why_only_you": "fixture", "context_pointers": [], "blocks": [], "ask": {"question": "Go?", "header": "Go", "multiSelect": false, "options": [{"label": "go", "description": "first", "undo": "ledger-row"}, {"label": "hold", "description": "second", "undo": "ledger-row"}]}}' >> ledger/work-ledger.jsonl
+    git add -A
+    git commit -qm 'fixture: one card'
+    printf '%s\n' '{"kind": "intent", "date": "2026-01-02", "text": "an uncommitted intent row", "session": "fixture"}' >> ledger/work-ledger.jsonl
+execution:
+  prompt: |
+    Record my answer to DEC-001 through the decision queue seam: I choose the option labelled go.
+    Run python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decisions.py" queue-answer DEC-001 --label go and print what it says.
+  max_turns: 12
+  timeout_seconds: 300
+  allowed_tools: ["Read", "Bash", "Glob", "Grep"]
+graders:
+  - type: regex
+    name: one-single-line-commit
+    target: { source: transcript }
+    pattern: 'committed JUST that line'
+    match: contains
+  - type: regex
+    name: via-marker-on-the-row
+    target: { source: file, path: ledger/work-ledger.jsonl }
+    pattern: '"via": "decisions-queue"'
+    match: contains
+  - type: regex
+    name: intent-row-still-present
+    target: { source: file, path: ledger/work-ledger.jsonl }
+    pattern: 'an uncommitted intent row'
+    match: contains
+expected_outcome: >
+  One commit adds exactly the resolution line; the dirty intent row stays in the
+  working tree uncommitted; the seam printed the committed message with via=decisions-queue.

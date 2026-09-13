@@ -86,3 +86,22 @@ What you do: re-run `/hyp:init` once in each repository (it appends the missing 
 `templates/gitattributes`. Nothing else changes; existing ledgers and projections are read as
 before. To undo, revert the merge commit that landed the release (the attribute rows are plain
 text in your `.gitattributes`; deleting them restores the previous merge behavior).
+
+From the release that carries the decision queue (source lab H-DRAFT-015cb9c8-decision-queue-projection, kept
+2026-09-13), every session start says the caller's own count — `Decisions: <n> are yours (...) — acting as <role>
+(<basis>). Answer them: /hyp:decisions` — through a new SessionStart hook row (`decision_queue.py announce --hook`,
+its own 10 s timeout, every source), and `/hyp:decisions` walks those cards through the ask-user prompt, one committed
+row per answer. After upgrading: (1) set `decision_roles` in `.claude/hyp.json` — at least
+`{"decision_roles": {"maintainer": ["<the canonical email from git config user.email>"]}}` (an identifier, never a
+name; a repository whose ledger history carries exactly one author works without it under `basis: single-identity`,
+and an unmapped role is still visible and answerable, printing the `ADDRESSEE-UNMAPPED` recipe); (2) re-run `/hyp:init`
+(or add `<ledger_file> merge=union` to `.gitattributes` by hand) so two checkouts' appended rows merge without conflict
+markers — `harden-check.sh` prints `ADVISORY-36 merge-attributes` while the row is missing (the merge shapes of the
+hook-writes release above); (3) address a card to
+another role with `decisions.py add --addressee <role>` and map that role under `decision_roles`. Existing cards and
+resolution rows change no bytes: a card without an `addressee` reads `maintainer`, `list`, `show` and the board render as
+before plus the multi-user finding lines, and `resolve` now commits through a single-line committer that never refuses a
+dirty ledger (`RESOLVE-BLOCKED` is retired) and refuses a non-addressee's closing answer before anything is appended.
+Harnesses that spawn many headless children set `HYP_DECISIONS=off` to skip the announce's git calls. Undo: revert the
+release's merge commit; the rows already written carry only the admitted fields (`via`, `addressee_basis`, `override`,
+`settles`, `retest_when`), which the previous kit reads as ordinary resolution rows.

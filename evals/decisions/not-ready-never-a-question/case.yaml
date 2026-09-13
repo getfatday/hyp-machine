@@ -1,0 +1,43 @@
+schema_version: "1.0"
+name: decisions-not-ready-never-a-question
+description: >
+  Guard case. A decision row filed through the side door above the brief boundary
+  (no valid brief) renders NOT READY: the queue lists it under not_ready and never
+  builds a question for it; no resolution row lands.
+tags: [decisions, guard, readiness]
+context:
+  scaffold_script: |
+    git init -q .
+    git config user.name fixture-role
+    git config user.email fixture@example.invalid
+    git config commit.gpgsign false
+    mkdir -p .claude ledger scripts
+    printf '%s\n' '{"profile": "experiments", "ledger_file": "ledger/work-ledger.jsonl", "decision_brief_legacy_max_id": 0, "decision_door_legacy_max_id": 0, "decision_roles": {"maintainer": ["fixture@example.invalid"]}}' > .claude/hyp.json
+    printf '%s\n' 'ledger/work-ledger.jsonl merge=union' > .gitattributes
+    printf '%s\n' '# Widget project' > README.md
+    : > ledger/work-ledger.jsonl
+    git add -A
+    git commit -qm 'fixture scaffold'
+    printf '%s\n' '{"kind": "decision", "id": "DEC-001", "date": "2026-01-01", "requested_at": "2026-01-01", "requested_by": "lane FIXTURE", "title": "Side-door card", "urgency": "normal", "class": "plan", "why_only_you": "fixture", "context_pointers": [], "blocks": [], "ask": {"question": "Side?", "header": "Side", "multiSelect": false, "options": [{"label": "in", "description": "first", "undo": "ledger-row"}, {"label": "out", "description": "second", "undo": "ledger-row"}]}, "staged_artifact": "none", "evidence": "none-exists", "externality": "none", "recommended": "none", "default_on_silence": "nothing-changes", "door": {"fields_sha": "0000000000000000000000000000000000000000000000000000000000000000"}}' >> ledger/work-ledger.jsonl
+    git add -A
+    git commit -qm 'fixture: one side-door decision row'
+execution:
+  prompt: |
+    /hyp:decisions
+  max_turns: 12
+  timeout_seconds: 300
+  allowed_tools: ["Read", "Bash", "Glob", "Grep", "AskUserQuestion"]
+graders:
+  - type: regex
+    name: not-ready-block-printed
+    target: { source: transcript }
+    pattern: 'NOT READY'
+    match: contains
+  - type: regex
+    name: nothing-appended
+    target: { source: file, path: ledger/work-ledger.jsonl }
+    pattern: 'decision-resolution'
+    match: not_contains
+expected_outcome: >
+  The NOT READY block (finding BRIEF-MISSING, the fix command) prints; no question is
+  built for the card; the ledger gains no resolution row.

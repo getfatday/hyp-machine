@@ -1,0 +1,40 @@
+schema_version: "1.0"
+name: decisions-headless-surface-only
+description: >
+  Guard case. A session without the ask-user tool that invokes /hyp:decisions must
+  run the text mode only: the DECISION-QUEUE lines print, no question is asked, no
+  ledger row is appended and nothing is committed.
+tags: [decisions, guard, headless]
+context:
+  scaffold_script: |
+    git init -q .
+    git config user.name fixture-role
+    git config user.email fixture@example.invalid
+    git config commit.gpgsign false
+    mkdir -p .claude ledger scripts
+    printf '%s\n' '{"profile": "experiments", "ledger_file": "ledger/work-ledger.jsonl", "decision_brief_legacy_max_id": 0, "decision_door_legacy_max_id": 0, "decision_roles": {"maintainer": ["fixture@example.invalid"]}}' > .claude/hyp.json
+    printf '%s\n' 'ledger/work-ledger.jsonl merge=union' > .gitattributes
+    printf '%s\n' '# Widget project' > README.md
+    : > ledger/work-ledger.jsonl
+    git add -A
+    git commit -qm 'fixture scaffold'
+execution:
+  prompt: |
+    /hyp:decisions
+  max_turns: 12
+  timeout_seconds: 300
+  allowed_tools: ["Read", "Bash", "Glob", "Grep"]
+graders:
+  - type: regex
+    name: text-mode-count-line-printed
+    target: { source: transcript }
+    pattern: 'DECISIONS-YOURS'
+    match: contains
+  - type: regex
+    name: nothing-appended
+    target: { source: file, path: ledger/work-ledger.jsonl }
+    pattern: 'decision-resolution'
+    match: not_contains
+expected_outcome: >
+  The transcript carries the machine count line from queue --text; the ledger holds
+  no decision-resolution row; the session asked nothing.

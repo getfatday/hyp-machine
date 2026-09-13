@@ -28,6 +28,7 @@ Scaffolds are deterministic: fixed strings only, no timestamps. Run one suite wi
 | `verify` | A/B spec with fixture isolation + blind referent grading, no run | no A/B harness for a plain factual question |
 | `init` | `/hyp:init` scaffolds the capture profile (config, dirs, rules block) | (idempotence is exercised directly by the extraction harness) |
 | `run` | executes a compiled flow to its mechanical verdict | refuses with an adopt-first pointer when no model exists |
+| `decisions` | (the recorded answer through the seam is one single-line commit with `via: decisions-queue`, the dirty intent row left uncommitted) | a session without the ask-user tool runs the text mode only (`DECISIONS-YOURS`, nothing appended); a legacy card awaiting its brief yields no question and no row; a side-door card renders NOT READY and is never asked |
 | `durability-check` | a fresh session re-hydrates from a seeded work-graph: false-done flagged in the assert-back note before dispatch, re-run first, frontier drained | (the observe-phase mutation rule is graded by effect in the source lab's counted harness) |
 
 ## Grading notes

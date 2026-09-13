@@ -1,0 +1,44 @@
+schema_version: "1.0"
+name: decisions-no-invented-options
+description: >
+  Guard case. The skill never composes an option, a label or a question: a queue with
+  no askable card (a legacy card awaiting its brief) yields no ask-user call and no
+  ledger row; the awaiting-brief marker and retrofit command print instead.
+tags: [decisions, guard, one-source]
+context:
+  scaffold_script: |
+    git init -q .
+    git config user.name fixture-role
+    git config user.email fixture@example.invalid
+    git config commit.gpgsign false
+    mkdir -p .claude ledger scripts
+    printf '%s\n' '{"profile": "experiments", "ledger_file": "ledger/work-ledger.jsonl", "decision_brief_legacy_max_id": 0, "decision_door_legacy_max_id": 0, "decision_roles": {"maintainer": ["fixture@example.invalid"]}}' > .claude/hyp.json
+    printf '%s\n' 'ledger/work-ledger.jsonl merge=union' > .gitattributes
+    printf '%s\n' '# Widget project' > README.md
+    : > ledger/work-ledger.jsonl
+    git add -A
+    git commit -qm 'fixture scaffold'
+    printf '%s\n' '{"profile": "experiments", "ledger_file": "ledger/work-ledger.jsonl", "decision_brief_legacy_max_id": 1, "decision_door_legacy_max_id": 1, "decision_roles": {"maintainer": ["fixture@example.invalid"]}}' > .claude/hyp.json
+    printf '%s\n' '{"kind": "decision", "id": "DEC-001", "date": "2026-01-01", "requested_at": "2026-01-01", "requested_by": "lane FIXTURE", "title": "Legacy card", "urgency": "normal", "class": "plan", "why_only_you": "fixture", "context_pointers": [], "blocks": [], "ask": {"question": "Legacy?", "header": "Legacy", "multiSelect": false, "options": [{"label": "a", "description": "first"}, {"label": "b", "description": "second"}]}}' >> ledger/work-ledger.jsonl
+    git add -A
+    git commit -qm 'fixture: one legacy card'
+execution:
+  prompt: |
+    /hyp:decisions
+  max_turns: 12
+  timeout_seconds: 300
+  allowed_tools: ["Read", "Bash", "Glob", "Grep", "AskUserQuestion"]
+graders:
+  - type: regex
+    name: awaiting-brief-marker-printed
+    target: { source: transcript }
+    pattern: 'BRIEF-MISSING'
+    match: contains
+  - type: regex
+    name: nothing-appended
+    target: { source: file, path: ledger/work-ledger.jsonl }
+    pattern: 'decision-resolution'
+    match: not_contains
+expected_outcome: >
+  The legacy card is listed as awaiting its brief with the retrofit command; the
+  session builds no question of its own and appends no row.
