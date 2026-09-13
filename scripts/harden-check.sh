@@ -8,9 +8,13 @@
 # would have already truncated it mid-run and every session would read spuriously stale.
 # Plugin-rooted (consumer parity G1): every scripts/<name> below resolves under the plugin
 # root -- $CLAUDE_PLUGIN_ROOT in a consumer install, this file's parent directory in the lab
-# -- while the advisories inspect the repo the session works in: the cwd's git toplevel
-# (worktree-aware, the same checkout hyp_config.resolve_root picks), else CLAUDE_PROJECT_DIR,
-# else the parent directory (the pre-parity form). Lab-only linters are skipped where their
+# -- while the advisories inspect the repo the session works in, by the ONE root contract every
+# hook writer shares (hyp_config.resolve_root; lab H-DRAFT-b9e771b2-hook-writes-worktree): HYP_ROOT
+# when the session-start-budget wrapper handed it down (the payload cwd's checkout, a linked
+# worktree included), else the cwd's git toplevel, else CLAUDE_PROJECT_DIR, else the parent
+# directory (the pre-parity form) -- so the advisory cache below lands in the worktree a worktree
+# session works in, never in the launch checkout. `--print-root` prints the resolved root and
+# exits (the selftest's probe of this line). Lab-only linters are skipped where their
 # script is absent under the plugin root; the advisory cache is written only where .claude/
 # exists. Advisory logic, thresholds, and wording are unchanged.
 # Scale guard (consumer parity G1, successor lane): the two whole-tree scans below — advisory
@@ -21,7 +25,8 @@
 # first run in a large tree defers them and says so on one HARDEN-SKIP line.
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 S="${CLAUDE_PLUGIN_ROOT:-$HERE}/scripts"
-cd "$(git rev-parse --show-toplevel 2>/dev/null || echo "${CLAUDE_PROJECT_DIR:-$HERE}")" || exit 0
+cd "$( [ -d "${HYP_ROOT:-}" ] && printf '%s\n' "$HYP_ROOT" || git rev-parse --show-toplevel 2>/dev/null || echo "${CLAUDE_PROJECT_DIR:-$HERE}")" || exit 0
+[ "${1:-}" = "--print-root" ] && { pwd; exit 0; }
 # Helper fallback (consumer gap G12, lab H-DRAFT-e9c49cbd-harden-helper-repo-fallback): every
 # scripts/<name> the blocks below read resolves through hs -- the plugin root first ($S), else the
 # repository's own scripts/<name> (the tree the session works in; the lab keeps twelve helpers the
@@ -468,6 +473,18 @@ if hf=$(hs id-collision-lint.py) && hb advisory-35 python3 "$hf" . --summary; th
     ''|'spec=0 fragment=0 mismatch=0') ;;
     *) echo "ADVISORY-35 id-collisions: $ic — spec ids carried by more than one file, fragment ids carried by more than one file, fragments whose id: line disagrees with their filename (python3 scripts/id-collision-lint.py . for detail; renumber the newer file to the next free id in one attributed commit — the land gate only sees ids that arrive, never ids already shared)"; W=1 ;;
   esac
+fi
+# ADVISORY-36 merge-attributes (lab H-DRAFT-b9e771b2-hook-writes-worktree): the files the plugin's
+# hooks and writers touch carry a merge shape in .gitattributes -- the ledger and the leak-meter
+# fires log `merge=union` (append-only rows: one JSON object per line, order-free), the compiled
+# projections `merge=binary` (regenerated after a merge, never merged by lines). Without the rows a
+# worktree that appended one ledger row could not merge into another without a manual edit (the
+# lane's OFF twin). scripts/merge-attrs-check.py resolves the shapes through `git check-attr` (a
+# glob or a different token order passes) and lints the ledger's row shape; this block prints the
+# counts. Report-only, never blocks; silent when the helper is absent or finds nothing.
+if hf=$(hs merge-attrs-check.py) && hb advisory-36 python3 "$hf" --root . && [ "$hb_rc" -ne 0 ]; then
+  ma=$(grep -c '^MERGE-ATTR-MISSING' "$hb_out" | tr -d ' '); mr=$(grep -c '^LEDGER-ROW-MALFORMED' "$hb_out" | tr -d ' ')
+  echo "ADVISORY-36 merge-attributes: ${ma:-0} hook-written file(s) without their .gitattributes merge shape, ${mr:-0} malformed ledger row(s) (python3 scripts/merge-attrs-check.py --root . for detail; re-run /hyp:init to add the rows, or copy them from the plugin's templates/gitattributes; a projection that conflicts on merge is regenerated — compile-dashboard.py <root>, git add DASHBOARD.md decisions.html, git commit --no-edit — never edited)"; W=1
 fi
 if [ -n "$skipped" ]; then
   echo "HARDEN-SKIP: whole-tree scan(s) deferred to the cached refresh:$skipped ($ntracked tracked files > ${HARDEN_TREE_MAX:-2000}, no advisory cache yet; bash scripts/harden-check.sh --fresh after this session for the full reading)"; W=1

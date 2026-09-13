@@ -12,7 +12,13 @@ On a flag: print exactly one line "BACKSTOP<TAB><signal>: <detail>" and exit 1.
 Otherwise: print nothing and exit 0.
 
 Usage:
-    commit-backstop.py <repo-path> [message-file]
+    commit-backstop.py [<repo-path>] [message-file]
+
+Root: without <repo-path> (the hooks.json form) the repository is hyp_config.resolve_root
+over the hook payload on stdin -- the checkout the session works in, a linked worktree
+included, never the launch directory alone (lab H-DRAFT-b9e771b2-hook-writes-worktree).
+With <repo-path>, that path wins, refined to the payload cwd's worktree of the same
+repository as before (hyp_config.worktree_root).
 
 Deterministic and offline: the only subprocess invoked is git; no network, no
 randomness, no timestamps, no unordered-collection iteration in any output path.
@@ -28,7 +34,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hyp_config import load_config, profile_at_least, worktree_root
+from hyp_config import load_config, profile_at_least, resolve_root, worktree_root
 
 # Tinker-verb tokens for the commit message, checked in this fixed order so a
 # message matching more than one token still reports deterministically.
@@ -110,25 +116,35 @@ def _filename_signal(added_paths):
     return None, None
 
 
-def _session_repo(repo):
-    """hooks.json passes CLAUDE_PROJECT_DIR as argv[1]; in a worktree-isolated session
-    the staged files live in the worktree the hook payload's cwd names. Prefer that
-    toplevel when it is a linked worktree of the same repository (hyp_config.worktree_root);
-    otherwise keep argv[1]. Reads the payload from stdin only when stdin is not a tty."""
+def _payload():
+    """The hook payload on stdin; {} when stdin is a tty or unreadable (read once)."""
     try:
         if sys.stdin.isatty():
-            return repo
+            return {}
         payload = json.loads(sys.stdin.read() or "{}")
-        cwd = payload.get("cwd") if isinstance(payload, dict) else None
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _session_repo(repo, payload):
+    """With an argv root (a human or an older wiring): that root, refined to the payload
+    cwd's worktree of the same repository (hyp_config.worktree_root). Without one (the
+    hooks.json form): hyp_config.resolve_root(payload) -- the one root contract."""
+    try:
+        if not repo:
+            return resolve_root(payload)
+        cwd = payload.get("cwd")
         return worktree_root(cwd, repo) or repo
     except Exception:
-        return repo
+        return repo or "."
 
 
 def main(argv):
-    if len(argv) < 2 or not argv[1]:
+    payload = _payload()
+    repo = _session_repo(argv[1] if len(argv) > 1 and argv[1] else None, payload)
+    if not repo or not os.path.isdir(repo):
         return 0
-    repo = _session_repo(argv[1])
     message_file = argv[2] if len(argv) > 2 else None
 
     try:

@@ -204,6 +204,14 @@ unparseable JSON or none of the three:
    a decision id, carried silently by every reader and joined by the render module (the latest
    valid brief per id wins; a test row is the comprehension lane's, reserved here).
 
+The row contract, whatever the shape: one self-contained JSON object per line, newline-terminated,
+carrying its own `date`, so file order never matters. That is what lets the ledger be declared
+`merge=union` in `.gitattributes` (written by `/hyp:init`): two branches that each appended a row
+merge with both rows present and no conflict marker, whichever order the lines land in.
+`append_line` refuses a row that would span lines and repairs a missing final newline before it
+appends; `scripts/merge-attrs-check.py` lints the file on disk (`ADVISORY-36 merge-attributes` at
+session start). Never edit a landed row in place — a resolution is a new row joined on id.
+
 ## 6. The surfaces
 
 - `DASHBOARD.md` section 1 — DECISIONS WAITING, first thing a cold reader sees; ages
@@ -213,6 +221,14 @@ unparseable JSON or none of the three:
 - `decisions.html` — regenerated whole at every compile; answering on the page stages
   the exact `decisions.py resolve` command in a visible tray (the ledger row is the
   record; the page is its shadow).
+- Both projections are compiled from the ledger and never merged by lines: `/hyp:init`
+  declares them `merge=binary -diff linguist-generated`, so a merge that touches them on both
+  sides stops without writing conflict markers into them, and the resolution is a regeneration:
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py" <root>`, then
+  `git add DASHBOARD.md decisions.html`, then `git commit --no-edit`. The compiler writes into
+  the checkout the session works in (a linked worktree included) — hook mode `--hook` reads the
+  Claude Code payload and resolves the root through `hyp_config.resolve_root`; a positional
+  root always wins.
 - SessionStart — the resolver prints ONE brief summary line first,
   `DECISION-BRIEFS\tok=<n> findings=<f> missing=<m> stale=<s>` over the open or commented cards,
   then exception lines only (`BRIEF-MISSING\t<id>`, `BRIEF-STALE\t<id>`, `BRIEF-FINDINGS\t<id>\t<rules>`,

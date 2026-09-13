@@ -39,3 +39,50 @@ admission-tiered prose rules (B6, B9, B10) are report-only until you list them i
 `knob-observe.py`, `dispatch-gate.py ingest`, `reflex-surface file`) are refused with the recipe until each
 carries a brief. `python3 scripts/selftest-decision-briefs.py --live .` checks the marker rendering over your
 own ledger.
+
+From the release that carries the hook-writes fix (lab H-DRAFT-b9e771b2-hook-writes-worktree),
+every hook writes into the checkout the session works in. Before it, a session that entered a
+linked worktree after launch still had `DASHBOARD.md`, `decisions.html` and the license-join
+housekeeping written into the MAIN checkout: Claude Code keeps `CLAUDE_PROJECT_DIR` at the launch
+directory after the switch, and those writers fell back to it. Those writes never rode the
+worktree's pull request and collided with everyone else's on main. Now every hook row resolves
+its root through one contract, `hyp_config.resolve_root`: the payload cwd's checkout when it is
+the project or another checkout of the same repository (a linked worktree), else the process
+cwd's, else `CLAUDE_PROJECT_DIR`. Nothing about what the hooks write changes -- only where.
+
+Two files the hooks and writers touch also get a declared merge shape, so two worktrees that both
+appended a ledger row and both recompiled the dashboard merge without a manual edit:
+
+- `<ledger_file>` (default `ledger/ledger.jsonl`) and `.claude/leak-meter-fires.log` are
+  `merge=union`. Their contract: one self-contained JSON object per line, newline-terminated,
+  each row carrying its own `date`, so file order never matters and a union merge is a valid
+  ledger. The writer (`decisions.py append_line`) refuses a row that would span lines and
+  repairs a missing final newline before appending; `scripts/merge-attrs-check.py` lints the
+  file and the harden-check prints one `ADVISORY-36 merge-attributes` line when a row is
+  malformed or a shape is undeclared.
+- `DASHBOARD.md`, `decisions.html` and `ledger/north-stars/*.html` are `merge=binary -diff
+  linguist-generated`: compiled projections are regenerated from their sources, never merged
+  line by line, and git writes no conflict markers into them. When a merge stops on
+  `DASHBOARD.md` or `decisions.html`, run exactly:
+
+  ```
+  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py" <root>
+  git add DASHBOARD.md decisions.html
+  git commit --no-edit
+  ```
+
+  When it stops on a north-star page (`ledger/north-stars/*.html`, written by
+  `compile-north-star-progress.py --all`: one `<slug>.progress.html` per committed north-star
+  file plus `index.html`), regenerate the set the same way:
+
+  ```
+  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-north-star-progress.py" --all --repo <root>
+  git add ledger/north-stars
+  git commit --no-edit
+  ```
+
+What you do: re-run `/hyp:init` once in each repository (it appends the missing rows to
+`.gitattributes` and never removes yours), or copy the rows from the plugin's
+`templates/gitattributes`. Nothing else changes; existing ledgers and projections are read as
+before. To undo, revert the merge commit that landed the release (the attribute rows are plain
+text in your `.gitattributes`; deleting them restores the previous merge behavior).

@@ -46,6 +46,20 @@ CLI:
     compile-dashboard.py [repo-root]          render; print one summary line
     compile-dashboard.py [repo-root] --quiet  render silently (hook mode)
     compile-dashboard.py [repo-root] --check  no write; exit 0 fresh / 1 stale
+    compile-dashboard.py --hook [--quiet|--check]
+                                              hook mode: the Claude Code hook payload is
+                                              read from stdin and the root is resolved by
+                                              hyp_config.resolve_root (the payload cwd's
+                                              checkout -- a linked worktree included --
+                                              then the process cwd's, then
+                                              CLAUDE_PROJECT_DIR); hooks.json passes it
+
+Root rule without a positional root: hyp_config.resolve_root(payload) -- the ONE
+contract every hook writer shares (lab H-DRAFT-b9e771b2-hook-writes-worktree): the
+released 0.26.0 rule "CLAUDE_PROJECT_DIR else os.getcwd()" rewrote the MAIN checkout's
+DASHBOARD.md and decisions.html from every worktree session, because Claude Code keeps
+CLAUDE_PROJECT_DIR at the launch directory after the session enters a worktree. A
+positional root always wins (a human pointing the compiler at a checkout).
 
 Configuration: .claude/hyp.json at the repo root (the init skill writes
 it). Keys read here: raw_dir (default research/raw), journal_dir (default
@@ -1082,6 +1096,43 @@ def compile_text(root):
     return "\n".join(out) + "\n", decisions_html
 
 
+def _hook_payload():
+    """The Claude Code hook payload on stdin (hook mode, --hook); {} when stdin is a tty or
+    unreadable. Read at most once, never blocking on an interactive terminal."""
+    try:
+        if sys.stdin is None or sys.stdin.isatty():
+            return {}
+        return json.loads(sys.stdin.read() or "{}")
+    except Exception:
+        return {}
+
+
+def _hook_root(payload):
+    """hyp_config.resolve_root(payload) from the plugin's hooks/scripts beside this file
+    (the one root contract); a copy of this script that lost its plugin tree falls back to
+    the same order without the same-repository test: the process cwd's git toplevel, then
+    CLAUDE_PROJECT_DIR, then the process cwd."""
+    try:
+        here = os.path.dirname(os.path.realpath(__file__))
+        hooks_scripts = os.path.join(os.path.dirname(here), "hooks", "scripts")
+        if hooks_scripts not in sys.path:
+            sys.path.insert(0, hooks_scripts)
+        from hyp_config import resolve_root
+        return resolve_root(payload)
+    except Exception:
+        cur = os.getcwd()
+        probe = cur
+        while True:
+            if os.path.exists(os.path.join(probe, ".git")):
+                return probe
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+        env_root = os.environ.get("CLAUDE_PROJECT_DIR")
+        return env_root if env_root and os.path.isdir(env_root) else cur
+
+
 def main(argv):
     args = list(argv[1:])
     flags = {a for a in args if a.startswith("--")}
@@ -1089,8 +1140,7 @@ def main(argv):
     if positional:
         root = os.path.abspath(positional[0])
     else:
-        env_root = os.environ.get("CLAUDE_PROJECT_DIR")
-        root = env_root if env_root and os.path.isdir(env_root) else os.getcwd()
+        root = _hook_root(_hook_payload() if "--hook" in flags else None)
     quiet = "--quiet" in flags
     try:
         text, decisions_html = compile_text(root)
