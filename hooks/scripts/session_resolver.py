@@ -339,7 +339,7 @@ def _decisions_today():
     return datetime.date.today().isoformat()
 
 
-def surface_decisions(decisions, resolutions):
+def surface_decisions(decisions, resolutions, queue=None):
     """v5: print the open-decision surface (docs/decisions.md section 6). One
     DECISION-LEDGER line per open decision (urgency then oldest ask then id), then the
     DECISIONS-OPEN count + oldest-age summary. Prints NOTHING when no decision rows
@@ -355,6 +355,8 @@ def surface_decisions(decisions, resolutions):
         disp = rec.get('disposition')
         if disp in ('accepted', 'denied'):
             closed.add(rec.get('id'))
+    if queue is not None:   # decision queue: the shared join decides the open set (role-aware, attributed)
+        closed = {rid for rid, st in queue['status'].items() if st in ('accepted', 'denied')}
         if disp == 'accepted' and rec.get('basis') == 'two-way-door':
             records[rec.get('id')] = rec
         if disp == 'denied':
@@ -370,7 +372,10 @@ def surface_decisions(decisions, resolutions):
                 ', '.join(str(b) for b in blocks) if blocks else '-'))
         oldest = max(open_rows, key=_decision_age_days)
         print('DECISIONS-OPEN\t{}\toldest {} {}d'.format(
-            len(open_rows), oldest.get('id'), _decision_age_days(oldest)))
+            len(open_rows), oldest.get('id'), _decision_age_days(oldest))
+              + ' \u2014 answer them: /hyp:decisions')   # decision queue: the person's command
+    for line in (queue or {}).get('findings', []):   # decision queue: the multi-user findings, ledger order
+        print(line)
     live = [(rid, res) for rid, res in records.items() if rid in decisions and rid not in vetoed]
     if not live:
         return
@@ -476,6 +481,35 @@ def surface_briefs(decisions, resolutions, briefs, brief_tests, ledger_path, rep
         print(line)
 
 
+def _queue_status(repo_root, ledger_path):
+    """decision queue (decision-queue-projection lane): {status: {id: status}, findings: [lines]} from the queue module's
+    attributed, role-aware join (scripts/decision_queue.py under the repository root, else this plugin's own scripts/);
+    None when the module or the repository root is absent -- the resolver never crashes on it."""
+    if not repo_root:
+        return None
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(repo_root, 'scripts'), os.path.normpath(os.path.join(here, '..', '..', 'scripts'))):
+        if not os.path.isfile(os.path.join(cand, 'decision_queue.py')):
+            continue
+        try:
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            import decision_queue  # noqa
+            decisions_mod, _render = decision_queue._kit()
+            with open(ledger_path, encoding='utf-8') as fh:
+                parsed = decisions_mod.parse_ledger_v3(fh.read())
+            ledger_rel = os.path.relpath(os.path.abspath(ledger_path), os.path.abspath(repo_root)).replace(os.sep, '/')
+            joined, _routing, _identity = decision_queue.route_status(repo_root, ledger_rel, parsed)
+            findings = []
+            for dec in parsed['decisions']:
+                findings.extend(joined[dec['id']]['findings'])
+            findings.extend(decision_queue.multi_row_commit_findings(parsed['resolutions']))
+            return {'status': {rid: j['status'] for rid, j in joined.items()}, 'findings': findings}
+        except Exception:
+            return None
+    return None
+
+
 def run(ledger_path, hyp_dir, om_dir, repo_root):
     filenames = load_hypothesis_filenames(hyp_dir)
     om_contents = load_operating_model_contents(om_dir)
@@ -523,7 +557,7 @@ def run(ledger_path, hyp_dir, om_dir, repo_root):
         entries.append((date, slug, hit, kind))
 
     surface_briefs(decisions, resolutions, briefs, brief_tests, ledger_path, repo_root)  # decision briefs: summary then exceptions, FIRST
-    surface_decisions(decisions, resolutions)  # v5: decisions print FIRST (head -20)
+    surface_decisions(decisions, resolutions, queue=_queue_status(repo_root, ledger_path))  # v5: decisions print FIRST (head -20)
 
     unresolved = [
         e for e in entries

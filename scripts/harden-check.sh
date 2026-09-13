@@ -297,6 +297,27 @@ PYEOF
   fi
 fi
 
+# ADVISORY-36 ledger-merge-attribute (decision-queue-projection lane, kept in the source lab):
+# two checkouts appending decision rows to the ledger merge both lines only under `merge=union`;
+# without it the default merge leaves conflict markers and every reader LEDGER-WARNs the broken
+# line. Reads the configured ledger (.claude/hyp.json ledger_file, else ledger/ledger.jsonl) and
+# one `git check-attr`; silent when the ledger does not exist yet; never blocking. NUMBERING: 36
+# was the next free number at land time (35 was the highest on file).
+if ht advisory-36; then
+  ledger=$(python3 -c 'import json
+try:
+    v = json.load(open(".claude/hyp.json")).get("ledger_file")
+except Exception:
+    v = None
+print(v.strip().strip("/") if isinstance(v, str) and v.strip() else "ledger/ledger.jsonl")' 2>/dev/null)
+  if [ -n "$ledger" ] && [ -f "$ledger" ]; then
+    case "$(git check-attr merge -- "$ledger" 2>/dev/null)" in
+      *": merge: union") ;;
+      *) echo "ADVISORY-36 ledger-merge-attribute: $ledger carries no merge=union attribute — two checkouts appending decision rows will leave conflict markers on merge; add \"$ledger merge=union\" to .gitattributes (re-running /hyp:init writes it)"; W=1 ;;
+    esac
+  fi
+fi
+
 # ADVISORY-30 flow leak (H-246 keep, closes: flow-leak-meter-ships): the counted
 # answer to "minutes-work taking days" — alarmed 4-21h before the maintainer's catch
 # on all three held-out episodes. Read-only, bounded, count-only line.

@@ -47,6 +47,11 @@ PATH_KEYS = [k for k in DEFAULTS if k not in ("profile", "context", "model_dir")
 # The work ledger: the append-only JSONL store that scripts/decisions.py, the
 # session resolver, and dashboard sections 1-2 all read at this default path.
 LEDGER_RELPATH = os.path.join("ledger", "ledger.jsonl")
+# The ledger's merge attribute (decision-queue-projection lane, kept in the source lab):
+# two checkouts appending decision rows merge both lines under `merge=union` instead of
+# leaving conflict markers that every reader then LEDGER-WARNs.
+GITATTRIBUTES_RELPATH = ".gitattributes"
+LEDGER_MERGE_ATTRIBUTE = "merge=union"
 
 # LEGACY-MIGRATION-BEGIN (data: the retired predecessor plugins' artifact names;
 # these literals exist only so init can adopt repositories they initialized)
@@ -125,6 +130,27 @@ def ensure_ledger(root, relpath, label):
         print("created   %s  (%s)" % (relpath, label))
     else:
         print("unchanged %s  (%s — append-only, never rewritten)" % (relpath, label))
+
+
+def ensure_ledger_merge_attribute(root, ledger_relpath, label):
+    """created / updated / unchanged: one `<ledger> merge=union` line in .gitattributes.
+    Appended once; a line the consumer already wrote for the ledger's merge attribute
+    (any value) is left alone, and every other line of the file is untouched."""
+    path = os.path.join(root, GITATTRIBUTES_RELPATH)
+    current = read(path)
+    ledger = ledger_relpath.replace(os.sep, "/")
+    for existing in (current or "").splitlines():
+        parts = existing.split()
+        if parts and parts[0] == ledger and any(p in ("merge", "-merge", "!merge") or p.startswith("merge=")
+                                                 for p in parts[1:]):
+            print("unchanged %s  (%s — %s)" % (GITATTRIBUTES_RELPATH, label, existing.strip()))
+            return
+    text = current or ""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += "%s %s\n" % (ledger, LEDGER_MERGE_ATTRIBUTE)
+    write(path, text)
+    print("%s %s  (%s)" % ("created  " if current is None else "updated  ", GITATTRIBUTES_RELPATH, label))
 
 
 def migrate_legacy_config(root, cfg):
@@ -304,6 +330,7 @@ def main():
     #    `.claude/hyp.json` is absent. Explicit flags still win (re-applied
     #    after the merge).
     existing = read(os.path.join(root, CONFIG_RELPATH))
+    ledger_relpath = LEDGER_RELPATH   # the configured ledger (.claude/hyp.json ledger_file) when the consumer set one
     migrate_legacy_config(root, cfg)
     if existing is None:
         migrate_crux_config(root, cfg, args.profile)
@@ -326,6 +353,9 @@ def main():
                 value = prior.get(key)
                 if isinstance(value, str) and value.strip() and not getattr(args, key, None):
                     cfg[key] = value.strip().strip("/") if key != "context" else value.strip()
+            configured_ledger = prior.get("ledger_file")
+            if isinstance(configured_ledger, str) and configured_ledger.strip():
+                ledger_relpath = configured_ledger.strip().strip("/")
     if args.context:
         cfg["context"] = slugify(args.context)
     if not cfg["context"]:
@@ -343,6 +373,8 @@ def main():
     ensure_dir(root, cfg["notes_dir"], "distilled notes")
     ensure_dir(root, cfg["journal_dir"], "write-once journal fragments")
     ensure_ledger(root, LEDGER_RELPATH, "work ledger: decisions, commitments, claims")
+    ensure_ledger_merge_attribute(root, ledger_relpath,
+                                  "ledger merge attribute: two checkouts' appended rows merge without markers")
     ensure_file(root, cfg["index_file"], template("index.md"), "wiki index seed")
     ensure_file(root, "GOVERNANCE.md", template("GOVERNANCE.md"),
                 "behavioral invariants")

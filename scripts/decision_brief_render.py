@@ -51,6 +51,15 @@ PAYLOAD_KEYS = ("kind", "id", "date", "requested_at", "requested_by", "title", "
                 "urgency", "class", "why_only_you")
 NOT_READY_KEYS = ("kind", "id", "date", "requested_at", "requested_by", "title", "urgency", "class")
 ARMED_DAYS = 14
+# decision queue (decision-queue-projection lane): the two queue controls and the slot rule -- the one source of the
+# control texts every card surface shows (the queue module never composes them)
+CONTROL_GO_DEEPER = "go deeper"
+CONTROL_LATER = "later"
+CONTROL_TEXTS = {
+    CONTROL_GO_DEEPER: "Send it back: the lab must bring one specific piece of evidence before asking again.",
+    CONTROL_LATER: "Leave this open; nothing changes now; it is listed first next time.",
+}
+CONTROL_MAX_VISIBLE_OWN = {CONTROL_GO_DEEPER: 3, CONTROL_LATER: 2}
 # the frozen legacy-armed regex (Method (e)): applied to the silence policy's text with every whitespace run collapsed
 ARMED_LINE_RE = re.compile(r"- Armed for (DEC-\d{3}) \([^)]*\): [^*]*?parking backstop \*\*(\d{4}-\d{2}-\d{2})\*\*")
 ID_RE = re.compile(r"^DEC-(\d{3,})$")
@@ -67,6 +76,21 @@ def _lint():
         import decision_card_lint  # noqa
         _LINT = decision_card_lint
     return _LINT
+
+
+# ---------- the queue controls (decision-queue-projection lane) ----------
+
+def control_options(k_own, multi_select):
+    """The slot rule: a card with k own options gets `go deeper` as a visible option iff k <= 3, then `later` iff k <= 2;
+    a multiSelect card gets no visible control (both ride the host's Other route). -> ([{label, description}], {go_deeper:
+    "option"|"other", later: "option"|"other"}); the visible list is in slot order."""
+    visible, where = [], {}
+    for label, key in ((CONTROL_GO_DEEPER, "go_deeper"), (CONTROL_LATER, "later")):
+        show = (not multi_select) and k_own <= CONTROL_MAX_VISIBLE_OWN[label]
+        where[key] = "option" if show else "other"
+        if show:
+            visible.append({"label": label, "description": CONTROL_TEXTS[label]})
+    return visible, where
 
 
 # ---------- boundary and joins ----------
@@ -553,6 +577,11 @@ def _selftest():
         src = fh.read()
     ok("no-id-literals-in-render-source", re.search(r"DEC-[0-9]|H-[0-9]{3}|H-DRA" + r"FT-", src) is None)
     ok("sha-helpers-shared-with-lint", len(hashlib.sha256(b"x").hexdigest()) == 64 and lint.card_sha(r1) in lint.card_sha_variants(r1))
+    ok("control-options-slot-rule", control_options(2, False)[1] == {"go_deeper": "option", "later": "option"}
+       and [o["label"] for o in control_options(2, False)[0]] == [CONTROL_GO_DEEPER, CONTROL_LATER]
+       and control_options(3, False)[1] == {"go_deeper": "option", "later": "other"}
+       and control_options(4, False) == ([], {"go_deeper": "other", "later": "other"})
+       and control_options(2, True) == ([], {"go_deeper": "other", "later": "other"}))
     print("render-selftest: %d failure(s)" % len(fails))
     return 1 if fails else 0
 
