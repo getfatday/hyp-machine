@@ -1,0 +1,17 @@
+# hyp: merge shapes for the files the plugin's hooks and writers touch (written by /hyp:init;
+# re-running init adds any missing row and never removes yours).
+#
+# Append-only row files -- one self-contained JSON object per line, newline-terminated, each row
+# carrying its own date, so file order never matters and a union merge (both branches' rows kept,
+# no line-position dependence) is a valid ledger. Never edit a landed row in place.
+{{LEDGER_FILE}} merge=union
+.claude/leak-meter-fires.log merge=union
+#
+# Compiled projections -- regenerated whole from their sources, never merged line by line
+# (merge=binary: git writes no conflict markers into them). When a merge stops on one of them:
+#   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py" <root>
+#   git add DASHBOARD.md decisions.html
+#   git commit --no-edit
+DASHBOARD.md merge=binary -diff linguist-generated
+decisions.html merge=binary -diff linguist-generated
+ledger/north-stars/*.html merge=binary -diff linguist-generated

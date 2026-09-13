@@ -170,8 +170,14 @@ def main(argv):
         return selftest()
     if "--lint" in argv:
         rest = [a for a in argv if a != "--lint"]
-        root = os.path.abspath(rest[0] if rest else
-                               os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+        if rest:
+            root = os.path.abspath(rest[0])
+        else:
+            # the one root contract (hyp_config.resolve_root): the process cwd's checkout --
+            # a linked worktree included -- before CLAUDE_PROJECT_DIR, never the launch dir alone
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from hyp_config import resolve_root
+            root = os.path.abspath(resolve_root(None))
         lint(root)
         return 0
     print(__doc__.strip().splitlines()[0])
