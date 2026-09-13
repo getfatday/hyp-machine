@@ -15,7 +15,9 @@ re-running with a higher profile upgrades in place.
 
 Idempotent and re-runnable: creates what is missing, repairs the plugin-owned
 canonical artifacts (the config file, the CLAUDE.md marker block, the settings
-deny rules, the installed scripts), and never overwrites consumer-owned content
+deny rules, the installed scripts), appends any missing merge-shape row to
+.gitattributes (templates/gitattributes: the ledger merges by union, the compiled
+projections regenerate; never removes a consumer line), and never overwrites consumer-owned content
 (the index, notes, raw files, fragments, the ledger, registered specs, an edited
 template, model nodes, or an existing GOVERNANCE.md). Re-running with the same
 inputs is a byte-level no-op. Prints one line per artifact: created / updated /
@@ -47,11 +49,6 @@ PATH_KEYS = [k for k in DEFAULTS if k not in ("profile", "context", "model_dir")
 # The work ledger: the append-only JSONL store that scripts/decisions.py, the
 # session resolver, and dashboard sections 1-2 all read at this default path.
 LEDGER_RELPATH = os.path.join("ledger", "ledger.jsonl")
-# The ledger's merge attribute (decision-queue-projection lane, kept in the source lab):
-# two checkouts appending decision rows merge both lines under `merge=union` instead of
-# leaving conflict markers that every reader then LEDGER-WARNs.
-GITATTRIBUTES_RELPATH = ".gitattributes"
-LEDGER_MERGE_ATTRIBUTE = "merge=union"
 
 # LEGACY-MIGRATION-BEGIN (data: the retired predecessor plugins' artifact names;
 # these literals exist only so init can adopt repositories they initialized)
@@ -132,25 +129,54 @@ def ensure_ledger(root, relpath, label):
         print("unchanged %s  (%s — append-only, never rewritten)" % (relpath, label))
 
 
-def ensure_ledger_merge_attribute(root, ledger_relpath, label):
-    """created / updated / unchanged: one `<ledger> merge=union` line in .gitattributes.
-    Appended once; a line the consumer already wrote for the ledger's merge attribute
-    (any value) is left alone, and every other line of the file is untouched."""
-    path = os.path.join(root, GITATTRIBUTES_RELPATH)
+def _attr_rows(text):
+    """[(pattern, set(attrs))] for every non-comment line of a .gitattributes text."""
+    rows = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        rows.append((parts[0], set(parts[1:])))
+    return rows
+
+
+def ensure_gitattributes(root, canonical, label):
+    """created / updated / unchanged: the merge shapes of the files the plugin's hooks and
+    writers touch (templates/gitattributes). A row is present when some line names the same
+    pattern with every canonical attribute; missing rows are APPENDED (a later line overrides
+    an earlier one for the same attribute, so the plugin's shape wins without deleting the
+    consumer's lines). Consumer-owned lines are never removed or rewritten; re-running with
+    the same inputs is a byte-level no-op. Lab H-DRAFT-b9e771b2-hook-writes-worktree: a
+    worktree that appended a ledger row and recompiled the dashboard could not merge into
+    another without a manual edit until these rows existed."""
+    relpath = ".gitattributes"
+    path = os.path.join(root, relpath)
     current = read(path)
-    ledger = ledger_relpath.replace(os.sep, "/")
-    for existing in (current or "").splitlines():
-        parts = existing.split()
-        if parts and parts[0] == ledger and any(p in ("merge", "-merge", "!merge") or p.startswith("merge=")
-                                                 for p in parts[1:]):
-            print("unchanged %s  (%s — %s)" % (GITATTRIBUTES_RELPATH, label, existing.strip()))
-            return
-    text = current or ""
-    if text and not text.endswith("\n"):
-        text += "\n"
-    text += "%s %s\n" % (ledger, LEDGER_MERGE_ATTRIBUTE)
-    write(path, text)
-    print("%s %s  (%s)" % ("created  " if current is None else "updated  ", GITATTRIBUTES_RELPATH, label))
+    if current is None:
+        write(path, canonical)
+        print("created   %s  (%s)" % (relpath, label))
+        return
+    have = _attr_rows(current)
+    missing = []
+    for raw in canonical.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        pattern, attrs = line.split()[0], set(line.split()[1:])
+        if not any(p == pattern and attrs <= a for p, a in have):
+            missing.append(line)
+    if not missing:
+        print("unchanged %s  (%s)" % (relpath, label))
+        return
+    block = "\n".join(missing) + "\n"
+    header = "# hyp: merge shapes for the files the plugin's hooks and writers touch"
+    if header not in current:
+        block = header + " (added by /hyp:init; see the plugin's templates/gitattributes for the why)\n" + block
+    sep = "" if current.endswith("\n") else "\n"
+    write(path, current + sep + block)
+    print("updated   %s  (%s — %d row(s) appended: %s)"
+          % (relpath, label, len(missing), ", ".join(m.split()[0] for m in missing)))
 
 
 def migrate_legacy_config(root, cfg):
@@ -330,7 +356,7 @@ def main():
     #    `.claude/hyp.json` is absent. Explicit flags still win (re-applied
     #    after the merge).
     existing = read(os.path.join(root, CONFIG_RELPATH))
-    ledger_relpath = LEDGER_RELPATH   # the configured ledger (.claude/hyp.json ledger_file) when the consumer set one
+    prior = None
     migrate_legacy_config(root, cfg)
     if existing is None:
         migrate_crux_config(root, cfg, args.profile)
@@ -353,9 +379,6 @@ def main():
                 value = prior.get(key)
                 if isinstance(value, str) and value.strip() and not getattr(args, key, None):
                     cfg[key] = value.strip().strip("/") if key != "context" else value.strip()
-            configured_ledger = prior.get("ledger_file")
-            if isinstance(configured_ledger, str) and configured_ledger.strip():
-                ledger_relpath = configured_ledger.strip().strip("/")
     if args.context:
         cfg["context"] = slugify(args.context)
     if not cfg["context"]:
@@ -373,8 +396,18 @@ def main():
     ensure_dir(root, cfg["notes_dir"], "distilled notes")
     ensure_dir(root, cfg["journal_dir"], "write-once journal fragments")
     ensure_ledger(root, LEDGER_RELPATH, "work ledger: decisions, commitments, claims")
-    ensure_ledger_merge_attribute(root, ledger_relpath,
-                                  "ledger merge attribute: two checkouts' appended rows merge without markers")
+    # merge shapes (H-DRAFT-b9e771b2-hook-writes-worktree): the ledger the plugin's writer
+    # appends to (the configured ledger_file when the consumer overrides it) and the
+    # leak-meter fires log merge by union; the compiled projections are derived, regenerated
+    # after a merge and never merged by lines. A .gitattributes travels with the repository,
+    # unlike a merge driver in git config.
+    ledger_rel = LEDGER_RELPATH.replace(os.sep, "/")
+    if existing is not None and isinstance(prior, dict):
+        override = prior.get("ledger_file")
+        if isinstance(override, str) and override.strip():
+            ledger_rel = override.strip().strip("/")
+    ensure_gitattributes(root, render(template("gitattributes"), dict(cfg, ledger_file=ledger_rel)),
+                         "merge shapes: ledger rows merge by union, projections regenerate")
     ensure_file(root, cfg["index_file"], template("index.md"), "wiki index seed")
     ensure_file(root, "GOVERNANCE.md", template("GOVERNANCE.md"),
                 "behavioral invariants")

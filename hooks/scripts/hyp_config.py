@@ -9,7 +9,6 @@ All paths are repo-root-relative and use forward slashes. Stdlib only;
 `load_config` never raises — hook scripts must fail open, because a crashing
 hook is worse than a missed check.
 """
-import json
 import os
 
 PROFILES = ("capture", "experiments", "modeling")
@@ -147,29 +146,71 @@ def _payload_cwd(payload):
     return None
 
 
-def resolve_root(payload):
+def same_repo_root(cwd, project_root):
+    """Toplevel of the checkout containing `cwd` when that checkout is `project_root`
+    itself or another checkout of the same repository (worktree_root); with no
+    `project_root` (no CLAUDE_PROJECT_DIR), any git toplevel containing `cwd`. None for a
+    foreign repository, a non-git directory, or an unreadable pointer file. Never raises."""
+    try:
+        if not cwd:
+            return None
+        top = _toplevel(cwd)
+        if not top:
+            return None
+        if not project_root:
+            return top
+        if os.path.realpath(top) == os.path.realpath(project_root):
+            return project_root
+        return worktree_root(cwd, project_root)
+    except Exception:
+        return None
+
+
+def resolve_root(payload=None):
     """Repo root for this hook call: the checkout the session is actually working in.
 
-    Order: CLAUDE_PROJECT_DIR -- except when the payload cwd is inside a linked
-    worktree of that same repository, where the worktree's toplevel wins (see
-    worktree_root); then the payload cwd; then the process cwd. Never raises."""
+    ONE contract for every hook writer (lab H-278, extended by H-DRAFT-b9e771b2-hook-writes-worktree):
+      1. the payload `cwd`'s toplevel, when that checkout is CLAUDE_PROJECT_DIR itself or
+         another checkout of the same repository (a linked worktree, or the main checkout
+         when CLAUDE_PROJECT_DIR is a worktree) -- see same_repo_root / worktree_root;
+      2. else the process cwd's toplevel, under the same test (a hook run without a
+         payload, or by a wrapper that already consumed it);
+      3. else CLAUDE_PROJECT_DIR;
+      4. else the payload cwd; else the process cwd.
+    A foreign repository or a non-git cwd never wins over CLAUDE_PROJECT_DIR. Why the
+    process cwd sits before CLAUDE_PROJECT_DIR: in a session that entered a worktree after
+    launch, Claude Code keeps CLAUDE_PROJECT_DIR at the launch checkout while every hook's
+    process cwd and payload cwd name the worktree (probe-pinned, lab
+    H-DRAFT-b9e771b2); a writer that fell straight back to CLAUDE_PROJECT_DIR rewrote the
+    main checkout's DASHBOARD.md from a worktree session. Never raises."""
     env_root = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env_root and not os.path.isdir(env_root):
+        env_root = None
     cwd = _payload_cwd(payload)
-    if env_root and os.path.isdir(env_root):
-        if cwd:
-            wt = worktree_root(cwd, env_root)
-            if wt:
-                return wt
+    if cwd:
+        top = same_repo_root(cwd, env_root)
+        if top:
+            return top
+    try:
+        process_cwd = os.getcwd()
+    except OSError:
+        process_cwd = None
+    if process_cwd:
+        top = same_repo_root(process_cwd, env_root)
+        if top:
+            return top
+    if env_root:
         return env_root
     if cwd:
         return cwd
-    return os.getcwd()
+    return process_cwd or "."
 
 
 def load_config(root):
     """DEFAULTS overlaid with the consumer's config file, if any."""
     cfg = dict(DEFAULTS)
     try:
+        import json  # lazy: session-start-budget.py imports this module under -S -E and never needs json
         path = os.path.join(root, CONFIG_RELPATH)
         if not os.path.exists(path):
             legacy = os.path.join(root, LEGACY_CONFIG_RELPATH)

@@ -30,8 +30,9 @@ drives the shipped wiring end to end in throwaway repositories, printing one PAS
                        DECISION-RECORDS-OPEN lines for a committed two-way-door record (ship fix round 1: the port
                        had collected records only after the loop, over the last row)
   scaffold-union       init-scaffold.py writes `<ledger> merge=union` to .gitattributes once (created, then unchanged on a
-                       re-run; the configured ledger_file when the consumer set one) and git check-attr reads union;
-                       harden-check.sh prints ADVISORY-36 ledger-merge-attribute while the line is missing and not after
+                       re-run; the configured ledger_file when the consumer set one; since 0.27.1 one row of the plugin's
+                       merge-shape template, templates/gitattributes) and git check-attr reads union; harden-check.sh
+                       prints ADVISORY-36 merge-attributes while the ledger's row is missing and not once the shapes are declared
 
 Usage: python3 scripts/selftest-decision-queue.py    exit 0 = PASS, 1 = FAIL
 Provenance: cause-n-effect H-DRAFT-015cb9c8-decision-queue-projection (kept 2026-09-13 by the lineage rule: five counted
@@ -396,7 +397,8 @@ def scaffold_union_stage(tmp):
                         env=clean_env(), timeout=300)
     attrs = os.path.join(root, ".gitattributes")
     text1 = read(attrs) if os.path.isfile(attrs) else ""
-    ok("scaffold-writes-union-line", p1.returncode == 0 and text1 == "ledger/ledger.jsonl merge=union\n"
+    # since 0.27.1 (hook-writes fix) init writes the plugin's merge-shape template; the ledger's union row is one of its lines
+    ok("scaffold-writes-union-line", p1.returncode == 0 and "ledger/ledger.jsonl merge=union" in text1.splitlines()
        and any(l.startswith("created   .gitattributes") for l in p1.stdout.splitlines()), (p1.returncode, text1, p1.stderr[-160:]))
     p2 = subprocess.run([sys.executable, "-B", scaffold, root, "--profile", "capture"], capture_output=True, text=True,
                         env=clean_env(), timeout=300)
@@ -415,17 +417,25 @@ def scaffold_union_stage(tmp):
     p3 = subprocess.run([sys.executable, "-B", scaffold, root2, "--profile", "capture"], capture_output=True, text=True,
                         env=clean_env(), timeout=300)
     text3 = read(os.path.join(root2, ".gitattributes"))
-    ok("scaffold-configured-ledger-appended", p3.returncode == 0 and text3 == "*.md text\nledger/work-ledger.jsonl merge=union\n"
+    rows3 = text3.splitlines()
+    ok("scaffold-configured-ledger-appended", p3.returncode == 0 and rows3 and rows3[0] == "*.md text"
+       and "ledger/work-ledger.jsonl merge=union" in rows3 and "ledger/ledger.jsonl merge=union" not in rows3
        and any(l.startswith("updated   .gitattributes") for l in p3.stdout.splitlines()), (p3.returncode, text3))
     # the harden advisory fires while the line is missing and not after it lands
     root3 = consumer(tmp, "harden", roles={"maintainer": [A]}, attribute=False)
     henv = clean_env({"CLAUDE_PLUGIN_ROOT": PLUGIN_ROOT, "HARDEN_BLOCK_MAX": "60", "HARDEN_TOTAL_MAX": "240"})
     h1 = subprocess.run(["sh", os.path.join(HERE, "harden-check.sh"), "--fresh"], cwd=root3, capture_output=True, text=True,
                         env=henv, timeout=400)
-    ok("harden-advisory-36-fires", h1.returncode == 0 and "ADVISORY-36 ledger-merge-attribute: ledger/ledger.jsonl carries no merge=union attribute" in h1.stdout,
-       (h1.returncode, [l for l in h1.stdout.splitlines() if "ADVISORY-36" in l][:1] or h1.stdout[-200:]))
+    # 0.27.1's ADVISORY-36 merge-attributes counts the hook-written files without a declared shape (the ledger among them)
+    a36 = [l for l in h1.stdout.splitlines() if l.startswith("ADVISORY-36 merge-attributes: ")]
+    missing36 = int(a36[0].split(": ", 1)[1].split()[0]) if a36 and a36[0].split(": ", 1)[1].split()[0].isdigit() else 0
+    ok("harden-advisory-36-fires", h1.returncode == 0 and len(a36) == 1 and missing36 >= 1,
+       (h1.returncode, a36[:1] or h1.stdout[-200:]))
+    # the shapes 0.27.1 declares (templates/gitattributes): the ledger's union row and the fixed rows beside it
     with io.open(os.path.join(root3, ".gitattributes"), "w", encoding="utf-8") as fh:
-        fh.write("ledger/ledger.jsonl merge=union\n")
+        fh.write("ledger/ledger.jsonl merge=union\n.claude/leak-meter-fires.log merge=union\n"
+                 "DASHBOARD.md merge=binary -diff linguist-generated\ndecisions.html merge=binary -diff linguist-generated\n"
+                 "ledger/north-stars/*.html merge=binary -diff linguist-generated\n")
     h2 = subprocess.run(["sh", os.path.join(HERE, "harden-check.sh"), "--fresh"], cwd=root3, capture_output=True, text=True,
                         env=henv, timeout=400)
     ok("harden-advisory-36-quiet", h2.returncode == 0 and "ADVISORY-36" not in h2.stdout, [l for l in h2.stdout.splitlines() if "ADVISORY-36" in l][:1])

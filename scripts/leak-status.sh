@@ -5,11 +5,16 @@
 # then runs leak-meter.py against the sealed constants. Read-only; exit 0 always.
 # Repo-rooted (consumer parity G1, successor lane): the meter and its constants resolve
 # beside this script (the plugin root in a consumer install, the lab's scripts/ in the lab);
-# the repository it inspects is the cwd's git toplevel, else CLAUDE_PROJECT_DIR, else this
-# script's parent — the same choice harden-check.sh makes — so a consumer's meter reads the
-# consumer's history, not the plugin's. Meter logic and constants are unchanged.
+# the repository it inspects is the ONE root contract every hook writer shares
+# (hyp_config.resolve_root; lab H-DRAFT-b9e771b2-hook-writes-worktree): HYP_ROOT when the
+# session-start-budget wrapper handed it down (the payload cwd's checkout, a linked worktree
+# included), else the process cwd's git toplevel, else CLAUDE_PROJECT_DIR, else this script's
+# parent — the same choice harden-check.sh makes — so a consumer's meter reads the consumer's
+# history, not the plugin's, and a worktree session's log lands in the worktree. `--print-root`
+# prints the resolved root and exits (the selftest's probe). Meter logic and constants unchanged.
 S=$(cd "$(dirname "$0")" && pwd)
-cd "$(git rev-parse --show-toplevel 2>/dev/null || echo "${CLAUDE_PROJECT_DIR:-$S/..}")" || exit 0
+cd "$( [ -d "${HYP_ROOT:-}" ] && printf '%s\n' "$HYP_ROOT" || git rev-parse --show-toplevel 2>/dev/null || echo "${CLAUDE_PROJECT_DIR:-$S/..}")" || exit 0
+[ "${1:-}" = "--print-root" ] && { pwd; exit 0; }
 TSV=$(mktemp)
 git ls-files 'experiments/runs/*/chain-terminal.*' | while IFS= read -r f; do
   ep=$(git log -1 --format=%at -- "$f" 2>/dev/null)

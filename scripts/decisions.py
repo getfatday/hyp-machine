@@ -1193,8 +1193,29 @@ def append_line(root, rec, ledger=None):
                              "every writer runs the brief lint before appending (add --brief does; a refused brief is "
                              "never appended)" % rec.get("id"))
     line = json.dumps(rec, ensure_ascii=False)
+    # Row contract (merge shape, lab H-DRAFT-b9e771b2-hook-writes-worktree): one self-contained
+    # JSON object per line, newline-terminated, carrying its own date -- the ledger is declared
+    # `merge=union` by init's .gitattributes, so a row spanning lines or a file whose last row
+    # lacks its newline would be spliced by a merge. A multi-line row is refused; a missing final
+    # newline on the existing file is repaired before the append.
+    if "\n" in line or "\r" in line:
+        raise SystemExit("FATAL: ledger row %s would span more than one line -- every row is one JSON "
+                         "object on one line (merge=union contract)" % rec.get("id"))
+    if not isinstance(rec.get("date"), str) or not rec.get("date"):
+        raise SystemExit("FATAL: ledger row %s carries no date -- every row is self-contained and "
+                         "carries its own date so file order never matters (merge=union contract)" % rec.get("id"))
+    prefix = ""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            if fh.tell() > 0:
+                fh.seek(-1, os.SEEK_END)
+                if fh.read(1) != b"\n":
+                    prefix = "\n"
+    except OSError:
+        pass
     with open(path, "a", encoding="utf-8") as fh:
-        fh.write(line + "\n")
+        fh.write(prefix + line + "\n")
     return line
 
 

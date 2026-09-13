@@ -31,9 +31,14 @@ written by the runner: pid, started_at, source, budget_s, rc; its mtime is the f
 <name>.fg (this wrapper's last foreground record, JSON: mode finished|over-budget|in-flight,
 foreground_s, pid, rc, lock_seen_held, lock_seen_pid, started_epoch), a lock
 directory <name>.lock holding a `pid` file, and a reclaim token <name>.lock.reclaim. <key> is
-crc32 and adler32 (16 hex) of the real path of the checkout the payload cwd sits in (its
-nearest ancestor with a .git entry; else CLAUDE_PROJECT_DIR; else the process cwd) -- the tree
-the wrapped commands read. Python 3.9, stdlib only.
+crc32 and adler32 (16 hex) of the real path of the ROOT the wrapped commands read:
+hyp_config.resolve_root(payload) -- the payload cwd's checkout when it is CLAUDE_PROJECT_DIR
+or another checkout of the same repository (a linked worktree), else the process cwd's, else
+CLAUDE_PROJECT_DIR, else the cwd (the one contract every hook writer shares; lab
+H-DRAFT-b9e771b2-hook-writes-worktree). The same root is handed to the wrapped command as
+HYP_ROOT, so a wrapped shell script (harden-check.sh, leak-status.sh) works in the checkout
+the session works in without re-deriving it. hyp_config imports only os (json is lazy), so
+the import costs one small file read under -S -E. Python 3.9, stdlib only.
 """
 import os
 import sys
@@ -166,13 +171,27 @@ def toplevel(start):
     return None
 
 
-def state_dir(cwd):
-    root = None
-    if cwd and os.path.isdir(cwd):
-        root = toplevel(cwd)
-    if root is None:
-        env_root = os.environ.get("CLAUDE_PROJECT_DIR")
-        root = env_root if env_root and os.path.isdir(env_root) else (cwd if cwd and os.path.isdir(cwd) else os.getcwd())
+def resolve_root(cwd):
+    """hyp_config.resolve_root({"cwd": cwd}) from the module beside this file; the pre-contract
+    walk (payload cwd's toplevel, else CLAUDE_PROJECT_DIR, else the cwd) only if that import
+    fails -- a wrapper must never crash a session start."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import hyp_config
+        return hyp_config.resolve_root({"cwd": cwd} if cwd else None)
+    except Exception:
+        root = None
+        if cwd and os.path.isdir(cwd):
+            root = toplevel(cwd)
+        if root is None:
+            env_root = os.environ.get("CLAUDE_PROJECT_DIR")
+            root = env_root if env_root and os.path.isdir(env_root) else (cwd if cwd and os.path.isdir(cwd) else os.getcwd())
+        return root
+
+
+def state_dir(root):
     b = os.path.realpath(root).encode("utf-8", "replace")
     key = "%08x%08x" % (zlib.crc32(b) & 0xFFFFFFFF, zlib.adler32(b) & 0xFFFFFFFF)
     base = os.environ.get("HYP_STATE_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "hyp")
@@ -339,8 +358,8 @@ def cmd_run(name, command, t_start):
     except Exception:
         raw = ""
     source = jstr(raw, "source") or ""
-    cwd = jstr(raw, "cwd")
-    sd = state_dir(cwd)
+    root = resolve_root(jstr(raw, "cwd"))
+    sd = state_dir(root)
     budget = budget_s()
     lock = os.path.join(sd, name + ".lock")
     out_p = os.path.join(sd, name + ".out")
@@ -370,6 +389,7 @@ def cmd_run(name, command, t_start):
         f.write(raw)
     env = dict(os.environ)
     env.update({
+        "HYP_ROOT": root,
         "SSB_CMD": command, "SSB_PAYLOAD": payload_p, "SSB_LOCK": lock, "SSB_T0": str(t0),
         "SSB_OUT_TMP": out_p + ".tmp", "SSB_OUT": out_p,
         "SSB_ERR": os.path.join(sd, name + ".err"),
@@ -417,7 +437,7 @@ def cmd_cached(names):
     except Exception:
         raw = ""
     source = jstr(raw, "source") or ""
-    sd = state_dir(jstr(raw, "cwd"))
+    sd = state_dir(resolve_root(jstr(raw, "cwd")))
     have, none = [], []
     for name in names:
         data = read_bytes(os.path.join(sd, name + ".out"))

@@ -133,7 +133,8 @@ config files and CLAUDE.md rules blocks in place.
 | `scripts/derive-metrics.py` | Deterministic metric derivation into an append-only time series with `--trend` direction verdicts against each metric node's declared direction-of-good — counted H-129 |
 | `scripts/emit_workflow_fact.py` + `scripts/harvest_gwt.py` + `scripts/facts_lib.py` | The workflow-facts loop: one validated fact record per workflow close (idempotent, append-only) and the gate→GWT harvester emitting candidate `gwt-case/v1` records onto their owning slice — counted H-118 |
 | `scripts/render-case-study.py` + `scripts/fact_fidelity.py` + `scripts/content_lint.py` + `scripts/jargon.json` | The per-keep case-study renderer with its frozen fact grammar and content lint: every number extracted from artifact bytes, every quote byte-verified, fail-closed self-checks — counted H-201 |
-| `scripts/init-scaffold.py` | The deterministic profile-gated scaffold init runs |
+| `scripts/init-scaffold.py` | The deterministic profile-gated scaffold init runs; appends the merge-shape rows of `templates/gitattributes` to the repository's `.gitattributes` (ledger and leak-meter log `merge=union`; `DASHBOARD.md`, `decisions.html`, `ledger/north-stars/*.html` derived) without removing a consumer line |
+| `scripts/merge-attrs-check.py` | Read-only check that the files the hooks write carry their declared merge shape (`git check-attr`, so a glob passes) and that every ledger row is one JSON object on one line, newline-terminated — `ADVISORY-36 merge-attributes` at session start; regression test `scripts/selftest-merge-safe-files.py` |
 | `scripts/preflight.py` | The deterministic spec preflight (copied into your repo by init at the experiments profile) |
 | `scripts/hyp-lab.py` | The consumer lab entry point: seven read-only subcommands, one per `make lab-*` target of the reference consumer layer (`status | stalls | preflight | recent | prior | mine | next-id`) — `status`, `stalls` and `preflight` dispatch to the shipped scripts (`status` appends one `DRAFTS:` line counting the draft-handle specs the released readers skip), the other four are built in over the `.claude/hyp.json` paths with `hyp_status.py` as the status reader; `next-id` prints the H-148 draft handle from the hypothesis skill's recipe and never fetches; zero LLM, nothing written under the repository — lab H-DRAFT-6ec1691d-consumer-lab-entrypoint |
 | `scripts/compile-model-workflow.py` | The model-to-executable compiler: one flow in, a dynamic-workflow target + a portable runner + a shared GWT assertion manifest out |
@@ -207,7 +208,15 @@ every mechanism ships three ways:
 | Stop | Verdict-gated dispatch (experiments profile) for sessions that declared themselves backlog participants — `HYP_DISPATCH=1` at launch (the plugin's own drivers do), a marker `.claude/stop-driver/participants/<session_id>`, or `.claude/hyp.json` `"dispatch": "all"`; any other session is released with the typed reason `not-a-participant`, no dispatch read, and one join message per session. For participants: non-empty dispatch with cap headroom re-presents the TOP open item by name — ending a cycle is permitted only by the committed artifact check, never a promise string; frozen caps (12 cycles / 1800 s per lineage) then it stands down; `touch .claude/stop-snooze` silences it 24 h (see `docs/workgraph.md`). Unjournaled-work backstop (blocks once with instructions when new knowledge files have no journal fragment); dashboard refresh. |
 
 All hook scripts are stdlib-only Python, fail open on any error, and use consumer-generic
-paths.
+paths. Every row resolves the repository it reads and writes through one contract,
+`hooks/scripts/hyp_config.resolve_root`: the payload cwd's checkout when it is the project or
+another checkout of the same repository (a linked worktree), else the process cwd's, else
+`CLAUDE_PROJECT_DIR` — so a session that entered a worktree after launch writes its dashboard,
+its license-join housekeeping and its advisory cache into that worktree, never into the launch
+checkout (lab H-DRAFT-b9e771b2-hook-writes-worktree; regression test
+`scripts/selftest-worktree-root.py`). The files those writers touch carry a merge shape from
+`/hyp:init` (`templates/gitattributes`): the ledger merges by union, the projections regenerate —
+see `docs/upgrading.md`.
 
 ## Configuration
 

@@ -65,7 +65,11 @@ the installed scripts) are the durable layer that survives a plugin disable.
      the generic policy interpreter (it reads `operating-model/*/policies/*.md` as data —
      policy nodes with `enforcement: hook` deny, `enforcement: advisory` print one line);
    - durable repository artifacts (survive plugin disable): the CLAUDE.md rules block, the
-     `.claude/settings.json` deny rules, GOVERNANCE.md, the installed scripts and template;
+     `.claude/settings.json` deny rules, GOVERNANCE.md, the installed scripts and template,
+     and the merge-shape rows in `.gitattributes` (the ledger and the leak-meter log merge by
+     union; `DASHBOARD.md`, `decisions.html` and `ledger/north-stars/*.html` are compiled
+     projections, regenerated after a merge and never merged by lines — the rows are appended,
+     never replacing a line the repository already had);
    - procedure: the `intake`, `hypothesis`, and modeling skills carry the processes.
 5. **Commit** the scaffold as one attributed commit, separate from other work.
 6. **Verify**: the next session start should print `hyp ... drift check: clean`. To check
@@ -79,7 +83,10 @@ the installed scripts) are the durable layer that survives a plugin disable.
 
 - Re-running init is the supported way to repair drift the session-start check reports, and
   the supported way to raise the profile (`--profile experiments` on a capture repo adds
-  only the experiment artifacts).
+  only the experiment artifacts). It is also how a repository initialized before the
+  hook-writes fix gets its `.gitattributes` merge rows (`ADVISORY-36 merge-attributes` names
+  the missing ones; `docs/upgrading.md` has the regeneration sequence for a merge that stops
+  on a projection).
 - All scaffolded content is rendered from `${CLAUDE_PLUGIN_ROOT}/templates/` and the
   plugin's shipped scripts; nothing is generated from timestamps, so re-running with the
   same inputs is byte-stable.

@@ -1,5 +1,5 @@
 {
-  "description": "hyp guards: write-once raw + journal fragments incl. a Bash mistake-net branch (PreToolUse), generic policy interpreter over operating-model policy nodes (PreToolUse), capture-intent context (UserPromptSubmit), harden-check advisory spine (cache-first, plugin-rooted) + standing rules + drift check + uncommitted-capture warning + stale-dashboard check + ledger resolver with open-decision surfacing (SessionStart), verdict-gated dispatch of the top open item + unjournaled-work backstop (Stop, dispatch at experiments profile), dashboard refresh (SessionStart + Stop), preflight gate on run-shaped commands + advisory commit backstop (PreToolUse, experiments profile), license-join advisory on rule-carrier writes — a rule write must cite a resolvable directive/incident license (PreToolUse, H-250 keep), the per-caller decision announce — one JSON object whose systemMessage is said to the person at every SessionStart source (startup|resume|clear|compact|fork), its own 10 s row, never budgeted or cached (decision-queue-projection lane, kept in the source lab) — and the ledger resolver wrapper's RESOLVER-FAILED line on an empty or non-zero reading (the same lane's disclosed amendment).",
+  "description": "hyp guards: write-once raw + journal fragments incl. a Bash mistake-net branch (PreToolUse), generic policy interpreter over operating-model policy nodes (PreToolUse), capture-intent context (UserPromptSubmit), harden-check advisory spine (cache-first, plugin-rooted) + standing rules + drift check + uncommitted-capture warning + stale-dashboard check + ledger resolver with open-decision surfacing (SessionStart), verdict-gated dispatch of the top open item + unjournaled-work backstop (Stop, dispatch at experiments profile), dashboard refresh (SessionStart + Stop), preflight gate on run-shaped commands + advisory commit backstop (PreToolUse, experiments profile), license-join advisory on rule-carrier writes — a rule write must cite a resolvable directive/incident license (PreToolUse, H-250 keep), the per-caller decision announce — one JSON object whose systemMessage is said to the person at every SessionStart source (startup|resume|clear|compact|fork), its own 10 s row, never budgeted or cached (decision-queue-projection lane, kept in the source lab) — and the ledger resolver wrapper's RESOLVER-FAILED line on an empty or non-zero reading (the same lane's disclosed amendment). Every row resolves the repository it reads and writes through hyp_config.resolve_root: the checkout the session works in (a linked worktree included), never the launch directory CLAUDE_PROJECT_DIR alone (hook-writes-worktree fix).",
   "hooks": {
     "PreToolUse": [
       {
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "out=$(python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/commit-backstop.py\" \"${CLAUDE_PROJECT_DIR:-.}\" 2>/dev/null) || true; [ -n \"$out\" ] && echo \"$out\"; exit 0",
+            "command": "out=$(python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/commit-backstop.py\" 2>/dev/null) || true; [ -n \"$out\" ] && echo \"$out\"; exit 0",
             "timeout": 10
           }
         ]
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "c=\"${CLAUDE_PROJECT_DIR:-.}/.claude/license-join-corpus\"; f=\"$c/../license-join-fires.log\"; mkdir -p \"$c\" 2>/dev/null || true; ln -sfn \"${CLAUDE_PROJECT_DIR:-$(pwd)}\" \"$c/artifacts\" 2>/dev/null || true; out=$(python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/license-join-check.py\" --corpus \"$c\" 2>/dev/null) || true; if [ -n \"$out\" ]; then echo \"$out\"; touch \"$f\" 2>/dev/null || true; printf '%s\n' \"$out\" | grep '^RULE-LICENSE' | sed \"s|^|$(date -u +%FT%TZ) |\" >> \"$f\" 2>/dev/null || true; fi; exit 0",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/license-join-hook.py\"",
             "timeout": 10
           }
         ]
@@ -97,17 +97,17 @@
           },
           {
             "type": "command",
-            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run dashboard-check 'python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --check || echo \"hyp: DASHBOARD.md was stale at session start (the next hook refreshes it) — review and commit the refreshed copy.\"'",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run dashboard-check 'python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --check --hook || echo \"hyp: DASHBOARD.md was stale at session start (the next hook refreshes it) — review and commit the refreshed copy.\"'",
             "timeout": 60
           },
           {
             "type": "command",
-            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run resolver 'out=$(python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session_resolver.py\" \"${CLAUDE_PROJECT_DIR:-.}\" 2>&1); rc=$?; if [ \"$rc\" -ne 0 ] || [ -z \"$out\" ]; then echo \"RESOLVER-FAILED rc=$rc $([ -z \"$out\" ] && echo empty-reading || echo see-output) -- the ledger resolver printed nothing usable (expected only for a ledger with nothing to surface); rerun: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session_resolver.py ${CLAUDE_PROJECT_DIR:-.}\"; fi; [ -n \"$out\" ] && printf \"%s\\n\" \"$out\" | head -40; exit 0'",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run resolver 'out=$(python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session_resolver.py\" 2>&1); rc=$?; if [ \"$rc\" -ne 0 ] || [ -z \"$out\" ]; then echo \"RESOLVER-FAILED rc=$rc $([ -z \"$out\" ] && echo empty-reading || echo see-output) -- the ledger resolver printed nothing usable (expected only for a ledger with nothing to surface); rerun from the checkout: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session_resolver.py\"; fi; [ -n \"$out\" ] && printf \"%s\\n\" \"$out\" | head -40; exit 0'",
             "timeout": 60
           },
           {
             "type": "command",
-            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run dashboard-refresh 'python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --quiet'",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run dashboard-refresh 'python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --quiet --hook'",
             "timeout": 60
           }
         ]
@@ -143,7 +143,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --quiet",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --quiet --hook",
             "timeout": 15,
             "async": true
           }

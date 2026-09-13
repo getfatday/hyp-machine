@@ -40,6 +40,53 @@ admission-tiered prose rules (B6, B9, B10) are report-only until you list them i
 carries a brief. `python3 scripts/selftest-decision-briefs.py --live .` checks the marker rendering over your
 own ledger.
 
+From the release that carries the hook-writes fix (lab H-DRAFT-b9e771b2-hook-writes-worktree),
+every hook writes into the checkout the session works in. Before it, a session that entered a
+linked worktree after launch still had `DASHBOARD.md`, `decisions.html` and the license-join
+housekeeping written into the MAIN checkout: Claude Code keeps `CLAUDE_PROJECT_DIR` at the launch
+directory after the switch, and those writers fell back to it. Those writes never rode the
+worktree's pull request and collided with everyone else's on main. Now every hook row resolves
+its root through one contract, `hyp_config.resolve_root`: the payload cwd's checkout when it is
+the project or another checkout of the same repository (a linked worktree), else the process
+cwd's, else `CLAUDE_PROJECT_DIR`. Nothing about what the hooks write changes -- only where.
+
+Two files the hooks and writers touch also get a declared merge shape, so two worktrees that both
+appended a ledger row and both recompiled the dashboard merge without a manual edit:
+
+- `<ledger_file>` (default `ledger/ledger.jsonl`) and `.claude/leak-meter-fires.log` are
+  `merge=union`. Their contract: one self-contained JSON object per line, newline-terminated,
+  each row carrying its own `date`, so file order never matters and a union merge is a valid
+  ledger. The writer (`decisions.py append_line`) refuses a row that would span lines and
+  repairs a missing final newline before appending; `scripts/merge-attrs-check.py` lints the
+  file and the harden-check prints one `ADVISORY-36 merge-attributes` line when a row is
+  malformed or a shape is undeclared.
+- `DASHBOARD.md`, `decisions.html` and `ledger/north-stars/*.html` are `merge=binary -diff
+  linguist-generated`: compiled projections are regenerated from their sources, never merged
+  line by line, and git writes no conflict markers into them. When a merge stops on
+  `DASHBOARD.md` or `decisions.html`, run exactly:
+
+  ```
+  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py" <root>
+  git add DASHBOARD.md decisions.html
+  git commit --no-edit
+  ```
+
+  When it stops on a north-star page (`ledger/north-stars/*.html`, written by
+  `compile-north-star-progress.py --all`: one `<slug>.progress.html` per committed north-star
+  file plus `index.html`), regenerate the set the same way:
+
+  ```
+  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-north-star-progress.py" --all --repo <root>
+  git add ledger/north-stars
+  git commit --no-edit
+  ```
+
+What you do: re-run `/hyp:init` once in each repository (it appends the missing rows to
+`.gitattributes` and never removes yours), or copy the rows from the plugin's
+`templates/gitattributes`. Nothing else changes; existing ledgers and projections are read as
+before. To undo, revert the merge commit that landed the release (the attribute rows are plain
+text in your `.gitattributes`; deleting them restores the previous merge behavior).
+
 From the release that carries the decision queue (source lab H-DRAFT-015cb9c8-decision-queue-projection, kept
 2026-09-13), every session start says the caller's own count — `Decisions: <n> are yours (...) — acting as <role>
 (<basis>). Answer them: /hyp:decisions` — through a new SessionStart hook row (`decision_queue.py announce --hook`,
@@ -49,7 +96,8 @@ row per answer. After upgrading: (1) set `decision_roles` in `.claude/hyp.json` 
 name; a repository whose ledger history carries exactly one author works without it under `basis: single-identity`,
 and an unmapped role is still visible and answerable, printing the `ADDRESSEE-UNMAPPED` recipe); (2) re-run `/hyp:init`
 (or add `<ledger_file> merge=union` to `.gitattributes` by hand) so two checkouts' appended rows merge without conflict
-markers — `harden-check.sh` prints `ADVISORY-36 ledger-merge-attribute` while the line is missing; (3) address a card to
+markers — `harden-check.sh` prints `ADVISORY-36 merge-attributes` while the row is missing (the merge shapes of the
+hook-writes release above); (3) address a card to
 another role with `decisions.py add --addressee <role>` and map that role under `decision_roles`. Existing cards and
 resolution rows change no bytes: a card without an `addressee` reads `maintainer`, `list`, `show` and the board render as
 before plus the multi-user finding lines, and `resolve` now commits through a single-line committer that never refuses a
