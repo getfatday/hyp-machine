@@ -62,12 +62,22 @@ appended a ledger row and both recompiled the dashboard merge without a manual e
   malformed or a shape is undeclared.
 - `DASHBOARD.md`, `decisions.html` and `ledger/north-stars/*.html` are `merge=binary -diff
   linguist-generated`: compiled projections are regenerated from their sources, never merged
-  line by line, and git writes no conflict markers into them. When a merge stops on one of
-  them, run exactly:
+  line by line, and git writes no conflict markers into them. When a merge stops on
+  `DASHBOARD.md` or `decisions.html`, run exactly:
 
   ```
   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py" <root>
   git add DASHBOARD.md decisions.html
+  git commit --no-edit
+  ```
+
+  When it stops on a north-star page (`ledger/north-stars/*.html`, written by
+  `compile-north-star-progress.py --all`: one `<slug>.progress.html` per committed north-star
+  file plus `index.html`), regenerate the set the same way:
+
+  ```
+  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-north-star-progress.py" --all --repo <root>
+  git add ledger/north-stars
   git commit --no-edit
   ```
 

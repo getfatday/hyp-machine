@@ -12,6 +12,10 @@
 #   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py" <root>
 #   git add DASHBOARD.md decisions.html
 #   git commit --no-edit
+# and when it stops on a north-star page (ledger/north-stars/*.html):
+#   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-north-star-progress.py" --all --repo <root>
+#   git add ledger/north-stars
+#   git commit --no-edit
 DASHBOARD.md merge=binary -diff linguist-generated
 decisions.html merge=binary -diff linguist-generated
 ledger/north-stars/*.html merge=binary -diff linguist-generated
