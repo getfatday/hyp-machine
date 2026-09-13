@@ -25,7 +25,10 @@ drives the shipped wiring end to end in throwaway repositories, printing one PAS
                        via=decisions-queue while a dirty intent row stays uncommitted; the non-addressee is refused with the
                        ledger byte-unchanged; announce --hook prints the zero-said JSON through the delegate; the compiler
                        renders section 1c and routes the header through the ladder; check exits 0; the resolver
-                       row's wrapper prints the DECISIONS-OPEN suffix line and RESOLVER-FAILED on an empty reading
+                       row's wrapper prints the DECISIONS-OPEN suffix line and RESOLVER-FAILED on an empty reading,
+                       every card of a ledger with no resolution row, and the door's DECISION-RECORD and
+                       DECISION-RECORDS-OPEN lines for a committed two-way-door record (ship fix round 1: the port
+                       had collected records only after the loop, over the last row)
   scaffold-union       init-scaffold.py writes `<ledger> merge=union` to .gitattributes once (created, then unchanged on a
                        re-run; the configured ledger_file when the consumer set one) and git check-attr reads union;
                        harden-check.sh prints ADVISORY-36 ledger-merge-attribute while the line is missing and not after
@@ -335,6 +338,37 @@ def cli_delegates_stage(tmp):
     r2 = subprocess.run(["sh", "-c", inner], input=json.dumps({"source": "startup", "cwd": empty}), capture_output=True, text=True,
                         env=clean_env({"CLAUDE_PLUGIN_ROOT": PLUGIN_ROOT, "CLAUDE_PROJECT_DIR": empty}), timeout=120)
     ok("resolver-wrapper-loud-on-empty", r2.returncode == 0 and r2.stdout.startswith("RESOLVER-FAILED rc=0 empty-reading"), (r2.returncode, r2.stdout[:160]))
+    # ship fix round 1 (cold refuter B1): a ledger with cards and NO resolution row surfaces every card, and a committed
+    # two-way-door record surfaces as the door's DECISION-RECORD + DECISION-RECORDS-OPEN lines -- the ported
+    # surface_decisions had moved the record/veto collection out of the resolutions loop (last row only, NameError on
+    # an empty loop, swallowed by main), and neither the lane's harness nor this selftest asserted either surface
+    fresh = consumer(tmp, "fresh", roles={"maintainer": [A]}, cards=(make_card(lint, 3), make_card(lint, 4), make_card(lint, 5)))
+    fenv = clean_env({"CLAUDE_PLUGIN_ROOT": PLUGIN_ROOT, "CLAUDE_PROJECT_DIR": fresh})
+    r3 = subprocess.run(["sh", "-c", inner], input=json.dumps({"source": "startup", "cwd": fresh}), capture_output=True, text=True,
+                        env=fenv, timeout=120)
+    ledger_ids = [l.split("\t")[1] for l in r3.stdout.splitlines() if l.startswith("DECISION-LEDGER\t")]
+    ok("resolver-zero-resolution-ledger", r3.returncode == 0 and ledger_ids == ["DEC-003", "DEC-004", "DEC-005"]
+       and "DECISIONS-OPEN\t3\toldest DEC-003 28d \u2014 answer them: /hyp:decisions" in r3.stdout
+       and "DECISION-RECORD" not in r3.stdout and "RESOLVER-FAILED" not in r3.stdout, (r3.returncode, ledger_ids, r3.stdout[:240]))
+    record = {"kind": "decision-resolution", "id": "DEC-005", "date": STAMP, "disposition": "accepted", "chosen_options": ["opt1"],
+              "basis": "two-way-door", "undo": "git revert --no-edit <landing>", "veto_open_until": "2026-03-15",
+              "comment": "decided by policy/no-card-for-two-way-doors on the selftest card; undo: git revert; veto: resolve --deny"}
+    with io.open(os.path.join(fresh, "ledger", "ledger.jsonl"), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    sh(fresh, ["add", "-A"])
+    sh(fresh, ["commit", "-q", "-m", "landing: decision-record=DEC-005 the door's record"],
+       env=clean_env({"GIT_AUTHOR_DATE": "2026-02-03T00:00:00Z", "GIT_COMMITTER_DATE": "2026-02-03T00:00:00Z"}))
+    # a later ordinary answer through the real seam, so the record is NOT the last resolution row: the defective port
+    # printed the record lines only when the record happened to be the last row
+    rc, out, err = cli(fresh, "queue-answer", "DEC-004", "--label", "opt1")
+    r4 = subprocess.run(["sh", "-c", inner], input=json.dumps({"source": "startup", "cwd": fresh}), capture_output=True, text=True,
+                        env=fenv, timeout=120)
+    ledger_ids4 = [l.split("\t")[1] for l in r4.stdout.splitlines() if l.startswith("DECISION-LEDGER\t")]
+    ok("resolver-record-lines", rc == 0 and r4.returncode == 0 and ledger_ids4 == ["DEC-003"]
+       and "DECISION-RECORD\tDEC-005\tveto-until 2026-03-15 (open)\tCard 5\tundo=git revert --no-edit <landing>" in r4.stdout
+       and "DECISION-RECORDS-OPEN\t1\toldest DEC-005 28d" in r4.stdout
+       and "DECISIONS-OPEN\t1\toldest DEC-003 28d \u2014 answer them: /hyp:decisions" in r4.stdout
+       and "RESOLVER-FAILED" not in r4.stdout, (rc, out[-160:], r4.returncode, ledger_ids4, r4.stdout[:300]))
     p = subprocess.run([sys.executable, "-B", os.path.join(HERE, "compile-dashboard.py"), root, "--quiet"], capture_output=True,
                        text=True, env=clean_env(), timeout=120)
     board = read(os.path.join(root, "DASHBOARD.md")) if os.path.isfile(os.path.join(root, "DASHBOARD.md")) else ""
@@ -342,7 +376,7 @@ def cli_delegates_stage(tmp):
        and "(none — no decided card carries a multi-user finding)" in board
        and re.search(r"^## 1\. DECISIONS WAITING \(1 open — yours 0 \| others 1\)", board, re.M) is not None,
        (p.returncode, p.stderr[-160:], [l for l in board.splitlines() if l.startswith("## 1")][:3]))
-    print("%s cli-delegates -- %d check(s), %d failed" % ("PASS" if not fails else "FAIL", 14, len(fails)))
+    print("%s cli-delegates -- %d check(s), %d failed" % ("PASS" if not fails else "FAIL", 16, len(fails)))
     return not fails
 
 

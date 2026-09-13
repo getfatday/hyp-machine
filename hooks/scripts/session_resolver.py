@@ -355,12 +355,12 @@ def surface_decisions(decisions, resolutions, queue=None):
         disp = rec.get('disposition')
         if disp in ('accepted', 'denied'):
             closed.add(rec.get('id'))
-    if queue is not None:   # decision queue: the shared join decides the open set (role-aware, attributed)
-        closed = {rid for rid, st in queue['status'].items() if st in ('accepted', 'denied')}
         if disp == 'accepted' and rec.get('basis') == 'two-way-door':
             records[rec.get('id')] = rec
         if disp == 'denied':
             vetoed.add(rec.get('id'))
+    if queue is not None:   # decision queue: the shared join decides the open set (role-aware, attributed)
+        closed = {rid for rid, st in queue['status'].items() if st in ('accepted', 'denied')}
     open_rows = [rec for rid, rec in decisions.items() if rid not in closed]
     if open_rows:
         open_rows.sort(key=lambda r: (DECISION_URGENCY_ORDER.get(r.get('urgency'), 1),
