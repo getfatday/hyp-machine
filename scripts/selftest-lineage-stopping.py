@@ -13,7 +13,14 @@ per-check lines, then prints one PASS/FAIL line per stage and a RESULT line:
                                       R0-R4 bookkeeping end to end (spend header, R1 refusal at 13 caps and on the
                                       US$ component, five refusal-0 looks reading promote at look 5 with state.jsonl
                                       byte-identical to the lab lineage's, hold at look 2, max-looks at 13, pending
-                                      root causes settled, R4 inheritance, the CLI surface)
+                                      root causes settled, R4 inheritance, the CLI surface, and the `annul` verb --
+                                      typing (iv) after record: the voids row, the looks tombstone, the stream annul
+                                      row and the state line whose llr equals a stream that never held the look to
+                                      the bit, may-launch admitting again, the guards and their refusals rows
+                                      (not-a-counted-look, already-annulled, amendment-anchor-missing,
+                                      variable-side-stays-counted, state-stale), the annul-aware --check, record
+                                      taking label max + 1, R4 inheritance of tombstones, a tampered frozen copy
+                                      refusing before any write, the CLI surface)
   stopping-rule-selftest              stopping-rule.py --selftest: the kept instrument's six seeded state files
                                       (two clean, four violations), unchanged by this port
 

@@ -48,7 +48,17 @@ The rule as a decision procedure (spec Method R0-R4):
       the driver's `--wall-s`/`--cost-usd` (its own clock and meter); a record carrying neither refuses (exit
       2): a crash-lost run never costs nothing toward the spend exit. The frozen copy is verified before any
       R2 write. `settle` re-hashes the record files against what `record` parked: a record changed since is
-      the ambiguous void, never a look. A void appends no look and is re-taken at the next launch.
+      the ambiguous void, never a look. A void appends no look and is re-taken at the next launch. Typing
+      (iv) is post-record by construction -- it is shown by a counterfactual regrade of a RECORDED run -- so
+      `annul <lane> <run> --root-cause A#=<class> --amendment <path>#<anchor>` re-types a recorded COUNTED look as
+      the annulled void after the fact, append-only (one voids.jsonl row, one looks.jsonl tombstone, one stream.jsonl
+      row `{"class": "lineage", "look": k, "annul": 1}`, one state.jsonl line re-evaluated over the non-annulled
+      looks); every reader of the stream -- state, evaluate, may-launch, the checks, a successor -- reads an
+      annulled look as absent, the SPRT llr afterwards equals to the bit the llr of a stream that never held it,
+      and a terminal the annul withdraws admits launches again. Refused unless the run is a recorded counted look
+      (exit 3 `not-a-counted-look`, `already-annulled`) and the amendment anchor exists (exit 2); a variable-side
+      class keeps the look counted (exit 2); the run stays charged. An erroneous annulment is undone by reverting
+      its pull request, never by editing a row.
   R3  After every counted look: append the row to stream.jsonl, evaluate with `--evaluate --looks all`
       into state.jsonl, assert the prefix invariants on an in-progress file and run `--check` only on a
       terminated one. `evidence-sufficient promote` -> the lineage's current spec is KEPT;
@@ -69,16 +79,23 @@ hypotheses_dir, ledger_file -- with the lab layout as default; <lineage> = <runs
   append-look <lane> <refusal 0|1> [--run N] [--clause iii|v] [--run-record P]
   void <lane> --class ambiguous|annulled [--clause i|ii|iv] [--run N] [--run-record P]
   settle <lane> <run> --root-cause A#=<class> [...]   one class per pending id and no other; an id left unclassed -> exit 2, the look stays pending
+  annul <lane> <run> --root-cause A#=<class> [...] --amendment <path>#<anchor> [--counterfactual-sha S]
+                                                 R2 (iv) AFTER record: a recorded counted look re-typed void annulled by a disclosed
+                                                 amendment, append-only -> exit 0 `annulled` | exit 2 `amendment-anchor-missing` /
+                                                 `variable-side-stays-counted` / an unclassed or non-failing id | exit 3 `not-a-counted-look` /
+                                                 `already-annulled` / `state-stale` / `frozen-rule-tampered`
   evaluate <lane>                                R3 alone: re-evaluate the stream into state.jsonl
   state <lane>                                   -> promote|hold|insufficient|max-looks|spend-exhausted
   walk <launches.jsonl> --model A|B [--ratios r,..] [--budget-caps N] --out <stream.jsonl>
-  --selftest [--into DIR]                        26 typing + 7 walk/settle cases (lineage.py) + spend / refusal / R3 / R4 / settle-refusal / already-recorded cases + the round-2 follow-ups (A13-A16, NIT-1..4)
+  --selftest [--into DIR]                        26 typing + 7 walk/settle cases (lineage.py) + spend / refusal / R3 / R4 / settle-refusal / already-recorded cases + the round-2 follow-ups (A13-A16, NIT-1..4) + the annul cases (a)-(g)
 Every verb takes --root <repo-root> (default: the nearest ancestor of the cwd carrying .claude/hyp.json or
 .git) and --json (before or after the verb). Exit codes: 0 ok; 1 an invariant or check violated (named);
 2 usage, malformed input (a settle that leaves a pending id unclassed or names one that is not pending; a record
-whose files carry no wall_s / cost_usd and no override), or a lineage not initialised; 3 refused (R1, a pending
-look, a terminated lineage, an R0 byte or truncation mismatch, a tampered frozen copy, a run already recorded,
-parked or charged). The words
+whose files carry no wall_s / cost_usd and no override; an annul whose classes leave a failing id unclassed, name a
+non-failing id or a variable-side class, or whose amendment anchor is missing), or a lineage not initialised; 3
+refused (R1, a pending look, a terminated lineage, an R0 byte or truncation mismatch, a tampered frozen copy, a run
+already recorded, parked or charged, an annul of a run that is not a counted look or is already annulled, a state
+file that is not the stream's own derivation). The words
 keep and discard never enter a state line (the instrument's
 contract); they appear only in this script's `instruction` field, which belongs to the hypothesis loop.
 Stdlib only, Python 3.9; the work ledger (ledger_file) is resolved and reported by `paths`, never written.
@@ -138,6 +155,8 @@ INSTRUCTIONS = {"promote": "KEEP -- evidence-sufficient promote",
                 "max-looks": "closed without a verdict -- evidence-insufficient max-looks (indifference zone; pooled counts banked)"}
 CONTINUE = "continue at R1"
 RE_TAKE = "the next launch re-takes this look while the budget allows (R2)"
+RE_TAKE_ANNUL = "the same card at the next look number (max existing label + 1); the instrument knows no cards -- the lane rotation re-takes the annulled card"
+ANNUL_IV_CLASSES = (FIXTURE_SIDE, INSTRUMENT_SIDE)  # the classes typing (iv) admits; variable-side keeps a look counted (iii), harness-side is (i)
 
 # the lab lineage's recorded bytes (five refusal-0 looks over this policy) -- the selftest's parity target
 LAB_STATE_SHA256 = "a56f0dcfd837b5a2fc33c8880744fb65f5d3b8e6d82d869169b09e24050f31be"
@@ -708,6 +727,143 @@ def truncation(rule, upto=20):
     return smallest, rows
 
 
+# ---------------------------------------------------------------- the stream with annulled looks absent (the annul verb's reading rules)
+def stream_split(rows):
+    """stream.jsonl rows -> (counted [(label, refusal)] in file order, the set of annulled labels, the number of annul rows).
+    A row {"class": "lineage", "look": k, "annul": 1} is an annul event; every other row is a counted look."""
+    counted, annulled, n_annul = [], set(), 0
+    for r in rows:
+        if r.get("annul"):
+            annulled.add(int(r["look"]))
+            n_annul += 1
+        else:
+            counted.append((int(r["look"]), int(r["refusal"])))
+    return counted, annulled, n_annul
+
+
+def filtered_stream(counted, annulled):
+    """The counted stream with the annulled looks absent, in order (labels kept)."""
+    return [(l, r) for l, r in counted if l not in annulled]
+
+
+def counted_looks(P):
+    counted, annulled, _ = stream_split(read_jsonl(P["stream"]))
+    return len(filtered_stream(counted, annulled))
+
+
+def next_look_label(rows):
+    """The label the next counted look takes: max existing label + 1 (a tombstoned label is never re-used; with no annul row
+    this is the row count + 1 as before)."""
+    counted, _, _ = stream_split(rows)
+    return (max(l for l, _ in counted) if counted else 0) + 1
+
+
+def evaluate_filtered(P, filtered, instrument=None):
+    """The kept evaluator over the counted stream with the annulled looks absent, renumbered 1..m in a scratch `stream.jsonl`
+    (so its lines carry `stream: stream` like the lineage's own file); scripts/stopping-rule.py is unchanged. -> the
+    evaluator's lines, [] for an empty filtered stream."""
+    if not filtered:
+        return []
+    tmp = tempfile.mkdtemp(prefix="lineage-annul-")
+    try:
+        sp = os.path.join(tmp, "stream.jsonl")
+        write_rows(sp, [{"look": i, "class": STREAM_CLASS, "refusal": int(r)} for i, (_, r) in enumerate(filtered, 1)])
+        res = run_instrument(["--evaluate", sp, "--rule", P["frozen"], "--looks", "all", "--json"], instrument=instrument)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if res.returncode != 0:
+        raise Refuse("evaluator exited %d over the filtered stream: %s" % (res.returncode, (res.stderr or res.stdout).strip()))
+    return [json.loads(x) for x in res.stdout.splitlines() if x.strip()]
+
+
+def empty_state_line(doc, sid="stream"):
+    """The state line of a stream whose every look is annulled: llr 0.0, `evidence-insufficient n=0/<max_looks>`."""
+    rule = json.loads(doc["rule_text"])
+    ml = int(rule["max_looks"])
+    return {"llr": 0.0, "n_min": ml, "rule": rule["kind"], "rule_sha": doc["sha256"], "state": INSUFFICIENT % (0, ml), "stream": sid}
+
+
+def replay_state(P, rows, doc, instrument=None):
+    """state.jsonl as the append-only event log stream.jsonl determines it: one line per stream row. A counted row's line is the
+    evaluator's line for that look over the counted stream as it stood (the looks annulled by then absent). An annul row's
+    line is the evaluator's LAST line over the stream with that look absent too, labelled with the highest look label so far
+    and carrying `annulled` (every annulled label so far): the SPRT llr equals, to the bit, the llr of a stream that never
+    held the annulled look. The incrementally written file (record, annul) and this replay are byte-identical, so `evaluate`
+    re-derives state.jsonl without rewriting history."""
+    counted, annulled, lines = [], set(), []
+    for row in rows:
+        if row.get("annul"):
+            annulled.add(int(row["look"]))
+            ev = evaluate_filtered(P, filtered_stream(counted, annulled), instrument)
+            line = dict(ev[-1]) if ev else empty_state_line(doc)
+            line["look"] = max(l for l, _ in counted) if counted else 0
+            line["annulled"] = sorted(annulled)
+        else:
+            counted.append((int(row["look"]), int(row["refusal"])))
+            ev = evaluate_filtered(P, filtered_stream(counted, annulled), instrument)
+            line = dict(ev[-1])
+            line["look"] = int(row["look"])
+        lines.append(line)
+    return lines
+
+
+def _walk_filtered(filtered, c, ml):
+    """The evaluator's walk over a filtered stream, in process: -> (llr, state text) at its first terminal or its end."""
+    llr = 0.0
+    for k, (_, refusal) in enumerate(filtered, 1):
+        llr += c["inc1"] if refusal else c["inc0"]
+        if llr >= c["up"]:
+            return llr, "evidence-sufficient promote"
+        if llr <= c["lo"]:
+            return llr, "evidence-sufficient hold"
+        if k >= ml:
+            return llr, "evidence-insufficient max-looks n=%d" % ml
+    return llr, INSUFFICIENT % (len(filtered), ml)
+
+
+def annul_invariants(state_lines, rows, rule, sha, tol=PREFIX_TOL):
+    """The invariants of a state file whose stream carries annul rows (the instrument's --check and prefix_invariants read
+    label space 1..n and know no annul line): line-count (one line per stream row), vocabulary, looks-consecutive (the counted
+    lines' labels are 1..n with no gap, tombstoned labels included; an annul line carries the highest label so far),
+    rule-sha-mismatch, tombstones (an annul line's `annulled` is the set of annulled labels so far), terminal-mid-file (a
+    terminal line may be followed only by an annul line -- the re-evaluation that supersedes it, withdrawing or restating
+    it), state-text and llr-recompute over the FILTERED stream (the walk over a stream that never held the annulled looks,
+    stopping at its first terminal). -> (ok, violation-name or None, detail)."""
+    c = sprt_constants(rule)
+    ml = int(rule["max_looks"])
+    if len(state_lines) != len(rows):
+        return False, "line-count", "%d lines for %d stream rows" % (len(state_lines), len(rows))
+    sid = state_lines[0].get("stream") if state_lines else None
+    counted, annulled, label = [], set(), 0
+    for i, (ln, row) in enumerate(zip(state_lines, rows), 1):
+        text = json.dumps(ln)
+        if " keep" in text or " discard" in text or '"keep' in text or '"discard' in text:
+            return False, "vocabulary", "line %d" % i
+        if ln.get("rule") != "sprt" or ln.get("stream") != sid or ln.get("n_min") != ml:
+            return False, "looks-consecutive", "line %d: rule / stream / n_min" % i
+        if ln.get("rule_sha") != sha:
+            return False, "rule-sha-mismatch", "line %d" % i
+        is_annul = bool(row.get("annul"))
+        if is_annul:
+            annulled.add(int(row["look"]))
+            if ln.get("annulled") != sorted(annulled) or ln.get("look") != label:
+                return False, "tombstones", "line %d: annulled %r look %r (stream: %r, label %d)" % (i, ln.get("annulled"), ln.get("look"), sorted(annulled), label)
+        else:
+            label += 1
+            if int(row.get("look", -1)) != label or ln.get("look") != label or "annulled" in ln:
+                return False, "looks-consecutive", "line %d: look %r for label %d" % (i, ln.get("look"), label)
+            counted.append((label, int(row["refusal"])))
+        if i > 1 and is_terminal(str(state_lines[i - 2].get("state", ""))) and not is_annul:
+            return False, "terminal-mid-file", "line %d follows a terminal line and is not an annul line" % i
+        llr, st = _walk_filtered(filtered_stream(counted, annulled), c, ml)
+        if str(ln.get("state", "")) != st:
+            return False, "state-text", "line %d: %r vs %r" % (i, ln.get("state"), st)
+        got = ln.get("llr")
+        if not isinstance(got, (int, float)) or abs(float(got) - llr) > tol:
+            return False, "llr-recompute", "line %d: %r vs %r" % (i, got, llr)
+    return True, None, "%d lines, %d annulled" % (len(state_lines), len(annulled))
+
+
 # ---------------------------------------------------------------- R0
 def wall_text(s):
     return "%d min" % int(round(s / 60.0)) if s >= 60 and abs(s / 60.0 - round(s / 60.0)) < 1e-9 else "%g s" % s
@@ -868,6 +1024,8 @@ def evaluate(P, instrument=None):
     if not rows:
         write_rows(P["state"], [])
         return {"looks": 0, "state": None, "llr": None, "terminal": None, "check": {"kind": "none"}, "evaluate_rc": None, "instruction": CONTINUE}
+    if stream_split(rows)[2]:
+        return _evaluate_annulled(P, rows, doc, instrument)
     r = run_instrument(["--evaluate", P["stream"], "--rule", P["frozen"], "--looks", "all", "--json"], instrument=instrument)
     lines = [json.loads(x) for x in r.stdout.splitlines() if x.strip()]
     write_rows(P["state"], lines)
@@ -884,6 +1042,41 @@ def evaluate(P, instrument=None):
     tk = terminal_kind(str(lines[-1]["state"]))
     return {"looks": len(rows), "state": lines[-1]["state"], "llr": lines[-1].get("llr"), "terminal": tk, "check": check,
             "evaluate_rc": r.returncode, "instruction": INSTRUCTIONS.get(tk, CONTINUE)}
+
+
+def _annul_checks(P, rows, lines, doc, instrument=None):
+    """The checks over a state file whose stream carries annul rows: the annul-aware invariants, then -- at a terminal -- the kept
+    instrument's own --check over the filtered stream's lines (never-early / never-late / one-terminal in the stream that never
+    held the annulled looks). -> (check dict, terminal kind, filtered stream, counted, annulled)."""
+    rule = json.loads(doc["rule_text"])
+    counted, annulled, _ = stream_split(rows)
+    filtered = filtered_stream(counted, annulled)
+    ok, inv, detail = annul_invariants(lines, rows, rule, doc["sha256"])
+    check = {"kind": "annul-aware", "rc": 0 if ok else 1, "invariant": inv, "detail": detail}
+    tk = terminal_kind(str(lines[-1]["state"])) if lines else None
+    if ok and tk:
+        tmp = tempfile.mkdtemp(prefix="lineage-annul-check-")
+        try:
+            sp = os.path.join(tmp, "state.jsonl")
+            write_rows(sp, evaluate_filtered(P, filtered, instrument))
+            cr = run_instrument(["--check", sp, "--rule", P["frozen"]], instrument=instrument)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        check["instrument_check"] = {"rc": cr.returncode, "detail": (cr.stdout + cr.stderr).strip()}
+        if cr.returncode != 0:
+            check.update({"rc": 1, "invariant": "instrument-check"})
+    return check, tk, filtered, counted, annulled
+
+
+def _evaluate_annulled(P, rows, doc, instrument=None):
+    """R3 over a stream that carries annul rows: state.jsonl is re-derived as the replay of the event log (byte-identical to the
+    incrementally written file), then checked (_annul_checks). `looks` counts the non-annulled looks."""
+    lines = replay_state(P, rows, doc, instrument)
+    write_rows(P["state"], lines)
+    check, tk, filtered, counted, annulled = _annul_checks(P, rows, lines, doc, instrument)
+    return {"looks": len(filtered), "look_labels": max(l for l, _ in counted) if counted else 0, "annulled": sorted(annulled),
+            "state": lines[-1]["state"], "llr": lines[-1].get("llr"), "terminal": tk, "check": check, "evaluate_rc": 0,
+            "instruction": INSTRUCTIONS.get(tk, CONTINUE)}
 
 
 def _row_names_dir(r, run_dir_rel):
@@ -944,7 +1137,7 @@ def append_look(P, spec, run_n, refusal, clause, run_record, root_causes=None, i
     tk, _ = last_terminal(P)
     if tk:
         raise Refuse("terminal:%s -- a terminated lineage never launches again, so no look can be appended (R3)" % tk)
-    k = len(read_jsonl(P["stream"])) + 1
+    k = next_look_label(read_jsonl(P["stream"]))
     append_row(P["stream"], {"look": k, "class": STREAM_CLASS, "refusal": int(refusal)})
     row = {"look": k, "spec": spec, "run": run_n, "run_record": run_record, "refusal": int(refusal), "clause": clause, "appended": now()}
     if root_causes:
@@ -1038,9 +1231,9 @@ def record_run(layout, lane, run_dir, run_n=None, run_validity_ids=(), root_caus
     elif cls.startswith("void:"):
         extra = {"terminal": "budget-exceeded"} if word == "budget-exceeded" else None
         outcome["void_row"] = append_void(P, lane, run_n, typed["type"], typed["clause"], run_record, extra)
-        outcome["evaluation"] = {"looks": len(read_jsonl(P["stream"])), "instruction": "continue at R1 (no look appended)"}
+        outcome["evaluation"] = {"looks": counted_looks(P), "instruction": "continue at R1 (no look appended)"}
     else:
-        outcome["evaluation"] = {"looks": len(read_jsonl(P["stream"])), "instruction": "settle the pending look before launching again (R1 refuses while it is pending)"}
+        outcome["evaluation"] = {"looks": counted_looks(P), "instruction": "settle the pending look before launching again (R1 refuses while it is pending)"}
     return outcome
 
 
@@ -1085,7 +1278,7 @@ def settle(layout, lane, run_n, root_causes, instrument=None):
         typed, word = dict(AMBIGUOUS), "ambiguous"
         outcome.update({"type": word, "typed": typed, "record_changed": changed})
         outcome["void_row"] = append_void(P, lane, int(run_n), "ambiguous", "i", run_record, {"root_causes": rc, "record_changed": changed}, settling=True)
-        outcome["evaluation"] = {"looks": len(read_jsonl(P["stream"])),
+        outcome["evaluation"] = {"looks": counted_looks(P),
                                  "instruction": "continue at R1 (no look appended: %s changed since `record` parked this look, so it is the ambiguous void and is re-taken; the supplied classes were recorded, not applied)" % ", ".join(changed)}
     else:
         word, typed, rec, meta = type_run_dir(run_dir, p0.get("run_validity_ids") or (), rc)
@@ -1096,7 +1289,7 @@ def settle(layout, lane, run_n, root_causes, instrument=None):
             outcome["evaluation"] = ev
         else:
             outcome["void_row"] = append_void(P, lane, int(run_n), typed["type"], typed["clause"], run_record, {"root_causes": rc}, settling=True)
-            outcome["evaluation"] = {"looks": len(read_jsonl(P["stream"])), "instruction": "continue at R1 (no look appended)"}
+            outcome["evaluation"] = {"looks": counted_looks(P), "instruction": "continue at R1 (no look appended)"}
     settled_row = dict(p0, settled=True, typed=typed, root_causes=rc)
     if changed:
         settled_row["record_changed"] = changed
@@ -1105,20 +1298,172 @@ def settle(layout, lane, run_n, root_causes, instrument=None):
     return outcome
 
 
+def _run_dir_of_record(layout, run_record):
+    """The run directory a looks.jsonl row points at: `run_record` is runs_dir-relative, a record file or the directory itself."""
+    if not isinstance(run_record, str) or not run_record.strip("/ "):
+        return None
+    parts = [x for x in run_record.strip("/").split("/") if x]
+    if parts and parts[-1] in RECORD_FILES:
+        parts = parts[:-1]
+    return os.path.join(layout.rel("runs_dir"), *parts) if parts else None
+
+
+def amendment_anchor_present(path, anchor):
+    """True when a markdown heading line of `path`, lowercased with spaces replaced by hyphens, IS the anchor or begins with
+    the anchor followed by a hyphen -- so `amendment-2` matches `## Amendment 2 -- ...` and `## Amendment 2`, never
+    `## Amendment 20`."""
+    want = anchor.strip().lstrip("#").strip().lower()
+    if not want:
+        return False
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            s = line.lstrip()
+            if not s.startswith("#"):
+                continue
+            head = s.lstrip("#").strip().lower().replace(" ", "-")
+            if head == want or head.startswith(want + "-"):
+                return True
+    return False
+
+
+def annul(layout, lane, run_n, root_causes, amendment, counterfactual_sha=None, instrument=None):
+    """R2 (iv) AFTER record: re-type a recorded COUNTED look as the annulled void by a disclosed amendment, append-only.
+    In order: (1) the frozen copy is verified before any write; (2) the run must be a recorded counted look in looks.jsonl --
+    a void, a pending or an unknown run refuses `not-a-counted-look`, a second annul of the same run `already-annulled`, each
+    with one refusals.jsonl row; (3) every failing substantive id of the run (read from the record the look row points at,
+    through the reader `record` uses) receives exactly one class from ANNUL_IV_CLASSES -- a variable-side class keeps the
+    look counted (typing iii: `variable-side-stays-counted`), an unclassed failing id or a class for a non-failing id exits
+    2; (4) the amendment file must exist and carry the anchor as a heading (`amendment-anchor-missing`); a stale state file
+    (not the stream's own derivation) refuses `state-stale` before any write; (5) appended, nothing rewritten: one voids.jsonl
+    row (class annulled, clause iv, annuls_look k, root_causes, amendment, counterfactual_sha when given, record_sha256 of
+    the record files as they stand, re_take), one looks.jsonl tombstone {spec, run, look, annulled, by, recorded}, one
+    stream.jsonl row {"class": "lineage", "look": k, "annul": 1}, one state.jsonl line evaluated over the non-annulled looks
+    (look: the highest label so far, annulled: every annulled label); spend.jsonl untouched (the run stays charged). The
+    lineage's next look takes label max + 1; the lane rotation re-takes the annulled card there."""
+    root_lane, P, hops = resolve_lineage(layout, lane)
+    require_header(P)
+    doc = frozen_doc(P)
+    run_n = int(run_n)
+    # (2) a recorded counted look, not yet annulled
+    looks = read_jsonl(P["looks"])
+    mine = [r for r in looks if (str(r.get("spec")), str(r.get("run"))) == (str(lane), str(run_n))]
+    tomb = [r for r in mine if r.get("annulled")]
+    if tomb:
+        t = tomb[0]
+        append_row(P["refusals"], {"at": now(), "reason": "already-annulled", "verb": "annul", "spec": lane, "run": run_n, "look": t.get("look"),
+                                   "found_in": "looks.jsonl", "by": t.get("by")})
+        raise Refuse("already-annulled %s run-%s -- look %s was annulled at %s by %s; an annulment is undone by reverting its pull request, never by a second row, so this annul appends nothing" % (
+            lane, run_n, t.get("look"), t.get("recorded"), t.get("by")))
+    look_rows = [r for r in mine if not r.get("annulled")]
+    if not look_rows:
+        where, row, _ = recorded_in(P, lane, run_n, include_pending=True)
+        append_row(P["refusals"], {"at": now(), "reason": "not-a-counted-look", "verb": "annul", "spec": lane, "run": run_n, "found_in": ("%s.jsonl" % where) if where else None})
+        if where == "voids":
+            what = "a void already (class %s, clause %s in voids.jsonl)" % (row.get("class"), row.get("clause"))
+        elif where == "pending":
+            what = "parked PENDING its root cause in pending.jsonl (`settle %s %s --root-cause A#=<class>` types it)" % (lane, run_n)
+        else:
+            what = "recorded nowhere in looks.jsonl, voids.jsonl or pending.jsonl"
+        raise Refuse("not-a-counted-look %s run-%s -- %s; `annul` re-types a recorded COUNTED look (iv) after the fact and nothing else, so this annul appends nothing" % (lane, run_n, what))
+    look = look_rows[0]
+    k = int(look["look"])
+    # (3) every failing substantive id classed for (iv), none variable-side, none stray
+    run_dir = _run_dir_of_record(layout, look.get("run_record"))
+    if not run_dir or not os.path.isdir(run_dir):
+        raise Usage("annul %s run-%s: the record look %d points at (%r) is not a readable run directory; annul reads the failing substantive ids from the record `record` read" % (
+            lane, run_n, k, look.get("run_record")))
+    rec, meta = run_record_from_dir(run_dir, (), None, run_id="run-%s" % run_n)
+    failing = [a["id"] for a in rec["substantive"] if a.get("pass") is False]
+    if not failing:
+        raise Usage("annul %s run-%s: look %d's record carries no failing substantive assertion -- a refusal-0 look is typing (v) and (iv) has nothing to re-type; a control, treatment or key defect is typing (ii), not this verb's" % (
+            lane, run_n, k))
+    rc = dict(root_causes or {})
+    variable = sorted(a for a, cls in rc.items() if cls == VARIABLE_SIDE)
+    if variable:
+        raise Usage("annul %s run-%s: variable-side-stays-counted -- %s=variable-side keeps look %d COUNTED (typing iii, a refusal); (iv) takes only %s" % (
+            lane, run_n, ", ".join(variable), k, " | ".join(ANNUL_IV_CLASSES)))
+    other = sorted("%s=%s" % (a, cls) for a, cls in rc.items() if cls not in ANNUL_IV_CLASSES)
+    if other:
+        raise Usage("annul %s run-%s: %s is not a typing-(iv) class; (iv) takes only %s (harness/run-validity is the ambiguous void (i), never an annulment)" % (
+            lane, run_n, ", ".join(other), " | ".join(ANNUL_IV_CLASSES)))
+    unclassed = [a for a in failing if a not in rc]
+    if unclassed:
+        raise Usage("annul %s run-%s: no root-cause class for %s -- an unclassed failing id is never typed by guess and look %d stays counted; pass --root-cause %s with a class from %s" % (
+            lane, run_n, ", ".join(unclassed), k, " ".join("%s=<class>" % a for a in unclassed), " | ".join(ANNUL_IV_CLASSES)))
+    stray = sorted(a for a in rc if a not in failing)
+    if stray:
+        raise Usage("annul %s run-%s: %s is not a failing substantive id of look %d (failing: %s); a class lands only on a failing id" % (
+            lane, run_n, ", ".join(stray), k, ", ".join(failing)))
+    # (4) the amendment anchor
+    path, sep, anchor = (amendment or "").rpartition("#")
+    if not sep or not path.strip() or not anchor.strip():
+        raise Usage("annul: --amendment takes <path>#<anchor> (a heading of the disclosed amendment, e.g. AMENDMENTS.md#amendment-2), got %r" % (amendment,))
+    candidates = [path] if os.path.isabs(path) else [os.path.join(layout.root, path), os.path.abspath(path)]
+    apath = next((cand for cand in candidates if os.path.isfile(cand)), candidates[0])
+    if not os.path.isfile(apath):
+        raise Usage("annul %s run-%s: amendment-anchor-missing -- no amendment file at %s (%r resolved against the repository root, then the cwd)" % (lane, run_n, apath, path))
+    if not amendment_anchor_present(apath, anchor):
+        raise Usage("annul %s run-%s: amendment-anchor-missing -- no heading of %s matches %r (headings are matched lowercased with spaces as hyphens: `amendment-2` matches a line starting `## Amendment 2`)" % (
+            lane, run_n, apath, anchor))
+    if counterfactual_sha is not None:
+        s = str(counterfactual_sha).strip().lower()
+        if len(s) != 64 or any(ch not in "0123456789abcdef" for ch in s):
+            raise Usage("annul: --counterfactual-sha takes a sha256 hex digest (64 hex characters), got %r" % (counterfactual_sha,))
+        counterfactual_sha = s
+    # the state file must be the stream's own derivation before one line is appended to it
+    rows = read_jsonl(P["stream"])
+    lines = read_jsonl(P["state"])
+    if lines != replay_state(P, rows, doc, instrument):
+        raise Refuse("state-stale %s -- state.jsonl (%d lines) is not the derivation of stream.jsonl (%d rows); run `evaluate %s` first, then annul (nothing written)" % (
+            lane, len(lines), len(rows), lane))
+    # (5) writes, each appended
+    ts = now()
+    vrow = {"spec": lane, "run": run_n, "class": "annulled", "clause": "iv", "annuls_look": k, "root_causes": rc, "amendment": amendment,
+            "record_sha256": record_shas(run_dir), "run_record": look.get("run_record"), "recorded": ts, "re_take": RE_TAKE_ANNUL}
+    if counterfactual_sha:
+        vrow["counterfactual_sha"] = counterfactual_sha
+    append_row(P["voids"], vrow)
+    trow = {"spec": lane, "run": run_n, "look": k, "annulled": True, "by": amendment, "recorded": ts}
+    append_row(P["looks"], trow)
+    srow = {"class": STREAM_CLASS, "look": k, "annul": 1}
+    append_row(P["stream"], srow)
+    rows.append(srow)
+    counted, annulled, _ = stream_split(rows)
+    ev = evaluate_filtered(P, filtered_stream(counted, annulled), instrument)
+    line = dict(ev[-1]) if ev else empty_state_line(doc)
+    line["look"] = max(l for l, _ in counted)
+    line["annulled"] = sorted(annulled)
+    append_row(P["state"], line)
+    # (6) read back over the appended files, never a rewrite
+    lines = read_jsonl(P["state"])
+    check, tk, filtered, counted, annulled = _annul_checks(P, rows, lines, doc, instrument)
+    return {"lineage": root_lane, "spec": lane, "run": run_n, "look": k, "type": "annulled", "typed": dict(ANNULLED_IV), "root_causes": rc,
+            "amendment": amendment, "counterfactual_sha": counterfactual_sha, "record": rec, "meta": meta,
+            "void_row": vrow, "tombstone": trow, "stream_row": srow, "state_line": line, "next_look": max(l for l, _ in counted) + 1,
+            "may_launch": may_launch(P, record_refusal=False)[1],
+            "evaluation": {"looks": len(filtered), "annulled": sorted(annulled), "state": line["state"], "llr": line.get("llr"), "terminal": tk,
+                           "check": check, "evaluate_rc": 0, "instruction": INSTRUCTIONS.get(tk, CONTINUE)}}
+
+
 def state(layout, lane):
-    """-> (word, detail): promote | hold | max-looks | insufficient | spend-exhausted."""
+    """-> (word, detail): promote | hold | max-looks | insufficient | spend-exhausted. `looks` counts the non-annulled looks;
+    `annulled` and `look_labels` appear when the stream carries an annul row."""
     root_lane, P, hops = resolve_lineage(layout, lane)
     header, cum_usd, cum_wall, n = spend_state(P)
     tk, lines = last_terminal(P)
     rows = read_jsonl(P["stream"])
+    counted, annulled, n_annul = stream_split(rows)
     b = header["budget"]
-    detail = {"lineage": root_lane, "spec": lane, "looks": len(rows), "state": lines[-1]["state"] if lines else None,
+    detail = {"lineage": root_lane, "spec": lane, "looks": len(filtered_stream(counted, annulled)), "state": lines[-1]["state"] if lines else None,
               "llr": lines[-1].get("llr") if lines else None, "terminal": tk, "state_lines": len(lines),
               "stale": len(lines) != len(rows) and not (lines and tk),
               "spend": {"cum_usd": round(cum_usd, 6), "cum_wall_s": round(cum_wall, 1), "launches": n, "budget": b,
                         "remaining": {"usd": round(b["usd"] - cum_usd, 6), "wall_s": round(b["wall_s"] - cum_wall, 1)}},
               "voids": len(read_jsonl(P["voids"])), "pending": [{"spec": p.get("spec"), "run": p.get("run"), "failing": p.get("failing")} for p in open_pending(P)],
               "refusals": len(read_jsonl(P["refusals"])), "frozen_rule_sha256": header.get("frozen_rule_sha256"), "truncation_length": header.get("truncation_length")}
+    if n_annul:
+        detail["annulled"] = sorted(annulled)
+        detail["look_labels"] = max(l for l, _ in counted) if counted else 0
     if tk:
         word = tk
         detail["instruction"] = INSTRUCTIONS[tk]
@@ -1705,6 +2050,243 @@ def selftest(into=None):
               m10["run_validity_unknown"] == ["A7"] and w10 == "counted" and len(warned) == 1 and "warning: --run-validity A7 names no assertion" in warned[0]
               and m10b["run_validity_unknown"] == [] and quiet == [] and w10b == "counted"
               and r_t7.returncode == 0 and r_t7.stdout.strip() == "counted" and "warning: --run-validity A7" in r_t7.stderr, (warned, r_t7.stderr[:160]))
+        # ---- annul: typing (iv) after record (lab ruling: cause-n-effect PR 47, AMENDMENTS.md Amendment 2 R9, fragment 0509)
+        laneA = "H-DRAFT-selftest-annul"
+        cmd_init(layout, laneA, 3600.0, 9.0)
+        PA = layout.lineage_paths(laneA)
+        amend_rel = "experiments/runs/%s/AMENDMENTS.md" % laneA
+        amend_abs = os.path.join(root, *amend_rel.split("/"))
+        os.makedirs(os.path.dirname(amend_abs), exist_ok=True)
+        with open(amend_abs, "w", encoding="utf-8") as fh:
+            fh.write("# AMENDMENTS -- selftest\n\n## Amendment 1 -- a harness disclosure (before any look)\n\ntext\n\n"
+                     "## Amendment 2 -- the ruling on look 1 (run-1 re-typed void:annulled under R2 (iv))\n\ntext\n\n### Amendment 20 -- a decoy heading\n")
+        decoy_rel = "experiments/runs/%s/DECOY.md" % laneA
+        with open(os.path.join(root, *decoy_rel.split("/")), "w", encoding="utf-8") as fh:
+            fh.write("## Amendment 20 -- only the decoy\n")
+        pointer = amend_rel + "#amendment-2"
+        rdA1 = _mk_run(layout, laneA, 1, {"A1": {"pass": True}, "A2": {"pass": True}, "A3": {"pass": False, "root_cause_class": VARIABLE_SIDE}, "A4": {"pass": True}, "A5": {"pass": True}}, wall_s=681.4, cost_usd=5.461352)
+        oA1 = record_run(layout, laneA, rdA1, run_validity_ids=["A5"])
+        rdA2 = _mk_run(layout, laneA, 2, {"A1": {"pass": False, "root_cause_class": VARIABLE_SIDE}, "A2": {"pass": False, "root_cause_class": VARIABLE_SIDE}, "A3": {"pass": True}, "A4": {"pass": True}, "A5": {"pass": True}}, wall_s=770.8, cost_usd=5.33584)
+        oA2 = record_run(layout, laneA, rdA2, run_validity_ids=["A5"])
+        okA, wA_, _ = may_launch(PA)
+        check("annul setup: two counted refusals read evidence-sufficient hold at look 2 (llr -3.2189) and may-launch refuses terminal:hold -- the lab lineage's recorded shape",
+              oA1["look"] == 1 and oA2["look"] == 2 and oA2["evaluation"]["terminal"] == "hold" and oA2["evaluation"]["llr"] == 2 * c["inc1"] and not okA and wA_ == "terminal:hold", (wA_, oA2["evaluation"]))
+        spendA_before = sha_file(PA["spend"])
+        laneF = "H-DRAFT-selftest-annul-fresh"
+        cmd_init(layout, laneF, 3600.0, 9.0)
+        PF = layout.lineage_paths(laneF)
+        append_look(PF, laneF, 1, 1, "iii", "x")
+        fresh = read_jsonl(PF["state"])[-1]
+        cf_sha = "ab" * 32
+        a1 = annul(layout, laneA, 1, {"A3": INSTRUMENT_SIDE}, pointer, counterfactual_sha=cf_sha)
+        vA = read_jsonl(PA["voids"])[-1]
+        lA = read_jsonl(PA["looks"])
+        sA = read_jsonl(PA["stream"])
+        stA = read_jsonl(PA["state"])
+        check("(a) annul look 1 A3=instrument with a real amendment anchor: word annulled, typed (iv), ONE voids row {class annulled, clause iv, annuls_look 1, root_causes {A3: instrument}, amendment <pointer>, counterfactual_sha, record_sha256 of grade.json + RUN-RECORD.json as they stand, run_record, re_take the same card at the next look number}; spend.jsonl untouched (the run stays charged)",
+              a1["type"] == "annulled" and a1["typed"] == ANNULLED_IV and a1["look"] == 1 and len(read_jsonl(PA["voids"])) == 1
+              and vA["class"] == "annulled" and vA["clause"] == "iv" and vA["annuls_look"] == 1 and vA["root_causes"] == {"A3": INSTRUMENT_SIDE} and vA["amendment"] == pointer and vA["counterfactual_sha"] == cf_sha
+              and set(vA["record_sha256"]) == {"grade.json", "RUN-RECORD.json"} and vA["record_sha256"]["grade.json"] == sha_file(os.path.join(rdA1, "grade.json")) and vA["re_take"] == RE_TAKE_ANNUL
+              and vA["spec"] == laneA and vA["run"] == 1 and vA["run_record"] == "%s/run-1/RUN-RECORD.json" % laneA and sha_file(PA["spend"]) == spendA_before, canon(vA))
+        check("(a) the looks.jsonl tombstone {spec, run 1, look 1, annulled true, by <pointer>, recorded} is appended after the two look rows, which are unchanged; the stream gains exactly {class lineage, look 1, annul 1} after its two counted rows",
+              len(lA) == 3 and lA[0]["look"] == 1 and lA[1]["look"] == 2 and "annulled" not in lA[0] and "annulled" not in lA[1]
+              and lA[2]["annulled"] is True and lA[2]["look"] == 1 and lA[2]["run"] == 1 and lA[2]["spec"] == laneA and lA[2]["by"] == pointer and set(lA[2]) == {"spec", "run", "look", "annulled", "by", "recorded"}
+              and sA == [{"class": STREAM_CLASS, "look": 1, "refusal": 1}, {"class": STREAM_CLASS, "look": 2, "refusal": 1}, {"class": STREAM_CLASS, "look": 1, "annul": 1}], canon(lA[2]) + " " + canon(sA))
+        check("(a) state.jsonl: the two recorded lines untouched (n=1/13, hold), then ONE appended line {look 2 (the highest label), annulled [1], evidence-insufficient n=1/13} whose llr, n_min, rule, rule_sha, state and stream equal a fresh one-refusal stream's line to the bit (llr -1.6094379124341003)",
+              len(stA) == 3 and stA[0]["state"] == "evidence-insufficient n=1/13" and stA[1]["state"] == "evidence-sufficient hold" and "annulled" not in stA[1]
+              and stA[2]["look"] == 2 and stA[2]["annulled"] == [1] and stA[2]["state"] == "evidence-insufficient n=1/13" and stA[2]["llr"] == fresh["llr"] and stA[2]["llr"] == c["inc1"]
+              and {kk: v for kk, v in stA[2].items() if kk not in ("look", "annulled")} == {kk: v for kk, v in fresh.items() if kk != "look"}, canon(stA[2]) + " vs " + canon(fresh))
+        okA2, wA2, _ = may_launch(PA)
+        wsA, dsA = state(layout, laneA)
+        check("(a) after the annul may-launch reads launch again (the last state line is no terminal, budget permitting, nothing pending); state reads insufficient with looks 1, annulled [1], look_labels 2, voids 1, next launch, instruction continue at R1; the annul's own evaluation: check annul-aware rc 0, next_look 3, may_launch launch",
+              okA2 and wA2 == "launch" and wsA == "insufficient" and dsA["looks"] == 1 and dsA["annulled"] == [1] and dsA["look_labels"] == 2 and dsA["next"] == "launch" and dsA["instruction"] == CONTINUE
+              and dsA["state"] == "evidence-insufficient n=1/13" and dsA["voids"] == 1 and dsA["stale"] is False
+              and a1["evaluation"]["check"] == {"kind": "annul-aware", "rc": 0, "invariant": None, "detail": "3 lines, 1 annulled"} and a1["evaluation"]["instruction"] == CONTINUE and a1["next_look"] == 3 and a1["may_launch"] == "launch", (wA2, wsA, canon(dsA), canon(a1["evaluation"]["check"])))
+        # (b)(g) refusals with their guard rows
+        refA0 = len(read_jsonl(PA["refusals"]))
+        try:
+            annul(layout, laneA, 9, {"A3": INSTRUMENT_SIDE}, pointer)
+            eU = None
+        except Refuse as e:
+            eU = str(e)
+        rU = read_jsonl(PA["refusals"])[-1]
+        rdA3 = _mk_run(layout, laneA, 3, {"A1": {"pass": True}, "A2": {"pass": False}, "A5": {"pass": True}})
+        oA3 = record_run(layout, laneA, rdA3, run_validity_ids=["A5"])
+        try:
+            annul(layout, laneA, 3, {"A2": INSTRUMENT_SIDE}, pointer)
+            eP = None
+        except Refuse as e:
+            eP = str(e)
+        rP = read_jsonl(PA["refusals"])[-1]
+        sA3 = settle(layout, laneA, 3, {"A2": FIXTURE_SIDE})
+        try:
+            annul(layout, laneA, 3, {"A2": INSTRUMENT_SIDE}, pointer)
+            eV = None
+        except Refuse as e:
+            eV = str(e)
+        rV = read_jsonl(PA["refusals"])[-1]
+        try:
+            annul(layout, laneA, 1, {"A3": INSTRUMENT_SIDE}, pointer)
+            eD = None
+        except Refuse as e:
+            eD = str(e)
+        rD = read_jsonl(PA["refusals"])[-1]
+        check("(b)(g) annul refuses (exit 3, one refusals.jsonl row each) a run recorded nowhere, a run parked PENDING and a void run as `not-a-counted-look` (rows {at, reason not-a-counted-look, verb annul, spec, run, found_in null | pending.jsonl | voids.jsonl}) and a second annul of run 1 as `already-annulled` (row {at, reason already-annulled, verb annul, spec, run 1, look 1, found_in looks.jsonl, by <pointer>})",
+              eU is not None and eU.startswith("not-a-counted-look %s run-9" % laneA) and "recorded nowhere" in eU and rU == {"at": rU["at"], "reason": "not-a-counted-look", "verb": "annul", "spec": laneA, "run": 9, "found_in": None}
+              and oA3.get("pending") == ["A2"] and eP is not None and eP.startswith("not-a-counted-look %s run-3" % laneA) and "PENDING" in eP and rP["found_in"] == "pending.jsonl" and rP["reason"] == "not-a-counted-look" and rP["run"] == 3
+              and sA3["typed"] == ANNULLED_IV and eV is not None and "a void already (class annulled, clause iv" in eV and rV["found_in"] == "voids.jsonl" and rV["reason"] == "not-a-counted-look"
+              and eD is not None and eD.startswith("already-annulled %s run-1" % laneA) and "reverting its pull request" in eD and rD == {"at": rD["at"], "reason": "already-annulled", "verb": "annul", "spec": laneA, "run": 1, "look": 1, "found_in": "looks.jsonl", "by": pointer}
+              and len(read_jsonl(PA["refusals"])) == refA0 + 4 and len(read_jsonl(PA["voids"])) == 2 and len(read_jsonl(PA["stream"])) == 3, json.dumps([eU, eP, eV, eD])[:700])
+        snapA = {kk: sha_file(PA[kk]) for kk in ("stream", "looks", "voids", "state", "spend", "refusals", "pending")}
+        usage = {}
+        for name, rc_, am, cs in (("anchor-missing", {"A1": FIXTURE_SIDE, "A2": INSTRUMENT_SIDE}, amend_rel + "#amendment-9", None),
+                                  ("file-missing", {"A1": FIXTURE_SIDE, "A2": INSTRUMENT_SIDE}, "experiments/runs/nowhere/AMENDMENTS.md#amendment-2", None),
+                                  ("decoy", {"A1": FIXTURE_SIDE, "A2": INSTRUMENT_SIDE}, decoy_rel + "#amendment-2", None),
+                                  ("variable-side", {"A1": VARIABLE_SIDE, "A2": FIXTURE_SIDE}, pointer, None),
+                                  ("harness-class", {"A1": HARNESS_SIDE, "A2": FIXTURE_SIDE}, pointer, None),
+                                  ("unclassed", {"A1": FIXTURE_SIDE}, pointer, None),
+                                  ("stray-id", {"A1": FIXTURE_SIDE, "A2": FIXTURE_SIDE, "A9": FIXTURE_SIDE}, pointer, None),
+                                  ("no-anchor", {"A1": FIXTURE_SIDE, "A2": FIXTURE_SIDE}, amend_rel, None),
+                                  ("bad-sha", {"A1": FIXTURE_SIDE, "A2": FIXTURE_SIDE}, pointer, "xyz")):
+            try:
+                annul(layout, laneA, 2, rc_, am, counterfactual_sha=cs)
+                usage[name] = None
+            except Usage as e:
+                usage[name] = str(e)
+        check("(b) annul exits 2 (usage; no row written, no file changed) on: a missing anchor and a missing amendment file (`amendment-anchor-missing`), a decoy heading (`Amendment 20` is not `amendment-2`), a variable-side class (`variable-side-stays-counted`: typing iii keeps the look counted), a harness/run-validity class (not a (iv) class), an unclassed failing id (A2), a class for a non-failing id (A9), a pointer without #anchor, a malformed --counterfactual-sha",
+              all(v is not None for v in usage.values()) and "amendment-anchor-missing" in usage["anchor-missing"] and "amendment-anchor-missing" in usage["file-missing"] and "amendment-anchor-missing" in usage["decoy"]
+              and "variable-side-stays-counted" in usage["variable-side"] and "A1=variable-side keeps look 2 COUNTED" in usage["variable-side"] and "A1=harness/run-validity is not a typing-(iv) class" in usage["harness-class"]
+              and "no root-cause class for A2" in usage["unclassed"] and "A9 is not a failing substantive id of look 2 (failing: A1, A2)" in usage["stray-id"] and "<path>#<anchor>" in usage["no-anchor"] and "sha256" in usage["bad-sha"]
+              and {kk: sha_file(PA[kk]) for kk in snapA} == snapA, json.dumps(usage)[:900])
+        # (d) record after the annul takes label max + 1; a refusal-0 look is not annullable
+        rdA4 = _mk_run(layout, laneA, 4, {"A1": {"pass": True}, "A2": {"pass": True}, "A5": {"pass": True}}, wall_s=100.0)
+        oA4 = record_run(layout, laneA, rdA4, run_validity_ids=["A5"])
+        stA4 = read_jsonl(PA["state"])
+        check("(d) record after the annul takes look label 3 = max existing label 2 + 1 (the instrument knows no cards; the lane rotation re-takes the annulled card there): stream row {look 3, refusal 0}, state line {look 3, evidence-insufficient n=2/13, llr inc1 + inc0 to the bit, no annulled key} appended after the three earlier lines byte-for-byte; evaluation looks 2, annulled [1], check annul-aware rc 0",
+              oA4["look"] == 3 and read_jsonl(PA["stream"])[-1] == {"class": STREAM_CLASS, "look": 3, "refusal": 0} and len(stA4) == 4 and stA4[:3] == stA and stA4[3]["look"] == 3 and "annulled" not in stA4[3]
+              and stA4[3]["state"] == "evidence-insufficient n=2/13" and stA4[3]["llr"] == c["inc1"] + c["inc0"] and oA4["evaluation"]["check"]["kind"] == "annul-aware" and oA4["evaluation"]["check"]["rc"] == 0
+              and oA4["evaluation"]["looks"] == 2 and oA4["evaluation"]["annulled"] == [1] and read_jsonl(PA["looks"])[-1]["look"] == 3, canon(stA4[-1]))
+        try:
+            annul(layout, laneA, 4, {"A1": FIXTURE_SIDE}, pointer)
+            e04 = None
+        except Usage as e:
+            e04 = str(e)
+        check("(b) a refusal-0 look is not annullable by this verb: its record carries no failing substantive assertion (typing v), exit 2, nothing written",
+              e04 is not None and "no failing substantive assertion" in e04 and len(read_jsonl(PA["voids"])) == 2 and len(read_jsonl(PA["stream"])) == 4, e04)
+        # (c) the checks after the annul, after the further record, after a further annul; evaluate re-derives without rewriting history
+        sha_state0 = sha_file(PA["state"])
+        ev_c1 = evaluate(PA)
+        sha_state1 = sha_file(PA["state"])
+        a2 = annul(layout, laneA, 2, {"A1": FIXTURE_SIDE, "A2": INSTRUMENT_SIDE}, pointer)
+        stA5 = read_jsonl(PA["state"])
+        rdA5 = _mk_run(layout, laneA, 5, {"A1": {"pass": True}, "A2": {"pass": True}, "A5": {"pass": True}})
+        oA5 = record_run(layout, laneA, rdA5, run_validity_ids=["A5"])
+        ev_c2 = evaluate(PA)
+        check("(c) the checks pass after the annul (`evaluate` re-derives state.jsonl from the event log byte-for-byte: sha unchanged), after the further record, and after a further annul (run 2: A1 fixture/manifest/contract-side, A2 instrument -> annulled [1, 2]; the state line reads look 3, n=1/13, llr inc0 to the bit -- the one remaining counted look is the refusal-0 run-4); the next record takes label 4 and reads n=2/13 with llr 2 x inc0",
+              ev_c1["check"]["rc"] == 0 and ev_c1["check"]["kind"] == "annul-aware" and sha_state1 == sha_state0 and ev_c1["looks"] == 2 and ev_c1["annulled"] == [1]
+              and a2["type"] == "annulled" and a2["look"] == 2 and len(stA5) == 5 and stA5[:4] == stA4 and stA5[4]["look"] == 3 and stA5[4]["annulled"] == [1, 2] and stA5[4]["state"] == "evidence-insufficient n=1/13" and stA5[4]["llr"] == c["inc0"]
+              and read_jsonl(PA["voids"])[-1]["root_causes"] == {"A1": FIXTURE_SIDE, "A2": INSTRUMENT_SIDE} and read_jsonl(PA["voids"])[-1]["annuls_look"] == 2
+              and oA5["look"] == 4 and oA5["evaluation"]["check"]["rc"] == 0 and oA5["evaluation"]["state"] == "evidence-insufficient n=2/13" and oA5["evaluation"]["llr"] == c["inc0"] + c["inc0"]
+              and ev_c2["check"]["rc"] == 0 and ev_c2["looks"] == 2 and ev_c2["annulled"] == [1, 2] and ev_c2["look_labels"] == 4 and len(read_jsonl(PA["state"])) == 6, (canon(stA5[-1]), canon(ev_c2["check"])))
+        docA = frozen_doc(PA)
+        ruleA = json.loads(docA["rule_text"])
+        rowsA, linesA = read_jsonl(PA["stream"]), read_jsonl(PA["state"])
+        okG, invG, _ = annul_invariants(linesA, rowsA, ruleA, POLICY_SHA256)
+        tam1 = json.loads(json.dumps(linesA))
+        tam1[2]["llr"] += 1e-6
+        tam2 = json.loads(json.dumps(linesA))
+        tam2[2]["annulled"] = []
+        rows3 = [rowsA[0], rowsA[1], rowsA[3]]
+        lines3 = [linesA[0], linesA[1], linesA[3]]
+        rows4 = json.loads(json.dumps(rowsA))
+        lines4 = json.loads(json.dumps(linesA))
+        rows4[3]["look"], lines4[3]["look"] = 4, 4
+        tams = {"llr": annul_invariants(tam1, rowsA, ruleA, POLICY_SHA256)[1], "tomb": annul_invariants(tam2, rowsA, ruleA, POLICY_SHA256)[1],
+                "mid": annul_invariants(lines3, rows3, ruleA, POLICY_SHA256)[1], "gap": annul_invariants(lines4, rows4, ruleA, POLICY_SHA256)[1],
+                "count": annul_invariants(linesA[:-1], rowsA, ruleA, POLICY_SHA256)[1]}
+        check("(c) the annul-aware invariants name their violations: the lineage's file ok; an annul line's llr moved 1e-6 -> llr-recompute; its annulled list emptied -> tombstones; a counted line straight after the hold line (the annul row and line removed) -> terminal-mid-file; a label gap (look 3 relabelled 4) -> looks-consecutive; a missing line -> line-count",
+              okG and invG is None and tams == {"llr": "llr-recompute", "tomb": "tombstones", "mid": "terminal-mid-file", "gap": "looks-consecutive", "count": "line-count"}, json.dumps(tams))
+        # (e) R4: a successor inherits the tombstones and annul rows unchanged and reads the same state
+        succA = "H-DRAFT-selftest-annul-v2"
+        before_files = {kk: open(PA[kk], "rb").read() for kk in ("looks", "voids", "stream", "state")}
+        oiA = cmd_init(layout, succA, None, None, inherit=laneA)
+        rlA, PSA, hopsA = resolve_lineage(layout, succA)
+        wS, dS = state(layout, succA)
+        wR, dR = state(layout, laneA)
+        rdS1 = _mk_run(layout, succA, 1, {"A1": {"pass": True}, "A2": {"pass": True}, "A5": {"pass": True}})
+        oS1 = record_run(layout, succA, rdS1, run_validity_ids=["A5"])
+        after_files = {kk: open(PA[kk], "rb").read() for kk in before_files}
+        check("(e) R4: a successor inherits the annulled lineage unchanged -- one pointer; the root's looks.jsonl (tombstones) and voids.jsonl (annul rows) and stream and state byte-identical, only appended to by the successor's own look; the same state (looks 2, annulled [1, 2], insufficient, llr equal); the successor's counted run takes label 5 of the ROOT stream and passes the check",
+              oiA["initialised"] and rlA == laneA and PSA["looks"] == PA["looks"] and wS == wR == "insufficient" and dS["looks"] == dR["looks"] == 2 and dS["annulled"] == dR["annulled"] == [1, 2] and dS["state"] == dR["state"] and dS["llr"] == dR["llr"]
+              and oS1["look"] == 5 and oS1["lineage"] == laneA and all(after_files[kk].startswith(before_files[kk]) for kk in before_files) and after_files["voids"] == before_files["voids"]
+              and read_jsonl(PA["looks"])[-1]["spec"] == succA and read_jsonl(PA["looks"])[-1]["look"] == 5 and oS1["evaluation"]["check"]["rc"] == 0 and state(layout, succA)[1]["looks"] == 3, (hopsA, oS1.get("look"), canon(dS)))
+        # (f) a tampered frozen copy refuses annul before any write
+        laneT = "H-DRAFT-selftest-annul-tampered"
+        cmd_init(layout, laneT, 1800.0, 0.10)
+        PT = layout.lineage_paths(laneT)
+        for n in (1, 2):
+            record_run(layout, laneT, _mk_run(layout, laneT, n, {"A1": {"pass": False, "root_cause_class": VARIABLE_SIDE}, "A5": {"pass": True}}), run_validity_ids=["A5"])
+        goodT = open(PT["frozen"], "rb").read()
+        docT = json.loads(goodT.decode("utf-8"))
+        docT["rule_text"] = docT["rule_text"].replace('"alpha": 0.05', '"alpha": 0.5')
+        with open(PT["frozen"], "w", encoding="utf-8") as fh:
+            json.dump(docT, fh)
+        beforeT = {kk: (open(PT[kk], "rb").read() if os.path.exists(PT[kk]) else None) for kk in ("spend", "stream", "looks", "voids", "pending", "refusals", "state")}
+        try:
+            annul(layout, laneT, 1, {"A1": INSTRUMENT_SIDE}, pointer)
+            eT = None
+        except Refuse as e:
+            eT = str(e)
+        afterT = {kk: (open(PT[kk], "rb").read() if os.path.exists(PT[kk]) else None) for kk in beforeT}
+        with open(PT["frozen"], "wb") as fh:
+            fh.write(goodT)
+        aT = annul(layout, laneT, 1, {"A1": INSTRUMENT_SIDE}, pointer)
+        check("(f) a tampered frozen copy refuses annul `frozen-rule-tampered` BEFORE any write -- spend, stream, looks, voids, pending, refusals and state byte-identical (no refusals row either) with the hold still standing; the restored copy annuls look 1 and may-launch reads launch again",
+              eT is not None and "frozen-rule-tampered" in eT and afterT == beforeT and beforeT["refusals"] is None and aT["type"] == "annulled" and aT["evaluation"]["state"] == "evidence-insufficient n=1/13" and may_launch(PT)[1] == "launch", (eT or "")[:120])
+        # state-stale: the state file must be the stream's own derivation
+        laneS = "H-DRAFT-selftest-annul-stale"
+        cmd_init(layout, laneS, 1800.0, 0.10)
+        PS_ = layout.lineage_paths(laneS)
+        record_run(layout, laneS, _mk_run(layout, laneS, 1, {"A1": {"pass": False, "root_cause_class": VARIABLE_SIDE}, "A5": {"pass": True}}), run_validity_ids=["A5"])
+        append_row(PS_["stream"], {"look": 2, "class": STREAM_CLASS, "refusal": 1})
+        beforeS = {kk: (open(PS_[kk], "rb").read() if os.path.exists(PS_[kk]) else None) for kk in ("stream", "looks", "voids", "state", "refusals")}
+        try:
+            annul(layout, laneS, 1, {"A1": INSTRUMENT_SIDE}, pointer)
+            eS = None
+        except Refuse as e:
+            eS = str(e)
+        afterS = {kk: (open(PS_[kk], "rb").read() if os.path.exists(PS_[kk]) else None) for kk in beforeS}
+        evS = evaluate(PS_)
+        aS = annul(layout, laneS, 1, {"A1": INSTRUMENT_SIDE}, pointer)
+        check("annul refuses `state-stale` (exit 3, nothing written) while state.jsonl is not the stream's own derivation (a stream row ahead of its state line); `evaluate` re-derives it (hold at look 2) and the annul then proceeds (withdrawn: n=1/13)",
+              eS is not None and eS.startswith("state-stale %s" % laneS) and "evaluate" in eS and afterS == beforeS and evS["terminal"] == "hold" and aS["type"] == "annulled" and aS["evaluation"]["state"] == "evidence-insufficient n=1/13", (eS or "")[:160])
+        # an annul can also complete a terminal: the stream that never held the look promotes
+        laneP = "H-DRAFT-selftest-annul-promote"
+        cmd_init(layout, laneP, 1800.0, 0.10)
+        PP = layout.lineage_paths(laneP)
+        for n, bit in enumerate("PPPPFPP", 1):
+            rd = _mk_run(layout, laneP, n, {"A1": {"pass": bit == "P", "root_cause_class": None if bit == "P" else VARIABLE_SIDE}, "A5": {"pass": True}})
+            record_run(layout, laneP, rd, run_validity_ids=["A5"])
+        aP = annul(layout, laneP, 5, {"A1": INSTRUMENT_SIDE}, pointer)
+        stP = read_jsonl(PP["state"])[-1]
+        check("an annul can also complete a terminal: seven looks PPPPFPP (llr 1.918, no terminal) with look 5 annulled read the stream that never held it -- five straight passes -> evidence-sufficient promote at the fifth counted look, llr 2.9389 (the lab's fifth-look value to the bit), the state line labelled look 7 with annulled [5]; the two labels past the re-evaluated terminal stay recorded (looks 6) and unread; may-launch refuses terminal:promote; the kept checker passes over the filtered lines",
+              aP["evaluation"]["terminal"] == "promote" and stP["look"] == 7 and stP["annulled"] == [5] and stP["llr"] == LAB_LLR[-1] and stP["state"] == "evidence-sufficient promote" and may_launch(PP)[1] == "terminal:promote"
+              and aP["evaluation"]["check"]["rc"] == 0 and aP["evaluation"]["check"]["instrument_check"] == {"rc": 0, "detail": "ok"} and state(layout, laneP)[0] == "promote" and aP["evaluation"]["looks"] == 6 and aP["may_launch"] == "terminal:promote", canon(stP))
+        # the CLI surface
+        r_an1 = cli("annul", laneA, "1", "--root-cause", "A3=instrument", "--amendment", pointer)
+        r_an2 = cli("annul", laneA, "9", "--root-cause", "A3=instrument", "--amendment", pointer)
+        r_an3 = cli("annul", laneT, "2", "--root-cause", "A1=variable-side", "--amendment", pointer)
+        r_an4 = cli("annul", laneT, "2", "--root-cause", "A1=instrument", "--amendment", amend_rel + "#amendment-9")
+        r_an5 = cli("annul", laneT, "2", "--root-cause", "A1=instrument")
+        r_an6 = cli("annul", laneT, "2", "--root-cause", "A1=instrument", "--amendment", pointer, "--json")
+        j6 = json.loads(r_an6.stdout) if r_an6.returncode == 0 else {}
+        oT3 = record_run(layout, laneT, _mk_run(layout, laneT, 3, {"A1": {"pass": True}, "A5": {"pass": True}}), run_validity_ids=["A5"])
+        check("CLI: annul of an annulled run exits 3 `refused: already-annulled`; of an unknown run exits 3 `refused: not-a-counted-look`; a variable-side class exits 2 with `variable-side-stays-counted` on stderr and empty stdout; a missing anchor exits 2 `amendment-anchor-missing`; a missing --amendment exits 2; a valid annul --json exits 0 with word annulled, look 2; annulling every counted look leaves llr 0.0, evidence-insufficient n=0/13, may-launch launch, and the next record takes label 3 with n=1/13",
+              r_an1.returncode == 3 and r_an1.stdout.startswith("refused: already-annulled %s run-1" % laneA) and r_an2.returncode == 3 and r_an2.stdout.startswith("refused: not-a-counted-look %s run-9" % laneA)
+              and r_an3.returncode == 2 and r_an3.stdout == "" and "variable-side-stays-counted" in r_an3.stderr and r_an4.returncode == 2 and "amendment-anchor-missing" in r_an4.stderr and r_an5.returncode == 2
+              and r_an6.returncode == 0 and j6.get("word") == "annulled" and j6.get("look") == 2 and j6.get("evaluation", {}).get("state") == "evidence-insufficient n=0/13" and j6.get("evaluation", {}).get("llr") == 0.0 and j6.get("state_line", {}).get("annulled") == [1, 2]
+              and j6.get("may_launch") == "launch" and oT3["look"] == 3 and oT3["evaluation"]["state"] == "evidence-insufficient n=1/13" and oT3["evaluation"]["llr"] == c["inc0"] and oT3["evaluation"]["check"]["rc"] == 0,
+              "rc %d %r / %d %r / %d %r / %d %r / %d / %d %r" % (r_an1.returncode, r_an1.stdout.strip()[:80], r_an2.returncode, r_an2.stdout.strip()[:80], r_an3.returncode, r_an3.stderr.strip()[:80], r_an4.returncode, r_an4.stderr.strip()[:80], r_an5.returncode, r_an6.returncode, (r_an6.stdout + r_an6.stderr).strip()[:160]))
     finally:
         if into is None:
             shutil.rmtree(scratch, ignore_errors=True)
@@ -1805,6 +2387,12 @@ def main(argv=None):
     p.add_argument("lane")
     p.add_argument("run", type=int)
     p.add_argument("--root-cause", action="append", default=[])
+    p = add("annul", "R2 (iv) AFTER record: re-type a recorded counted look as the annulled void by a disclosed amendment (append-only)")
+    p.add_argument("lane")
+    p.add_argument("run", type=int)
+    p.add_argument("--root-cause", action="append", default=[], required=True, help="A#=<class> for EVERY failing substantive id, class %s (variable-side keeps the look counted)" % " | ".join(ANNUL_IV_CLASSES))
+    p.add_argument("--amendment", required=True, help="<path>#<anchor>: the disclosed amendment file and the heading that rules the annulment (anchor = heading lowercased, spaces as hyphens)")
+    p.add_argument("--counterfactual-sha", help="sha256 of the counterfactual regrade record that shows typing (iv)")
     p = add("evaluate", "R3 alone: re-evaluate the stream into state.jsonl")
     p.add_argument("lane")
     p = add("state", "promote|hold|insufficient|max-looks|spend-exhausted")
@@ -1889,6 +2477,10 @@ def main(argv=None):
             return EXIT_OK
         if o.cmd == "settle":
             out = settle(layout, o.lane, o.run, parse_root_causes(o.root_cause), instrument=o.instrument)
+            emit(out["type"], out, as_json, out["evaluation"]["instruction"])
+            return _rc_of(out.get("evaluation"))
+        if o.cmd == "annul":
+            out = annul(layout, o.lane, o.run, parse_root_causes(o.root_cause), o.amendment, counterfactual_sha=o.counterfactual_sha, instrument=o.instrument)
             emit(out["type"], out, as_json, out["evaluation"]["instruction"])
             return _rc_of(out.get("evaluation"))
     except Refuse as e:

@@ -22,7 +22,7 @@ and no decision card ever asks for one. Source lab: `H-DRAFT-5810517d-verdict-li
 | **R0 freeze** | once, at the lineage root's registration | `rules/lineage-sprt.json` -> `<runs_dir>/<root>/lineage/frozen/rule.json` by the instrument's `--freeze`; the copy must be byte-identical to `rules/frozen/lineage-sprt.json` (refused otherwise). Open `stream.jsonl`, `looks.jsonl`, `spend.jsonl`. Derive the **spend budget** = the spec's Budget-per-run caps (wall-clock seconds, US$) x the frozen rule's **truncation length**, recomputed from the four policy numbers (refused unless it equals `max_looks`); both numbers and their derivation go into `spend.jsonl`'s header row. |
 | **R1 refuse** | before every launch | Refuse (exit 3, `budget-exhausted`, a row in `refusals.jsonl`) when cumulative spend + one per-run cap would exceed **either** budget component; also refuse while a look is pending its root cause (`look-pending`) and once the lineage has read a terminal (`terminal:<kind>`). Otherwise `launch`. |
 | **R2 charge + type** | after every launch | Charge the run's recorded `cost_usd` and `wall_s` to `spend.jsonl` -- every launch, counted or void. Then type the run by the table below: a **counted look** appends `{"look": k, "class": "lineage", "refusal": 0|1}` to the stream; a **void** appends no look, is recorded in `voids.jsonl`, and is re-taken by the next launch while spend remains. |
-| **R3 evaluate** | after every counted look | `stopping-rule.py --evaluate stream.jsonl --rule frozen/rule.json --looks all --json` -> `state.jsonl`; the prefix invariants on an in-progress file, `--check` only on a terminated one. `evidence-sufficient promote` = the lineage's current spec is **KEPT**; `evidence-sufficient hold` = **DISCARDED** with its exclusion banked; `evidence-insufficient max-looks n=13` = **closed without a verdict** (the mechanism's pass rate sits in the indifference zone between p1 and p0; the pooled counts are banked; a change of policy numbers is a lab decision, never this lineage's). Otherwise continue at R1. |
+| **R3 evaluate** | after every counted look | `stopping-rule.py --evaluate stream.jsonl --rule frozen/rule.json --looks all --json` -> `state.jsonl`; the prefix invariants on an in-progress file, `--check` only on a terminated one (a stream that carries an annul row is checked by the annul-aware invariants instead -- "Annulment after record" below). `evidence-sufficient promote` = the lineage's current spec is **KEPT**; `evidence-sufficient hold` = **DISCARDED** with its exclusion banked; `evidence-insufficient max-looks n=13` = **closed without a verdict** (the mechanism's pass rate sits in the indifference zone between p1 and p0; the pooled counts are banked; a change of policy numbers is a lab decision, never this lineage's). Otherwise continue at R1. |
 | **R4 inherit** | at a refine (new id) | The successor inherits R0's artifacts unchanged -- the frozen copy, the stream, the looks, the ledger, the spend budget. `init <successor> --inherit <root>` writes one pointer (`inherits.json`); every verb on the successor resolves to the root's files. Nothing resets; no count exists to reset. |
 
 ## The frozen policy and its constants
@@ -72,7 +72,7 @@ other assertion is **substantive**.
 | (i) | VOID `ambiguous` -- reality unclear | a run-validity assertion fails or is unresolved; a substantive result is unresolved (`null`); the record is crash-lost or unparseable; the run ended `budget-exceeded`; a failing substantive assertion's recorded root cause is `harness/run-validity`; the grader named an `ambiguous` void | no; re-taken |
 | (ii) | VOID `annulled` -- the question unclear | the known-answer control landed outside its band (`control_held` false, or a grader-named `annulled` trigger), the treatment was not delivered, or the key is contested | no; fixed by a disclosed amendment (frozen span untouched) or a refine successor that continues the SAME stream, ledger and frozen copy |
 | (iii) | COUNTED look, refusal 1 | validity and controls hold and at least one failing substantive assertion is `variable-side` -- a contract ambiguity in ANOTHER assertion of the same run does not void it | yes |
-| (iv) | VOID `annulled` | validity and controls hold and every failing substantive assertion is `fixture/manifest/contract-side` or `instrument`-side | no |
+| (iv) | VOID `annulled` | validity and controls hold and every failing substantive assertion is `fixture/manifest/contract-side` or `instrument`-side -- typed at `record` / `settle`, or AFTER record by `annul` when a counterfactual regrade shows it (the typing is post-record by construction; "Annulment after record" below) | no |
 | (v) | COUNTED look, refusal 0 | everything holds (`deferred` is neither a failure nor unresolved) | yes |
 | nl | `not-launched` | a spec-level close with nothing launched (an annulment recorded before any launch -- a contested key, a control outside its band -- is (ii)) | no |
 
@@ -97,12 +97,12 @@ Rows are canonical JSON (sorted keys, compact separators), one per line, append-
 |---|---|
 | `frozen/rule.json` | the frozen copy (R0) |
 | `spend.jsonl` | header `{"header": true, "lineage", "frozen_rule_sha256", "frozen_copy", "per_run_cap": {"wall_s", "usd"}, "truncation_length", "budget": {"wall_s", "usd"}, "derivation", "opened"}`, then one row per launch `{"spec", "run", "run_record", "cost_usd", "wall_s", "cum_usd", "cum_wall_s", "charged", "class"}` with class `counted`, `void:ambiguous`, `void:annulled` or `pending-root-cause` (+ `charge_source: override` when the driver's `--wall-s` / `--cost-usd` charged it) |
-| `stream.jsonl` | the pooled counted looks `{"class": "lineage", "look": k, "refusal": 0|1}` -- what the instrument reads |
-| `looks.jsonl` | look k -> `{"spec", "run", "run_record", "refusal", "clause", "appended"}` (+ `root_causes` when settled) |
-| `state.jsonl` | the instrument's state lines, one per look up to the terminal (`look`, `llr`, `n_min`, `rule`, `rule_sha`, `state`, `stream`) |
-| `voids.jsonl` | `{"spec", "run", "class", "clause", "run_record", "recorded", "re_take"}` (+ `terminal: budget-exceeded`, + `root_causes`, + `record_changed` from a `settle` whose record files no longer hash as parked) |
+| `stream.jsonl` | the pooled counted looks `{"class": "lineage", "look": k, "refusal": 0|1}` -- what the instrument reads; an **annul row** `{"class": "lineage", "look": k, "annul": 1}` (from `annul`) removes look k from the counted stream, and the instrument is then handed the counted stream with the annulled looks absent (renumbered 1..m in a scratch `stream.jsonl`) |
+| `looks.jsonl` | look k -> `{"spec", "run", "run_record", "refusal", "clause", "appended"}` (+ `root_causes` when settled); an annulled look keeps its row and gains a **tombstone** `{"spec", "run", "look": k, "annulled": true, "by": "<path>#<anchor>", "recorded"}` |
+| `state.jsonl` | the instrument's state lines, one per stream row, up to the terminal (`look`, `llr`, `n_min`, `rule`, `rule_sha`, `state`, `stream`); an **annul line** re-evaluates the non-annulled looks and carries `look` = the highest look label so far and `annulled` = every annulled label so far (`{"look": 2, "annulled": [1], "llr": -1.6094379124341003, "state": "evidence-insufficient n=1/13", ...}`) |
+| `voids.jsonl` | `{"spec", "run", "class", "clause", "run_record", "recorded", "re_take"}` (+ `terminal: budget-exceeded`, + `root_causes`, + `record_changed` from a `settle` whose record files no longer hash as parked); from `annul`: `{"spec", "run", "class": "annulled", "clause": "iv", "annuls_look": k, "root_causes": {"A#": class}, "amendment": "<path>#<anchor>", "counterfactual_sha" (when given), "record_sha256" (every record file as it stands at the annul), "run_record", "recorded", "re_take": "the same card at the next look number ..."}` |
 | `pending.jsonl` | `{"spec", "run", "run_dir", "failing", "settled", "recorded", "run_validity_ids", "record_sha256", "how"}` -- `record_sha256` is the sha256 of every record file `record` read; rewritten with `settled: true`, the typing and `root_causes` at settle (+ `record_changed` when the files no longer hash as parked) |
-| `refusals.jsonl` | R1 `{"at", "terminal": "budget-exhausted", "cum_usd", "cum_wall_s", "budget", "launches_so_far"}`; a duplicate run `{"at", "reason": "already-recorded", "verb", "spec", "run", "found_in"}` (+ `matched_by: run_dir`, `run_dir`, `recorded_as` when the run directory matched under another number); a duplicate charge `{"at", "reason": "already-charged", "verb": "charge", "spec", "run", "found_in": "spend.jsonl"}` |
+| `refusals.jsonl` | R1 `{"at", "terminal": "budget-exhausted", "cum_usd", "cum_wall_s", "budget", "launches_so_far"}`; a duplicate run `{"at", "reason": "already-recorded", "verb", "spec", "run", "found_in"}` (+ `matched_by: run_dir`, `run_dir`, `recorded_as` when the run directory matched under another number); a duplicate charge `{"at", "reason": "already-charged", "verb": "charge", "spec", "run", "found_in": "spend.jsonl"}`; an annul of a run that is no counted look `{"at", "reason": "not-a-counted-look", "verb": "annul", "spec", "run", "found_in": "voids.jsonl" \| "pending.jsonl" \| null}`; a second annul `{"at", "reason": "already-annulled", "verb": "annul", "spec", "run", "look", "found_in": "looks.jsonl", "by"}` |
 | `inherits.json` | R4 pointer on a successor: `{"lineage_root", "via", "frozen_rule_sha256", "recorded", "r4"}` |
 
 The lab lineage's own files under `experiments/runs/H-DRAFT-5810517d-verdict-lineage-stopping/lineage/`
@@ -122,6 +122,10 @@ lineage-stopping.py charge <lane> --wall-s W --cost-usd C --class CLS [--run N] 
 lineage-stopping.py append-look <lane> <0|1> [--run N] [--clause iii|v] [--run-record P]
 lineage-stopping.py void <lane> --class ambiguous|annulled [--clause i|ii|iv] [--run N]
 lineage-stopping.py settle <lane> <run> --root-cause A#=<class> [...]     one class per pending id and no other; an id left unclassed -> exit 2, the look stays pending
+lineage-stopping.py annul <lane> <run> --root-cause A#=<class> [...] --amendment <path>#<anchor> [--counterfactual-sha S]
+                                                               R2 (iv) AFTER record, append-only: exit 0 `annulled` | exit 2 `amendment-anchor-missing` /
+                                                               `variable-side-stays-counted` / an unclassed or non-failing id | exit 3 `not-a-counted-look` /
+                                                               `already-annulled` / `state-stale` / `frozen-rule-tampered`
 lineage-stopping.py evaluate <lane>
 lineage-stopping.py state <lane>                               -> promote | hold | insufficient | max-looks | spend-exhausted
 lineage-stopping.py walk <launches.jsonl> --model A|B [--ratios r,..] [--budget-caps N] --out <stream.jsonl>
@@ -135,10 +139,12 @@ same steps for a driver that types its runs itself. `state` is the read-back: th
 one exists, else `spend-exhausted` when R1 would refuse the next launch, else `insufficient` (with `n`,
 the llr, spend and remaining budget under `--json`). Exit codes: 0 ok; 1 an invariant or `--check`
 violated (named, files left as written -- a failing run is recorded, not repaired); 2 usage, a lineage
-not initialised, a `settle` that leaves a pending id unclassed or names an id that is not pending, or a
-`record` whose files carry no readable `wall_s` / `cost_usd` and no override; 3 refused (R1, a pending
-look, a terminated lineage, an R0 byte or truncation mismatch, a tampered frozen copy, a run already
-recorded, parked or charged). A `--run-validity` id the record carries no assertion for is warned on
+not initialised, a `settle` that leaves a pending id unclassed or names an id that is not pending, a
+`record` whose files carry no readable `wall_s` / `cost_usd` and no override, or an `annul` whose classes
+leave a failing id unclassed, name a non-failing id or a variable-side class or whose amendment anchor is
+missing; 3 refused (R1, a pending look, a terminated lineage, an R0 byte or truncation mismatch, a tampered
+frozen copy, a run already recorded, parked or charged, an `annul` of a run that is not a counted look or is
+already annulled, a state file that is not the stream's own derivation). A `--run-validity` id the record carries no assertion for is warned on
 stderr (`warning: --run-validity A7 names no assertion the record carries ...`) and listed in
 `meta.run_validity_unknown`; it types nothing.
 The instruction field carries the hypothesis-loop words (KEEP / DISCARD / closed without a verdict); the
@@ -150,7 +156,7 @@ Every (spec, run) is charged and typed once, and nothing is written past a check
 
 | guard | verbs | what happens |
 |---|---|---|
-| **frozen copy first** | `record`, `append-look`, `void`, `settle` | `frozen/rule.json` is verified before any write: a tampered copy exits 3 `frozen-rule-tampered` with the ledger, stream, looks, voids and pending rows untouched (the retry is not `already-recorded`); `evaluate` and the instrument itself (exits 12/13) refuse it too |
+| **frozen copy first** | `record`, `append-look`, `void`, `settle`, `annul` | `frozen/rule.json` is verified before any write: a tampered copy exits 3 `frozen-rule-tampered` with the ledger, stream, looks, voids and pending rows untouched (the retry is not `already-recorded`); `evaluate` and the instrument itself (exits 12/13) refuse it too |
 | **already-recorded** | `record`, `append-look`, `void` | a run already in `looks.jsonl` or `voids.jsonl` exits 3 `already-recorded <lane> run-N` with one `refusals.jsonl` row; a driver retry after a partial failure appends nothing |
 | **parked pending** | `record`, `append-look`, `void` | a run parked in `pending.jsonl` exits 3 `already-recorded ... parked PENDING`, naming `settle <lane> N --root-cause A#=<class>` as the one verb that types it -- a manual verb aimed at a pending run can no longer wedge the lineage |
 | **run directory** | `record` | the guard keys on the run DIRECTORY as well as the number: `record run-5 --run 7` then `record run-5` is refused (`matched_by: run_dir`, `recorded_as: 7` in the refusals row); one directory is one look |
@@ -159,9 +165,76 @@ Every (spec, run) is charged and typed once, and nothing is written past a check
 | **charge readable** | `record` | the charge is the record's `wall_s` and `cost_usd`, or the driver's `--wall-s` / `--cost-usd` (its own clock and meter -- how the lab driver charged; the override wins and the spend row carries `charge_source: override`); a record carrying neither with no override exits 2 naming both flags, and `--wall-s 0` exits 2 too. A crash-lost run is never charged as free, so the spec's rejected reading (c) -- a lineage whose every launch voids re-takes forever -- stays unreachable |
 | **settle ids** | `settle` | one class per pending id (an id left unclassed exits 2, the look stays pending) and for no other id (`A9` beside a pending `A2` exits 2) |
 | **settle snapshot** | `settle` | the pending row carries `record_sha256` of the record files `record` read; a record edited or lost since then never settles as a look -- it is the `ambiguous` void (R2 (i): not the record that parked the look) with `record_changed` `{file: {parked, now}}` on the void row and the settled pending row, the supplied classes recorded but not applied, the run re-taken |
+| **not-a-counted-look** | `annul` | only a run recorded as a COUNTED look in `looks.jsonl` can be annulled: a void, a run parked pending or a run recorded nowhere exits 3 `not-a-counted-look <lane> run-N` with one refusals row (`found_in` names the file, or null) |
+| **already-annulled** | `annul` | a second annul of the same run exits 3 `already-annulled <lane> run-N` with one refusals row (`look`, `by`); an erroneous annulment is undone by reverting its pull request, never by a second row |
+| **amendment-anchor-missing** | `annul` | `--amendment <path>#<anchor>` must name an existing file whose heading, lowercased with spaces as hyphens, is the anchor or starts with it followed by a hyphen (`amendment-2` matches a line starting `## Amendment 2`, never `## Amendment 20`); a missing file or heading exits 2 and nothing is written |
+| **variable-side-stays-counted** | `annul` | every failing substantive id of the look (read from the record the look row points at, through the reader `record` uses) must receive exactly one class from `fixture/manifest/contract-side` \| `instrument`; a `variable-side` class exits 2 (typing iii keeps the look counted), as do a `harness/run-validity` class (typing i), an unclassed failing id and a class for a non-failing id; a refusal-0 look has no failing id and cannot be annulled by this verb |
+| **state-stale** | `annul` | `state.jsonl` must be the stream's own derivation before a line is appended to it (a stream row ahead of its state line refuses, exit 3, pointing at `evaluate`); nothing is written |
 
 Unguarded by design: a `charge`, `append-look` or `void` given no `--run` number is unidentified (and
 `record` of a directory recorded nowhere under no number likewise).
+
+## Annulment after record
+
+Typing (iv) is **post-record by construction**: it is shown by a counterfactual regrade of a run that has
+already been recorded -- a grader's default label counted the look, a cold verifier later settled the
+failing assertion instrument- or fixture/manifest/contract-side with the variable bytes unchanged -- so no
+verb that runs at record time can carry it, and `record` is guarded once per run, `settle` refuses a run
+that is not pending, `void` refuses a recorded run and `may-launch` refuses at a terminal. `annul` is the
+verb that carries it, and it is append-only:
+
+```
+lineage-stopping.py annul <lane> <run> --root-cause A#=<class> [A#=<class> ...] --amendment <path>#<anchor> [--counterfactual-sha <sha256>]
+```
+
+In order: the frozen copy is verified first (as `record` does); the run must be a recorded COUNTED look in
+`looks.jsonl` (`not-a-counted-look`, `already-annulled` otherwise, one refusals row each); every failing
+substantive id of that run -- read from the record the look row points at, through the reader `record`
+uses -- receives exactly one class, `fixture/manifest/contract-side` or `instrument` (a variable-side class
+exits 2: the look stays counted, typing iii); the amendment file must exist and carry the anchor as a
+heading. Then, each appended and nothing rewritten: one `voids.jsonl` row (`class annulled`, `clause iv`,
+`annuls_look k`, the classes, the amendment pointer, the counterfactual's sha when given, the record files'
+sha256 as they stand, `re_take`); one `looks.jsonl` tombstone `{spec, run, look k, annulled true, by,
+recorded}`; one `stream.jsonl` row `{"class": "lineage", "look": k, "annul": 1}`; one `state.jsonl` line
+re-evaluated over the non-annulled looks, labelled with the highest look label so far and carrying
+`annulled: [k, ...]`. `spend.jsonl` is untouched: the run stays charged (a void is charged and never
+counted).
+
+**How the stream is read afterwards.** Everywhere the stream is read -- `state`, `evaluate`, `may-launch`,
+the checks, a successor's `--inherit` -- an annulled look is absent from the counted stream. The kept
+evaluator (`stopping-rule.py`, unchanged) is handed the counted stream with the annulled looks absent,
+renumbered 1..m in a scratch `stream.jsonl`, so the SPRT llr after an annul equals, to the bit, the llr of
+a stream that never held that look, and the appended state line is exactly the evaluator's last line for
+that stream (with `look` and `annulled` added). `state.jsonl` is the replay of the event log `stream.jsonl`
+-- one line per stream row, a counted row's line evaluated over the stream as it stood, an annul row's line
+over the stream with the look absent -- so `evaluate` re-derives it byte-for-byte without rewriting
+history; the recorded terminal line stays where it was written, superseded by the annul line after it.
+`may-launch` reads the LAST state line: a terminal the annul withdraws admits a launch again (budget
+permitting, no look pending); an annul that leaves the filtered stream terminal (or completes one -- five
+straight passes once a refusal between them is annulled promote) leaves the lineage closed. The checks
+on a stream with annul rows are the annul-aware invariants -- `line-count` (one line per stream row),
+`looks-consecutive` over the launch labels including tombstoned ones (labels 1..n with no gap; an annul
+line carries the highest label), `rule-sha-mismatch`, `tombstones` (an annul line's `annulled` is the set
+so far), `terminal-mid-file` (a terminal line may be followed only by an annul line, the re-evaluation that
+supersedes it), `state-text` and `llr-recompute` over the filtered stream, `vocabulary` -- and, at a
+terminal, the instrument's own `--check` over the filtered stream's lines.
+
+**Labels and the re-take.** `record` after an annul assigns the next look label max existing label + 1 --
+a tombstoned label is never re-used, and the state text `n=k/13` counts the non-annulled looks, so a line
+`{"look": 3, "state": "evidence-insufficient n=2/13"}` is the normal shape after one annul. The instrument
+knows no cards: the lane rotation re-takes the annulled card at that next look label (the lab's ruling
+R10 (c): "the re-take of DEC-006 takes the next look number on the annulled card; the rotation resumes
+from that card's position"). A refine successor (`init <successor> --inherit <root>`) resolves to the
+root's files, so the tombstones and annul rows are carried unchanged and it reads the same state.
+
+**Undoing an annulment.** An erroneous annulment is undone by reverting the pull request (or commit) that
+landed it, never by editing or deleting a row: the ledger is append-only, a second `annul` of the same run
+is refused `already-annulled`, and the stream, looks, voids and state files after a revert are byte-for-byte
+the files before the annul. Source ruling: cause-n-effect `H-DRAFT-2ad5a02e-decision-brief-comprehension-v2`,
+AMENDMENTS.md Amendment 2 (R7-R10), PR 47 (merge a07bb36e6), journal fragment 0509 -- look 1 of that
+lineage was counted as a refusal on a grader matcher defect (five readers who named `parks` and `blocked`
+were counted as naming the glossed word `lane`), the cold verifier's counterfactual regrade with the
+variable bytes unchanged passed the assertion, and the instrument had no verb to record the correction.
 
 ## How a lane adopts the rule
 
@@ -182,6 +255,10 @@ Unguarded by design: a `charge`, `append-look` or `void` given no `--run` number
    writing its record (no `wall_s` / `cost_usd`) is recorded with the driver's own clock and meter,
    `record ... --wall-s <s> --cost-usd <US$>`; without them `record` refuses rather than charge the launch
    as free. `record` is safe to retry: an already-recorded run is refused, never charged or counted twice.
+   A look that was counted on a root-cause class a cold verifier later settles instrument- or
+   fixture/manifest/contract-side is re-typed after the fact -- commit the disclosed amendment first, then
+   `annul <id> N --root-cause A#=<class> --amendment <runs_dir>/<id>/AMENDMENTS.md#<anchor>` ("Annulment
+   after record" above); the next `record` takes the next look label and the rotation re-takes that card.
    Declare the lineage files as writes for the lane's containment instrument.
 4. **Refine.** A successor with a new id runs `init <successor> --inherit <root>` and continues with the
    same verbs; its runs are charged to the root's ledger and its looks pool into the root's stream.
@@ -245,7 +322,8 @@ recorded Status.
 ## Relation to the observation stopping rule
 
 `scripts/stopping-rule.py` is unchanged and is the only thing that reads evidence here: this script writes
-the pooled stream it reads and reads its terminal back. The observation rule decides one lane's observation
+the pooled stream it reads and reads its terminal back (after an annul it is handed the counted stream with
+the annulled looks absent, renumbered in a scratch file; the annul-aware invariants are this script's). The observation rule decides one lane's observation
 stream; the lineage rule decides a whole lineage from its counted looks. Both are frozen at the gate, both
 speak only `evidence-sufficient` / `evidence-insufficient`, and both refuse to run on a missing or tampered
 frozen copy.
@@ -256,9 +334,14 @@ Found by the adversarial reviews of the port. Round 1's A2 and A3 and round 2's 
 are fixed ("Refusals and guards" above; every fix has a selftest case); these remain as they are:
 
 - **A4** -- `may-launch` and `state` answer from `state.jsonl` and `spend.jsonl` without re-verifying the
-  frozen copy; a tampered `frozen/rule.json` is refused before any write by `record`, `append-look`, `void`
-  and `settle` (exit 3 `frozen-rule-tampered`), by `evaluate`, and by the instrument itself (exits 12/13),
-  not by those two read verbs.
+  frozen copy; a tampered `frozen/rule.json` is refused before any write by `record`, `append-look`, `void`,
+  `settle` and `annul` (exit 3 `frozen-rule-tampered`), by `evaluate`, and by the instrument itself (exits
+  12/13), not by those two read verbs.
+- **Labels past a re-evaluated terminal** -- an annul can move the filtered stream's terminal to an earlier
+  counted look (seven looks PPPPFPP with the F annulled promote at the fifth pass); the counted looks recorded
+  after that position stay in `looks.jsonl` and `stream.jsonl`, charged and counted in `state --json`'s
+  `looks`, but the evaluator stops at the terminal and never reads them. The lineage is closed at that line;
+  nothing rewrites the labels.
 - **A5** -- R0's byte check of the lineage's frozen copy against `rules/frozen/lineage-sprt.json` is skipped
   silently when that reference file is absent from an install; the inner-rule sha check and the
   truncation derivation still run, so the docs' "byte-identical, refused otherwise" holds only with the
