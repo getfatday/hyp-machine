@@ -256,7 +256,7 @@ self-check must refuse; `blind`: the leak must reach the file); production never
 
 ## Regression test
 
-`python3 scripts/selftest-om-worker.py` -- 39 checks over throwaway consumers, the fixture grade
+`python3 scripts/selftest-om-worker.py` -- 41 checks over throwaway consumers, the fixture grade
 behaviours ported: parity with `observatory.tally_ratios` on planted transcripts (the
 Skill-in-catalogue branch included), lint equality with `model-lint.py`, staleness true then false,
 the six canary classes absent, every self-check net, the mutant pair, idempotence, the cursor and
