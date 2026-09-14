@@ -782,14 +782,20 @@ def _resolve_inbox_root(root, inbox_override):
 
 
 def _sweep_carrying(inbox_root):
-    """Return the oldest `outbox.<epoch>.carrying.jsonl` left behind by a drain that claimed the
-    outbox (renamed it away from `outbox.jsonl`) but crashed before finishing the carry and
-    renaming it on to `.carried.jsonl` -- swept at the start of the next `_carry_outbox` call so
-    those rows are not stranded. Only ever called while `_carry_outbox`'s own lock is held (see
-    below), so a leftover found here is guaranteed to be from a drain that is no longer running,
-    never one racing this call right now. None when there is no such leftover."""
-    leftover = sorted(glob.glob(os.path.join(inbox_root, "outbox.*.carrying.jsonl")))
-    return leftover[0] if leftover else None
+    """Every `outbox.<epoch>.carrying.jsonl` left behind by an earlier drain of this inbox -- one
+    that claimed the outbox (renamed it away from `outbox.jsonl`) and did not finalize it (crashed
+    mid-carry, or halted on the free-space floor, see `_carry_claim`) -- oldest first, so those
+    rows are not stranded. Only ever called while `_carry_outbox`'s own lock is held (see below),
+    so a leftover found here is guaranteed to be from a drain that is no longer running, never one
+    racing this call right now. B2 fix (ship fix round 5, cold refuter): this used to return only
+    the OLDEST leftover, and `_carry_outbox_locked` returned without ever reaching `outbox.jsonl`
+    while one existed -- so a claim that could never finalize (round 3 left a claim in place on ANY
+    refused row, and a row the redaction self-check refuses is refused on every attempt) held the
+    live outbox unclaimed on every later drain of that repository, stranding every later
+    dead-worktree row behind it (probe: three consecutive drains of a live checkout, carried 0 each,
+    `outbox.jsonl` still present beside the stuck claim). Every leftover is now resumed, then the
+    live outbox is claimed in the same drain."""
+    return sorted(glob.glob(os.path.join(inbox_root, "outbox.*.carrying.jsonl")))
 
 
 def _append_to_outbox_locked(outbox_dir, outbox_path, row):
@@ -821,8 +827,11 @@ def _append_to_outbox_locked(outbox_dir, outbox_path, row):
         os.close(lock_fd)
 
 
-def _carry_outbox(root, inbox_root, target_common_dir):
-    """Carry every row waiting in `<inbox_root>`'s outbox into `root`'s own ledger, once each.
+def _carry_outbox(root, inbox_root, target_common_dir, result=None):
+    """Carry every row waiting in `<inbox_root>`'s outbox into `root`'s own ledger, once each;
+    returns the rows carried. `result`, when given, is the drain's result dict: quarantine rows the
+    carry itself writes (a refused row filed away, B2 fix round 5) are counted into its
+    `quarantined` so the result never says 0 beside a quarantine row the same wake wrote.
     No-ops when there is no outbox (and no leftover claim, see below), or when `root`'s own git
     common-dir could not be resolved (it is not itself a live checkout right now).
 
@@ -852,7 +861,10 @@ def _carry_outbox(root, inbox_root, target_common_dir):
             # outbox right now -- back off rather than race it; it will finish the job.
             return 0
         try:
-            return _carry_outbox_locked(root, inbox_root)
+            carried, quarantined = _carry_outbox_locked(root, inbox_root)
+            if result is not None:
+                result["quarantined"] += quarantined
+            return carried
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
     finally:
@@ -889,29 +901,84 @@ def _note_claim_root(claimed_path, root):
         pass
 
 
-def _carry_outbox_locked(root, inbox_root):
-    """The claim+carry+finalize body of `_carry_outbox`, run only while its lock is held."""
-    claimed_path = _sweep_carrying(inbox_root)
-    if claimed_path is None:
-        outbox_path = os.path.join(inbox_root, "outbox.jsonl")
-        if not os.path.isfile(outbox_path):
-            return 0
-        epoch = int(time.time())
-        claim_dest = os.path.join(inbox_root, "outbox.%d.carrying.jsonl" % epoch)
-        while os.path.exists(claim_dest):
-            epoch += 1
-            claim_dest = os.path.join(inbox_root, "outbox.%d.carrying.jsonl" % epoch)
-        # under the lock, no other drain for this inbox_root can be touching outbox.jsonl, so
-        # this rename cannot lose a race -- it can still fail on a genuine filesystem error,
-        # which is not a case to carry on from.
-        os.rename(outbox_path, claim_dest)
-        claimed_path = claim_dest
+def _refused_path(claimed_path):
+    """`outbox.<epoch>.refused.jsonl` beside one claim: the rows of that claim the target ledger's
+    redaction self-check refused, verbatim as they waited in the outbox."""
+    return claimed_path[:-len(".carrying.jsonl")] + ".refused.jsonl"
+
+
+def _file_refused_rows(path, rows):
+    """Append refused outbox rows (their canonical bytes exactly as they waited, `landed_in: outbox`
+    and `origin_root_key` intact) under an flock'd O_APPEND descriptor, deduped by exact bytes --
+    `append_to_path`'s transport without its two refusals: these bytes already sit on this disk in
+    the claim, and the self-check is precisely what refused them. Raises OSError on a write failure
+    so the caller can leave the claim in place rather than finalize an unfiled row away."""
+    lines = [canonical_bytes(r) for r in rows]
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_APPEND, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            size = os.fstat(fd).st_size
+            existing = set(os.read(fd, size).splitlines(True)) if size else set()
+            os.lseek(fd, 0, os.SEEK_END)
+            for line in lines:
+                if line not in existing:
+                    os.write(fd, line)
+                    existing.add(line)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _finalize_claim(claimed_path):
+    """Rename one claim on to `outbox.<epoch>.carried.jsonl` -- bumping the epoch on a collision,
+    exactly as the claim step does, rather than appending another suffix outside the documented
+    pattern (A4, ship fix round 2) -- and drop its `.roots` sidecar."""
+    final_dir = os.path.dirname(claimed_path)
+    final_epoch = int(time.time())
+    final_dest = os.path.join(final_dir, "outbox.%d.carried.jsonl" % final_epoch)
+    while os.path.exists(final_dest):
+        final_epoch += 1
+        final_dest = os.path.join(final_dir, "outbox.%d.carried.jsonl" % final_epoch)
+    try:
+        os.rename(claimed_path, final_dest)
+    except OSError:
+        # the claim itself is exclusive to this drain (we are the one that renamed it away from
+        # outbox.jsonl, or resumed a leftover no one else can also be resuming), so a failure here
+        # is a filesystem error, not a race to fail closed on -- nothing to undo either way.
+        pass
+    try:
+        os.remove(_claim_roots_path(claimed_path))
+    except OSError:
+        pass
+
+
+def _carry_claim(root, claimed_path):
+    """Carry one claimed outbox file into `root`'s own ledger and finalize it. Returns
+    `(carried, quarantined, halted)`: rows landed, quarantine rows written, and whether the carry
+    stopped on the free-space floor with the claim left in place for the next drain.
+
+    Two refusals, two fates (B2 fix, ship fix round 5, cold refuter). A row the redaction
+    self-check refuses is refused for what it CONTAINS, so every later attempt refuses it again:
+    it is filed verbatim into `outbox.<epoch>.refused.jsonl` beside the claim (the claim's own
+    epoch), one `quarantine` row naming that file with reason `CarryRefused-redaction` lands in
+    the target ledger, and the claim finalizes -- round 3 left the claim in place on any refusal
+    "for the next drain", which, with only the oldest leftover resumed per drain and the live
+    outbox never reached behind it, starved the repository indefinitely. A row refused on the
+    free-space FLOOR is refused for the host's state, not its content, and the drain's own
+    start-of-drain floor check makes this a race window only: the carry halts, the claim stays
+    (every row still in it, nothing filed, nothing finalized), and the next drain that passes the
+    floor check resumes it and goes on to the live outbox in the same wake. Rows already landed
+    before either refusal are skipped on the resume by the `(session, through)` dedupe, against
+    every checkout named in the claim's `.roots` sidecar (A1, round 4)."""
     prior_roots = [p for p in _claim_roots(claimed_path)
                    if p != os.path.realpath(root) and os.path.isdir(p)]
     _note_claim_root(claimed_path, root)
     rows, _ = read_rows(claimed_path)
     carried = 0
-    refused = 0
+    refused_rows = []
     if rows:
         target_ledger_rows, _ = read_rows(ledger_path(root))
         seen = set((r.get("session"), r.get("through")) for r in target_ledger_rows
@@ -932,40 +999,61 @@ def _carry_outbox_locked(root, inbox_root):
             result = append_row(root, out_row)
             if result == "written":
                 carried += 1
-            elif result in ("refused-floor", "refused-redaction"):
-                refused += 1
+            elif result == "refused-floor":
+                sys.stderr.write("om-worker drain: free space fell below the floor mid-carry; "
+                                 "claim %s left for the next drain\n" % os.path.basename(claimed_path))
+                return carried, 0, True
+            elif result == "refused-redaction":
+                refused_rows.append(row)
             seen.add(key)
-    if refused:
-        # A1 (ship fix round 3, advisory): a row the target ledger REFUSED (floor reached between
-        # the drain's own floor check and this append, or the redaction self-check firing on a
-        # row that passed it at outbox-write time) was not carried; finalizing the claim to
-        # `.carried.jsonl` now would file it away unread. Leave the `.carrying.jsonl` where it is:
-        # the next drain's `_sweep_carrying` resumes it, and the `(session, through)` dedupe skips
-        # every row that did land.
-        sys.stderr.write("om-worker drain: %d outbox row(s) refused by the target ledger; "
-                         "claim left for the next drain\n" % refused)
-        return carried
-    # A4 (ship fix round 2, advisory): bump the epoch on a collision, exactly as the claim step
-    # above does, rather than appending another ".carried.jsonl" suffix outside the documented
-    # `outbox.<epoch>.carried.jsonl` pattern.
-    final_dir = os.path.dirname(claimed_path)
-    final_epoch = int(time.time())
-    final_dest = os.path.join(final_dir, "outbox.%d.carried.jsonl" % final_epoch)
-    while os.path.exists(final_dest):
-        final_epoch += 1
-        final_dest = os.path.join(final_dir, "outbox.%d.carried.jsonl" % final_epoch)
-    try:
-        os.rename(claimed_path, final_dest)
-    except OSError:
-        # the claim itself is exclusive to this drain (we are the one that renamed it away from
-        # outbox.jsonl, or resumed a leftover no one else can also be resuming), so a failure here
-        # is a filesystem error, not a race to fail closed on -- nothing to undo either way.
-        pass
-    try:
-        os.remove(_claim_roots_path(claimed_path))
-    except OSError:
-        pass
-    return carried
+    quarantined = 0
+    if refused_rows:
+        refused_path = _refused_path(claimed_path)
+        try:
+            _file_refused_rows(refused_path, refused_rows)
+        except OSError as exc:
+            sys.stderr.write("om-worker drain: could not file %d refused outbox row(s) (%s); "
+                             "claim %s left for the next drain\n"
+                             % (len(refused_rows), type(exc).__name__, os.path.basename(claimed_path)))
+            return carried, 0, True
+        q_row = {"kind": "quarantine", "schema": SCHEMA, "landed_in": "root",
+                 "file": os.path.basename(refused_path), "reason": "CarryRefused-redaction",
+                 "date": None}
+        if append_row(root, q_row) == "written":
+            quarantined += 1
+        sys.stderr.write("om-worker drain: %d outbox row(s) refused by the target ledger's "
+                         "redaction self-check, filed in %s; claim finalized\n"
+                         % (len(refused_rows), os.path.basename(refused_path)))
+    _finalize_claim(claimed_path)
+    return carried, quarantined, False
+
+
+def _carry_outbox_locked(root, inbox_root):
+    """The claim+carry+finalize body of `_carry_outbox`, run only while its lock is held: every
+    leftover claim first (oldest first), then the live `outbox.jsonl`, so no leftover can hold the
+    live outbox unclaimed (B2, ship fix round 5). A floor halt ends the wake's carry at that claim:
+    nothing later would land either. Returns `(carried, quarantined)`."""
+    carried = quarantined = 0
+    for claimed_path in _sweep_carrying(inbox_root):
+        n, q, halted = _carry_claim(root, claimed_path)
+        carried += n
+        quarantined += q
+        if halted:
+            return carried, quarantined
+    outbox_path = os.path.join(inbox_root, "outbox.jsonl")
+    if not os.path.isfile(outbox_path):
+        return carried, quarantined
+    epoch = int(time.time())
+    claim_dest = os.path.join(inbox_root, "outbox.%d.carrying.jsonl" % epoch)
+    while os.path.exists(claim_dest) or os.path.exists(_refused_path(claim_dest)):
+        epoch += 1
+        claim_dest = os.path.join(inbox_root, "outbox.%d.carrying.jsonl" % epoch)
+    # under the lock, no other drain for this inbox_root can be touching outbox.jsonl, so this
+    # rename cannot lose a race -- it can still fail on a genuine filesystem error, which is not a
+    # case to carry on from.
+    os.rename(outbox_path, claim_dest)
+    n, q, _ = _carry_claim(root, claim_dest)
+    return carried + n, quarantined + q
 
 
 def _defer_pointer(inbox_root, processing_path, base):
@@ -1035,7 +1123,7 @@ def _drain_locked(root, plugin_scripts, inbox_root, inbox, target_common_dir, in
         append_row(root, {"kind": "spool-overflow", "schema": SCHEMA, "landed_in": "root",
                           "moved": rotated, "date": None})
         written["rotated"] = True
-    written["carried"] = _carry_outbox(root, inbox_root, target_common_dir)
+    written["carried"] = _carry_outbox(root, inbox_root, target_common_dir, result=written)
     start = time.monotonic()
     files = sorted(glob.glob(os.path.join(inbox, "*.json")))
     n_done = 0

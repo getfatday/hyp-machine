@@ -15,7 +15,7 @@ carries nothing twice; a pointer whose root exists but was never a git checkout 
 `templates/event-nodes/session-observed.md` documents the new `landed_in` values and
 `carried_from`/`origin_root_key`; `docs/passive-feedback.md` documents the pointer's optional
 `root`/`common_dir` fields, the outbox and carry-forward contract, and the default inbox
-location's change (below); `scripts/selftest-om-worker.py` gains nine cases on a scratch
+location's change (below); `scripts/selftest-om-worker.py` gains fifteen cases (26 to 41) on a scratch
 repository with two linked worktrees, including two DIFFERENT live checkouts racing a 400-row
 outbox and a deterministic race between a carry and the missing-root write path itself. Why: the
 lab keep H-DRAFT-a4a14ff4-om-outbox-carry-forward (2026-09-14; five counted looks, every
@@ -43,7 +43,13 @@ crash-recovery sweep re-queuing the other's in-flight pointer (processed twice, 
 quarantine row) -- the sweep, rotation, carry and pointer loop now run under a per-inbox
 `.drain.lock`, the second wake backing off with one stderr line. A claim resumed by a different
 checkout now dedupes against the first carrier's ledger too (`.roots` sidecar), and the drain
-result JSON carries the same keys on every exit. After upgrading: no pointer carries `root`/`common_dir` yet (the startup wake
+result JSON carries the same keys on every exit. A fifth round caught a leftover claim that could
+never finalize (a row the redaction self-check refuses on every attempt) holding the live
+`outbox.jsonl` unclaimed on every later drain, since only the oldest leftover was resumed and the
+live outbox never reached behind it -- every leftover is now resumed and the live outbox claimed in
+the same drain, a redaction-refused row is filed verbatim into `outbox.<epoch>.refused.jsonl`
+beside its claim with one `quarantine` row (`CarryRefused-redaction`) in the target ledger, and the
+claim finalizes; a floor refusal alone still leaves the claim for the next drain. After upgrading: no pointer carries `root`/`common_dir` yet (the startup wake
 lane, H-DRAFT-10383178, writes them), so every pointer that IS found still lands exactly as
 before -- BUT for any `root` that is itself a live git checkout, `drain` with no `--inbox`
 override now reads a DIFFERENT default inbox directory than the release before this one

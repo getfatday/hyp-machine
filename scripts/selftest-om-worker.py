@@ -96,6 +96,18 @@ checkout and two linked worktrees, one removed after its pointer is written:
                                              DIFFERENT checkout, carries only the 2 rows the first
                                              never landed (dedupe against the prior carrier's ledger
                                              via the claim's `.roots` sidecar), then finalizes
+  refused-claim-files-row-finalizes-then-claims-live-outbox  (ship fix round 5 B2) a leftover claim
+                                             holding a row the target ledger refuses on EVERY attempt
+                                             (the redaction self-check) no longer starves the
+                                             repository: the refused row is filed verbatim into
+                                             `outbox.<epoch>.refused.jsonl`, one quarantine row names
+                                             that file, the claim finalizes, and the live
+                                             `outbox.jsonl` behind it is claimed and carried in the
+                                             SAME drain; a second drain changes nothing
+  floor-refusal-halts-carry-leaves-claim-intact  (ship fix round 5 B2) a free-space-floor refusal
+                                             mid-carry (the host's state, not the row's) halts the
+                                             carry with the claim left in place and nothing filed;
+                                             the next carry resumes it AND claims the live outbox
 
 Usage: python3 scripts/selftest-om-worker.py        exit 0 = all PASS, 1 = any FAIL
 Standard library only, Python 3.9; pyyaml is needed by model-lint.py for the lint checks.
@@ -1289,11 +1301,102 @@ def _main():
           and len(glob.glob(os.path.join(rs_state, "outbox.*.carried.jsonl"))) == 1,
           (rc_rs, res_rs, rs_wtb_sessions, err_rs.strip()[:200], sorted(os.listdir(rs_state))))
 
-    # 32. zero model calls
+    # 32. B2 (ship fix round 5, cold refuter): a leftover claim holding a row the target ledger
+    # refuses on EVERY attempt (the redaction self-check firing on an absolute-path string) used to
+    # be resumed alone, left in place again on the refusal, and the live outbox.jsonl behind it
+    # never claimed -- three consecutive drains, carried 0 each. Now the refused row is filed
+    # verbatim beside the claim, one quarantine row names the file, the claim finalizes, and the
+    # live outbox is claimed and carried in the SAME drain; a second drain changes nothing.
+    rf_state = os.path.join(TMP, "refused", "state")
+    os.makedirs(rf_state)
+    rf_claim = os.path.join(rf_state, "outbox.1700000000.carrying.jsonl")
+    rf_rows = [{"kind": "session-observed", "schema": om.SCHEMA, "session": "sess-rf-c%d" % i,
+                "through": "2026-01-02T00:00:0%dZ" % i, "landed_in": "outbox", "origin_root_key": "k"} for i in range(3)]
+    rf_rows[1]["note"] = "/abs/path-the-self-check-refuses"
+    with open(rf_claim, "wb") as fh:          # append_to_path would refuse rf_rows[1] itself
+        fh.write(b"".join(om.canonical_bytes(r) for r in rf_rows))
+    write(rf_claim[:-len(".jsonl")] + ".roots", os.path.realpath(ob_root) + "\n")
+    rf_live = {"kind": "session-observed", "schema": om.SCHEMA, "session": "sess-rf-live",
+               "through": "2026-01-02T00:00:09Z", "landed_in": "outbox", "origin_root_key": "k"}
+    om.append_to_path(os.path.join(rf_state, "outbox.jsonl"), rf_live)
+    rc_rf, out_rf, err_rf = worker(ob_wt_b, "drain", "--inbox", rf_state)
+    res_rf = json.loads(out_rf.split("rc 0 ", 1)[1]) if "rc 0 " in out_rf else {}
+    rf_wtb_rows = rows_of(ledger(ob_wt_b))
+    rf_landed = sorted((r.get("session"), r.get("landed_in")) for r in rf_wtb_rows
+                       if str(r.get("session", "")).startswith("sess-rf-"))
+    rf_q_rows = [r for r in rf_wtb_rows if r.get("kind") == "quarantine" and str(r.get("file", "")).startswith("outbox.")]
+    rf_refused_path = os.path.join(rf_state, "outbox.1700000000.refused.jsonl")
+    rf_listing_1 = sorted(os.listdir(rf_state))
+    rf_wtb_bytes_1 = read_bytes(ledger(ob_wt_b))
+    rc_rf2, out_rf2, _ = worker(ob_wt_b, "drain", "--inbox", rf_state)
+    res_rf2 = json.loads(out_rf2.split("rc 0 ", 1)[1]) if "rc 0 " in out_rf2 else {}
+    check("refused-claim-files-row-finalizes-then-claims-live-outbox",
+          rc_rf == 0 and res_rf.get("carried") == 3 and res_rf.get("quarantined") == 1
+          and rf_landed == [("sess-rf-c0", "carried"), ("sess-rf-c2", "carried"), ("sess-rf-live", "carried")]
+          and len(rf_q_rows) == 1 and set(rf_q_rows[0]) == QUARANTINE_KEYS
+          and rf_q_rows[0].get("file") == "outbox.1700000000.refused.jsonl"
+          and rf_q_rows[0].get("reason") == "CarryRefused-redaction"
+          and os.path.isfile(rf_refused_path) and read_bytes(rf_refused_path) == om.canonical_bytes(rf_rows[1])
+          and not os.path.isfile(rf_claim) and not glob.glob(os.path.join(rf_state, "*.roots"))
+          and not os.path.isfile(os.path.join(rf_state, "outbox.jsonl"))
+          and len(glob.glob(os.path.join(rf_state, "outbox.*.carried.jsonl"))) == 2
+          and sum(1 for l in err_rf.splitlines() if "refus" in l.lower()) == 2
+          and "filed in outbox.1700000000.refused.jsonl" in err_rf
+          and rc_rf2 == 0 and res_rf2.get("carried") == 0 and res_rf2.get("quarantined") == 0
+          and read_bytes(ledger(ob_wt_b)) == rf_wtb_bytes_1 and sorted(os.listdir(rf_state)) == rf_listing_1,
+          (rc_rf, res_rf, rf_landed, rf_q_rows, err_rf.strip()[:300], rf_listing_1, res_rf2))
+
+    # 33. B2 (ship fix round 5): the OTHER refusal. A free-space-floor refusal mid-carry is about
+    # the host, not the row, so the carry halts with the claim intact and nothing filed or
+    # finalized; the next carry (in-process, the locked body itself) resumes the claim -- skipping
+    # the row already landed -- AND claims the live outbox in the same call.
+    fl_state = os.path.join(TMP, "floor-carry", "state")
+    os.makedirs(fl_state)
+    fl_claim = os.path.join(fl_state, "outbox.1700000001.carrying.jsonl")
+    fl_rows = [{"kind": "session-observed", "schema": om.SCHEMA, "session": "sess-fl-c%d" % i,
+                "through": "2026-01-03T00:00:0%dZ" % i, "landed_in": "outbox", "origin_root_key": "k"} for i in range(2)]
+    for r in fl_rows:
+        om.append_to_path(fl_claim, r)
+    om.append_to_path(os.path.join(fl_state, "outbox.jsonl"),
+                      {"kind": "session-observed", "schema": om.SCHEMA, "session": "sess-fl-live",
+                       "through": "2026-01-03T00:00:09Z", "landed_in": "outbox", "origin_root_key": "k"})
+    real_append_row = om.append_row
+    fl_calls = []
+
+    def floor_on_second(root_, row, allow_below_floor=False):
+        fl_calls.append(row.get("session"))
+        if len(fl_calls) == 2:
+            return "refused-floor"
+        return real_append_row(root_, row, allow_below_floor=allow_below_floor)
+
+    fl_stderr = io.StringIO()
+    real_stderr = sys.stderr
+    try:
+        om.append_row = floor_on_second
+        sys.stderr = fl_stderr
+        fl_first = om._carry_claim(ob_wt_b, fl_claim)
+    finally:
+        om.append_row = real_append_row
+        sys.stderr = real_stderr
+    fl_mid_listing = sorted(os.listdir(fl_state))
+    fl_second = om._carry_outbox_locked(ob_wt_b, fl_state)
+    fl_landed = sorted(r.get("session") for r in rows_of(ledger(ob_wt_b))
+                       if str(r.get("session", "")).startswith("sess-fl-"))
+    check("floor-refusal-halts-carry-leaves-claim-intact",
+          fl_first == (1, 0, True) and fl_calls == ["sess-fl-c0", "sess-fl-c1"]
+          and fl_mid_listing == ["outbox.1700000001.carrying.jsonl", "outbox.1700000001.carrying.roots", "outbox.jsonl"]
+          and "left for the next drain" in fl_stderr.getvalue() and len(fl_stderr.getvalue().splitlines()) == 1
+          and fl_second == (2, 0) and fl_landed == ["sess-fl-c0", "sess-fl-c1", "sess-fl-live"]
+          and not os.path.isfile(fl_claim) and not os.path.isfile(os.path.join(fl_state, "outbox.jsonl"))
+          and not glob.glob(os.path.join(fl_state, "*.roots")) and not glob.glob(os.path.join(fl_state, "*.refused.jsonl"))
+          and len(glob.glob(os.path.join(fl_state, "outbox.*.carried.jsonl"))) == 2,
+          (fl_first, fl_calls, fl_mid_listing, fl_stderr.getvalue().strip()[:200], fl_second, fl_landed, sorted(os.listdir(fl_state))))
+
+    # 34. zero model calls
     spawns = read_bytes(SHIM_LOG).decode("utf-8", "replace").splitlines()
     check("zero-model-calls-claude-shim", len(spawns) == 0, spawns[:2])
 
-    # 33. the installed copy: stdlib only, no home or lab path
+    # 35. the installed copy: stdlib only, no home or lab path
     src = read_bytes(WORKER).decode("utf-8")
     tree_ = ast.parse(src)
     imported = set()

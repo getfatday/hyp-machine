@@ -122,7 +122,10 @@ inbox, and two wakes inside it at once (main and a linked worktree starting toge
 second wake's sweep move the first wake's IN-FLIGHT pointer back into `inbox/`, so it was
 processed twice and the first wake wrote a false `FileNotFoundError` quarantine row for it. A
 drain that cannot get the lock prints one stderr line, moves nothing, and exits 0 with an all-zero
-result; the wake that holds it does the work. Every `git rev-parse` the worker runs is bounded by a
+result; the wake that holds it does the work. The backing-off wake lands NO pointer that wake, not
+only no carry: with two frequent wakers on one repository, the wake that loses the lock is a
+no-op and its pointers wait for whichever wake next takes the lock -- correct and lossless, but
+not free work. Every `git rev-parse` the worker runs is bounded by a
 5 s timeout, and a timeout is NOT read as "not a checkout" (ship fix round 4, B1 -- on a loaded
 host it was, and live worktrees' pointers were quarantined while a default-location drain fell
 back silently to the old single-path inbox and found nothing): when git cannot answer for the
@@ -193,14 +196,27 @@ SAME lock, blocking, before its append: without that, a write already open on `o
 a concurrent carry renames it away can land inside the very `.carrying.jsonl` the carrier is
 already reading, and be finalized to `.carried.jsonl` -- a file no later drain ever rereads --
 before the write completes, losing the row (ship fix round 2, `scripts/selftest-om-worker.py`
-races this deterministically). Once every row is carried, the claimed file is renamed on to
+races this deterministically). The carrier's non-blocking attempt also loses to that blocking
+write while it is in flight -- a drain of ANOTHER repository landing a misplaced dead pointer into
+this repository's outbox at that instant -- and the carry then skips that wake; the rows wait one
+more wake and the next drain carries them (harmless, noted here so it is not read as a loss). Once every row is carried, the claimed file is renamed on to
 `outbox.<epoch>.carried.jsonl` (never truncated), so a further drain finds no outbox file and
 carries nothing twice; a claim left behind by a drain that crashed mid-carry (and so never held
 the lock at the same time as anyone else) is resumed, not stranded, the next time the lock is
-free -- as is a claim whose carry the target ledger REFUSED for any row (the free-space floor
-reached between the drain's own check and the append, or the redaction self-check firing): the
-drain reports the refusal on stderr and leaves the `.carrying.jsonl` in place rather than
-finalizing an unread row away; one leftover claim is resumed per drain. Beside every claim sits a
+free -- EVERY leftover claim is resumed, oldest first, and the live `outbox.jsonl` is then claimed
+in the same drain (ship fix round 5, B2: a drain used to resume only the oldest leftover and never
+reach `outbox.jsonl` behind it). A row the target ledger REFUSES has one of two fates. A row the
+redaction self-check refuses is refused for what it contains, so every later attempt would refuse
+it too: it is filed verbatim into `outbox.<epoch>.refused.jsonl` beside its claim (kept for a
+reader, never re-carried), one `quarantine` row naming that file with reason
+`CarryRefused-redaction` lands in the target ledger (counted in the result's `quarantined`), and
+the claim finalizes -- before round 5 any refusal left the claim in place "for the next drain",
+and one such permanently refused row held the live outbox unclaimed on every later drain of the
+repository (three consecutive drains of a live checkout, carried 0 each), stranding every later
+dead-worktree row behind it for as long as the claim lived. A row refused on the free-space floor
+is about the host's state, not the row's, and the drain's own start-of-drain floor check makes it
+a race window only: the carry halts for that wake with the claim left intact and nothing filed,
+and the next drain that passes the floor check resumes it and goes on to the live outbox. Beside every claim sits a
 `.roots` sidecar (`outbox.<epoch>.carrying.roots`, removed with the claim when it finalizes) naming
 each checkout that has carried from it; a DIFFERENT checkout resuming the claim dedupes against
 those checkouts' ledgers as well as its own, so rows the first carrier already landed are not
@@ -261,8 +277,12 @@ blocking behind a concurrent carry on the same lock (ship fix round 2), and (shi
 git that cannot answer in time refusing the whole drain rather than falling back to the old inbox,
 a live pointer whose root git cannot answer for being deferred rather than quarantined and landing
 `root` on the next drain, two live checkouts waking on the SAME shared inbox landing every pointer
-exactly once with no false quarantine row, and a claim resumed by a different checkout carrying
-only the rows the first carrier never landed. The run prints the host load average first: the
+exactly once with no false quarantine row, a claim resumed by a different checkout carrying
+only the rows the first carrier never landed, and (ship fix round 5) a leftover claim holding a
+permanently refused row filing that row beside itself, finalizing, and the live outbox being
+carried in the same drain (three rows landed, one quarantine row, a second drain changing
+nothing), plus a floor refusal mid-carry halting with the claim intact and the next carry
+resuming it and the live outbox together. The run prints the host load average first: the
 concurrent and wall-clock cases are time-sensitive, and the whole run has needed over 300 s at a
 load of 12-20 (the SIGKILL case retries on a fresh tree, up to three times, when the kill lands in
 the gap between two pointers and strands nothing -- a harness miss seen once at load 12.5, not a
@@ -349,6 +369,25 @@ for the 400-row race. Left as is, on purpose: a pointer with a live `root` but n
 still quarantines (the kept lane's own bytes quarantine that shape -- `not common_dir_p` is the
 first test in its `resolve_pointer_root` -- so landing it would ship beyond the evidence; the
 startup wake lane writes both fields together).
+
+Ship fix round 5 (cold refuter, applied before release), one blocking finding on the code and one
+on the docs. The code: `_carry_outbox_locked` resumed only the OLDEST leftover `.carrying.jsonl`
+and, when the target ledger refused any row in it, returned without finalizing and without ever
+reaching `outbox.jsonl` -- so one permanently refused row (a claim row carrying an absolute-path
+string, which the redaction self-check refuses on every attempt) held the live outbox unclaimed
+across three consecutive drains of a live checkout, stranding every later dead-worktree row of
+that repository for as long as the claim lived. Every leftover claim is now resumed and the live
+outbox claimed in the same drain; a redaction-refused row is filed verbatim into
+`outbox.<epoch>.refused.jsonl` beside its claim with one `quarantine` row
+(`CarryRefused-redaction`) in the target ledger and the claim finalizes; a floor refusal alone
+still leaves the claim for the next drain, since the floor is the host's state, not the row's. The
+docs: the README's and the changeset's selftest counts had drifted from what the script ran; both
+now name the script's own count (41 with the two round-5 cases). Advisories applied: the
+resumed-claim sentence above rewritten around the two fates; one sentence each on the backing-off
+wake landing nothing that wake and on a carry skipping a wake behind a concurrent outbox write;
+the finalize path proven by the refused-claim case, not only the resume path. Recorded, no
+change: v0.29.0's `free_bytes` already walks up to an existing ancestor and that release resolves
+no git common-dir at all, so neither a free-space-floor nor a relative-`.git` defect exists there.
 
 Undo: revert the release's merge commit. Rows already written are plain JSON lines in your ledger;
 the attribute row is plain text in your `.gitattributes`.
