@@ -117,3 +117,18 @@ upgrading there is nothing to do; to try it, run `python3 "${CLAUDE_PLUGIN_ROOT}
 markers -- the re-run keeps every key your `.claude/hyp.json` carries beyond the plugin defaults (`ledger_file`,
 `om_feedback_file`, `compile_command`, the decision settings), which earlier releases dropped on a re-init; `merge-attrs-check.py` names the row as missing only once the file exists. No existing file changes shape. Undo:
 revert the release's merge commit; rows already written are plain JSON lines. See `docs/passive-feedback.md`.
+
+
+From the release that carries the commit path (source lab H-DRAFT-fb9c08b9-om-ledger-commit-path,
+kept 2026-09-14), `hooks/scripts/commit-backstop.py`'s `git commit` PreToolUse row also stages a
+dirty feedback ledger for you: `OM-FEEDBACK-STAGED <n> rows` when it stages it, or
+`OM-FEEDBACK-HELD forbidden key <key>` when a row on disk must never be written and nothing is
+staged. It runs before, and independently of, the pre-existing advisory backstop above (the
+feedback ledger is a capture-profile feature), so nothing here is gated on `profile:
+"experiments"`. After upgrading there is nothing to do: the clause fires only when the ledger
+(`om_feedback_file`, default `ledger/om-feedback.jsonl`) is already dirty. One limitation to
+know: the clause fires only on a command that itself begins with `git commit` -- `timeout 45 git
+commit ...`, `cd <dir> && git commit ...` and `git -c ... commit ...` are silent, so run `git
+commit` directly (or stage the ledger yourself first) when you rely on it. Undo, one command:
+`git restore --staged -- ledger/om-feedback.jsonl` before you commit; the release's merge commit
+can also be reverted outright. See `docs/passive-feedback.md`, "The commit path".

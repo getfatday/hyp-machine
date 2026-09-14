@@ -73,9 +73,41 @@ conflict (`scripts/selftest-om-worker.py` proves it with two worktrees, add/add 
 and lints its rows like the work ledger's. A re-run of `/hyp:init` keeps every key your
 `.claude/hyp.json` carries beyond the plugin's defaults (`om_feedback_file`, `ledger_file`,
 `compile_command`, the decision settings) and renders the union row for the configured path; the
-three readers of the override (the worker, init, the check) apply one rule
-(`hyp_config.safe_rel_path`): an absolute value or one with a `..` segment falls back to the default
-path everywhere, so the row rendered is always the row the worker writes to.
+four readers of the override (the worker, init, the check, and the commit-path clause below) apply
+one rule (`hyp_config.safe_rel_path`): an absolute value or one with a `..` segment falls back to
+the default path everywhere, so the row rendered is always the row the worker writes to.
+
+## The commit path
+
+`hooks/scripts/commit-backstop.py`'s `git commit` PreToolUse row also stages the feedback ledger
+for you, one clause, additive to the advisory backstop above and independent of its
+experiments-profile gate (the feedback ledger is a capture-profile feature): on a real `git
+commit` command, when the configured ledger (`om_feedback_file`, default
+`ledger/om-feedback.jsonl`) is dirty (untracked or modified), the clause stages it and prints one
+line. Two lines you may see:
+
+- `OM-FEEDBACK-STAGED <n> rows` — the ledger is staged; `<n>` counts the newly-added lines (the
+  whole file for a brand-new ledger, just the appended lines for one already tracked). The rows
+  ride your next commit without your naming the file.
+- `OM-FEEDBACK-HELD forbidden key <key>` — a row on disk carries a forbidden key (`tool_input`,
+  `prompt`, or `last_assistant_message`; the same lint `scripts/om-worker.py` itself applies
+  before writing). Nothing is staged; the ledger stays as it was. Fix the offending row (or the
+  writer that produced it) and commit again — the clause re-checks every time.
+
+Gate limitation: the clause fires only on a command that itself *begins* with `git commit`
+(`^\s*git\s+commit\b`), matching the same shape `hooks.json`'s matcher targets. A command
+wrapped in `timeout 45 git commit ...`, `cd <dir> && git commit ...`, or `git -c ... commit ...`
+does not begin that way and is silent — the clause will not have staged anything for that commit.
+Run `git commit` directly, or stage the ledger yourself (`git add -- ledger/om-feedback.jsonl`)
+first.
+
+Undo, one command: `git restore --staged -- ledger/om-feedback.jsonl` unstages it again before
+you commit (the working-tree bytes are untouched either way); after a commit that carried it,
+the row is an ordinary tracked line like any other — revert or edit it as you would any file.
+
+Evidence: lab `H-DRAFT-fb9c08b9-om-ledger-commit-path`, kept 2026-09-14 — five counted looks,
+every assertion passing in every one, the frozen SPRT walking to 2.9389 over the 2.8904 promote
+bound, cold-verified (`VERDICT.json`, `VERIFY.md`, journal fragment 0538).
 
 ## Running it by hand
 
@@ -129,17 +161,26 @@ union row, a configured path surviving a re-init with its row rendered, an absol
 back to the default in every reader, the two-worktree union merge, zero `claude` spawns, stdlib-only
 imports.
 
+`python3 scripts/selftest-commit-backstop.py` -- the commit path's own regression test: an
+untracked and an appended-tracked ledger both stage with the exact line and ride the next
+commit, a clean or absent ledger and a non-`git commit`/heredoc-mentioning payload stay silent,
+a forbidden-key row holds with one line and stages nothing, a linked worktree's commit stages
+only that worktree's ledger, the clause fires with no `.claude/hyp.json` at all (independent of
+the backstop's own experiments-profile gate), the pre-existing backstop behaviour (a
+scratch-prefixed staged file with no hypothesis spec still warns) is unchanged, and the
+fully-silent case's hook wall stays under the hook row's own timeout.
+
 ## What does not ship yet, and why
 
 The design (lab `experiments/runs/DESIGN-passive-om-feedback/DESIGN.md`, section 6, changeset A)
 names four more pieces. Each ships only after its own lane keeps -- plugin bytes change only after
-the keep that licenses them -- and none had kept when this worker shipped:
+the keep that licenses them. The commit path (lane 7) has since kept and shipped -- see "The commit
+path" below. Still not here when this worker shipped:
 
 - **the wake** (lane 8): the `SessionStart` row that runs `drain` at startup. Until it keeps, nothing
   runs the worker for you.
 - **the outbox carry-forward** (lane 6): the recorder hook that writes a pointer file per finished
   session into the inbox. Until it keeps, you name transcripts by hand (`observe`) or write pointers yourself.
-- **the commit path** (lane 7): the clause that stages the appended row into the session's commit.
 - **the catalogue projection** (lane 2): the `model.md` renderer the worker's `compile-check` would run first.
 - **the `om_feedback_file` key in `hooks/scripts/hyp_config.py` `DEFAULTS`** (named by the design and
   by the lane's on-keep row; deferred, recorded here and in the lane's `SHIP.md`): every reader of the
@@ -165,5 +206,17 @@ recorded but nothing reads it yet, and it counts every attachment with `timedOut
 `hook_cancelled` (one real 85-line transcript read 18, more than its hook timeouts), so the wake lane
 reads it as an unread, over-counting field until a lane pins the attachment shape.
 
+The commit path's kept bytes are the lane fixture's `impl/commit-backstop.py` clause, ported onto
+this plugin's own (0.29.0) `hooks/scripts/commit-backstop.py` with two drifts resolved: the ledger
+path now reads the `om_feedback_file` override through `hyp_config.safe_rel_path` (the fixture
+predates that key and hardcoded the default path), and the git subprocess calls the clause makes
+now carry an explicit timeout under the hook row's own 10 s budget (the fixture's had none). Left
+as kept: the gate matches only a command that itself begins with `git commit` (see "The commit
+path" above); the forbidden-key set is a constant mirrored from, not imported from,
+`scripts/om-worker.py`'s `CANARY_KEYS_FORBIDDEN`, so the two are asserted equal by
+`scripts/selftest-commit-backstop.py` rather than sharing one name at runtime; the lint scans
+every row on disk, not only the ledger's unstaged rows.
+
 Undo: revert the release's merge commit. Rows already written are plain JSON lines in your ledger;
-the attribute row is plain text in your `.gitattributes`.
+the attribute row is plain text in your `.gitattributes`; a staged-but-uncommitted ledger unstages
+with `git restore --staged -- ledger/om-feedback.jsonl`.
