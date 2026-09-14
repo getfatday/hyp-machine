@@ -19,7 +19,7 @@ of those skills (deviations, node prose, defect-versus-discovery), which stays a
 |---|---|---|
 | `observe <transcript.jsonl> --root R` | the transcript's `tool_use` blocks and `usage`; the repository's catalogue (`operating-model/*/model.md`, `skills/`, `scripts/`) through the live board's own classifier (`observatory.Catalog.classify`, `op_tokens_bash`, `ratio_block`, `unmodeled_top`) | one `session-observed` row |
 | `evaluate --root R` / `compile-check --root R` | every `<model_dir>/<context>/` tree through the shipped `scripts/model-lint.py`; the last commit dates of the tree and of `compiled/*.md`; the declared `compile_command` | one `model-evaluated` row per tree (today both verbs write the same row; `compile-check` is the name the startup wake will call) |
-| `drain [--root R] [--inbox DIR]` | pointer files in the per-root inbox | one row per pointer, `quarantine` rows for poison files, one `spool-overflow` row when the inbox rotated |
+| `drain [--root R] [--inbox DIR]` | pointer files in the per-repository inbox | one row per pointer, `quarantine` rows for poison files, one `spool-overflow` row when the inbox rotated; a pointer git cannot answer for in time is deferred to the next wake |
 | `status --root R` | the feedback ledger | one JSON line: row count, rows per `schema` value, unparsed lines, the ledger's repository-relative path |
 | `latest --root R` | the feedback ledger | the latest-wins view: the highest-`through` `session-observed` row per session, canonical bytes, session order |
 
@@ -115,8 +115,23 @@ exception class). Bounds per wake: at most N = 20 pointers and T = 60 s on a mon
 line, exit 0; `$HYP_OM_FREE_FLOOR_BYTES` raises it, never lowers it); an inbox over 1 MiB rotates
 its oldest files by mtime into `overflow/<epoch>/` and writes one `spool-overflow` row. A drain
 killed mid-way leaves only complete lines (canonical bytes under `O_APPEND`); the next drain sweeps
-`processing/` back into the inbox and dedupe makes the re-run harmless. Nothing here schedules the
-worker: run it by hand until the wake ships (below).
+`processing/` back into the inbox and dedupe makes the re-run harmless. That sweep, the rotation,
+the carry and the pointer loop all run under an exclusive, non-blocking `flock` on
+`<inbox_root>/.drain.lock` (ship fix round 4): every checkout of one repository now shares one
+inbox, and two wakes inside it at once (main and a linked worktree starting together) made the
+second wake's sweep move the first wake's IN-FLIGHT pointer back into `inbox/`, so it was
+processed twice and the first wake wrote a false `FileNotFoundError` quarantine row for it. A
+drain that cannot get the lock prints one stderr line, moves nothing, and exits 0 with an all-zero
+result; the wake that holds it does the work. Every `git rev-parse` the worker runs is bounded by a
+5 s timeout, and a timeout is NOT read as "not a checkout" (ship fix round 4, B1 -- on a loaded
+host it was, and live worktrees' pointers were quarantined while a default-location drain fell
+back silently to the old single-path inbox and found nothing): when git cannot answer for the
+drain's own `--root` in time the whole drain refuses with one stderr line and moves nothing (the
+next wake retries); when it cannot answer for one POINTER's live root in time, that pointer is put
+back into `inbox/` for the next wake, counted as `deferred` in the result and named in one stderr
+line, never quarantined. The drain result JSON always carries the same keys on every exit
+(`rows`, `quarantined`, `rotated`, `landed`, `recovered`, `outbox`, `carried`, `deferred`). Nothing
+here schedules the worker: run it by hand until the wake ships (below).
 
 ## The outbox and carry-forward
 
@@ -152,7 +167,10 @@ row goes:
   or not the outbox rule exists. The `common_dir` test runs before the existence test: a pointer
   that cannot prove which repository it belonged to never enters the outbox under a borrowed key
   (ship fix round 3 -- before it, a dead `root` with no `common_dir` fell into the DRAINING
-  repository's outbox and was carried into a ledger the pointer never named).
+  repository's outbox and was carried into a ledger the pointer never named). A git TIMEOUT on a
+  root that exists is none of these: git did not answer, so nothing about the pointer was decided
+  -- it is deferred back into `inbox/` for the next wake, neither landed nor quarantined (ship fix
+  round 4, B1; see "Running it by hand").
 
 At the START of every `drain` for a live checkout, before any pointer is read, every row waiting in
 that repository's outbox is carried into the checkout's own ledger: `landed_in: carried` and
@@ -182,7 +200,12 @@ the lock at the same time as anyone else) is resumed, not stranded, the next tim
 free -- as is a claim whose carry the target ledger REFUSED for any row (the free-space floor
 reached between the drain's own check and the append, or the redaction self-check firing): the
 drain reports the refusal on stderr and leaves the `.carrying.jsonl` in place rather than
-finalizing an unread row away; one leftover claim is resumed per drain. Under `--inbox DIR` the
+finalizing an unread row away; one leftover claim is resumed per drain. Beside every claim sits a
+`.roots` sidecar (`outbox.<epoch>.carrying.roots`, removed with the claim when it finalizes) naming
+each checkout that has carried from it; a DIFFERENT checkout resuming the claim dedupes against
+those checkouts' ledgers as well as its own, so rows the first carrier already landed are not
+carried a second time into the resumer's ledger (ship fix round 4, A1 -- before it, main carrying 2
+of 4 rows and a worktree resuming carried all 4 into the worktree). Under `--inbox DIR` the
 outbox lives in `DIR` itself and the carry does not check repository membership (outbox rows
 carry no repository key), so `--inbox` must name a directory used by ONE repository -- a live
 checkout of repository Y draining a directory shared with repository X would carry X's
@@ -217,7 +240,7 @@ self-check must refuse; `blind`: the leak must reach the file); production never
 
 ## Regression test
 
-`python3 scripts/selftest-om-worker.py` -- 35 checks over throwaway consumers, the fixture grade
+`python3 scripts/selftest-om-worker.py` -- 39 checks over throwaway consumers, the fixture grade
 behaviours ported: parity with `observatory.tally_ratios` on planted transcripts (the
 Skill-in-catalogue branch included), lint equality with `model-lint.py`, staleness true then false,
 the six canary classes absent, every self-check net, the mutant pair, idempotence, the cursor and
@@ -233,8 +256,17 @@ another live checkout carrying nothing twice, every landed row's `landed_in` ins
 `root`/`outbox`/`carried` allowlist, a `not-a-checkout` quarantine unconditional in both cases
 (a live root under the wrong `common_dir`, and a dead root with no `common_dir` at all -- ship
 fix round 3), a pointer with no `root` field draining as before, two DIFFERENT live checkouts
-racing a 400-row outbox landing every row in exactly one ledger, and the missing-root write
-blocking behind a concurrent carry on the same lock (ship fix round 2).
+racing a 400-row outbox landing every row in exactly one ledger, the missing-root write
+blocking behind a concurrent carry on the same lock (ship fix round 2), and (ship fix round 4) a
+git that cannot answer in time refusing the whole drain rather than falling back to the old inbox,
+a live pointer whose root git cannot answer for being deferred rather than quarantined and landing
+`root` on the next drain, two live checkouts waking on the SAME shared inbox landing every pointer
+exactly once with no false quarantine row, and a claim resumed by a different checkout carrying
+only the rows the first carrier never landed. The run prints the host load average first: the
+concurrent and wall-clock cases are time-sensitive, and the whole run has needed over 300 s at a
+load of 12-20 (the SIGKILL case retries on a fresh tree, up to three times, when the kill lands in
+the gap between two pointers and strands nothing -- a harness miss seen once at load 12.5, not a
+worker behaviour).
 
 ## What does not ship yet, and why
 
@@ -299,6 +331,24 @@ not silently claimed "exactly as before"); and the outbox is now keyed by the PO
 recorded `common_dir` rather than by whichever repository happens to be draining. A malformed
 pointer (`root: null`) now quarantines instead of entering the outbox under a meaningless
 key.
+
+Ship fix round 4 (cold refuter, applied before release), two blocking findings the earlier
+rounds' fixture never reached because it never ran on a loaded host and never woke two checkouts
+on one inbox: a `git rev-parse` timeout (or an `OSError` running git) was folded into "not a
+checkout", so live worktrees' pointers quarantined as `NotAGitCheckout` under load (5 of 20 in one
+wake at a load of 13-20) and a default-location drain fell back silently to the v0.29.0 sha256
+inbox and found nothing -- `resolve_common_dir` now answers `UNKNOWN` distinctly, such a pointer is
+deferred to the next wake and such a drain refuses outright; and the inbox every checkout of a
+repository now shares let two concurrent wakes race on `processing/`, one wake's crash-recovery
+sweep re-queuing the other's in-flight pointer (21 landings for 20 pointers, plus a false
+`FileNotFoundError` quarantine row) -- the sweep, rotation, carry and pointer loop now run under a
+per-inbox `.drain.lock`, mirroring the round-1 `.outbox-carry.lock`. Advisories applied: a
+resumed claim dedupes against the prior carrier's ledger through a `.roots` sidecar; the drain
+result carries the same keys on every exit; the selftest prints the host load and allows 180 s
+for the 400-row race. Left as is, on purpose: a pointer with a live `root` but no `common_dir`
+still quarantines (the kept lane's own bytes quarantine that shape -- `not common_dir_p` is the
+first test in its `resolve_pointer_root` -- so landing it would ship beyond the evidence; the
+startup wake lane writes both fields together).
 
 Undo: revert the release's merge commit. Rows already written are plain JSON lines in your ledger;
 the attribute row is plain text in your `.gitattributes`.

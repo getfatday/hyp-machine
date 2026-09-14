@@ -32,7 +32,18 @@ and be finalized away unread; the write path now blocks on the same per-`inbox_r
 where the next drain carried it into a ledger the pointer never named; the `common_dir` test now
 runs before the existence test, so a pointer that cannot prove its repository quarantines either
 way, and a carry the target ledger refuses leaves its claim for the next drain instead of
-finalizing the unread row away. After upgrading: no pointer carries `root`/`common_dir` yet (the startup wake
+finalizing the unread row away. A fourth round, run on a loaded host, caught two more: a `git
+rev-parse` timeout (5 s) or a git that could not be run was read as "not a checkout", so live
+worktrees' pointers quarantined `NotAGitCheckout` under load and a default-location drain fell
+back silently to the previous release's inbox and found nothing -- the worker now tells "git did
+not answer" apart from "not a checkout", defers such a pointer to the next wake (result key
+`deferred`) and refuses the whole drain with one stderr line when it cannot resolve its own
+`--root`; and two wakes on the now-shared per-repository inbox raced on `processing/`, one wake's
+crash-recovery sweep re-queuing the other's in-flight pointer (processed twice, plus a false
+quarantine row) -- the sweep, rotation, carry and pointer loop now run under a per-inbox
+`.drain.lock`, the second wake backing off with one stderr line. A claim resumed by a different
+checkout now dedupes against the first carrier's ledger too (`.roots` sidecar), and the drain
+result JSON carries the same keys on every exit. After upgrading: no pointer carries `root`/`common_dir` yet (the startup wake
 lane, H-DRAFT-10383178, writes them), so every pointer that IS found still lands exactly as
 before -- BUT for any `root` that is itself a live git checkout, `drain` with no `--inbox`
 override now reads a DIFFERENT default inbox directory than the release before this one
