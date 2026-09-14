@@ -29,6 +29,12 @@ grade behaviours of lab H-DRAFT-35397146-om-worker-deterministic ported as PASS/
   schema-2-row-read-reported-untouched / om-feedback-file-override-honoured
   init-writes-union-row-and-check-attr       init-scaffold appends `ledger/om-feedback.jsonl merge=union`;
                                              merge-attrs-check names the row once the file exists
+  prior-om-feedback-file-survives-reinit     a prior om_feedback_file (and ledger_file, and a non-string
+                                             consumer key) survive a re-run of init-scaffold; the union
+                                             row for the configured path is rendered and check-attr sees it
+  absolute-override-falls-back-in-every-reader  an absolute om_feedback_file renders the DEFAULT row (never
+                                             a mangled one), the worker writes to the default path and
+                                             merge-attrs-check expects the default: one rule, three readers
   union-merge-keeps-both-appended-rows       two worktrees each append one row; the merge keeps both
   zero-model-calls-claude-shim               a PATH-first `claude` shim logs zero spawns
   installed-copy-stdlib-and-no-lab-paths     stdlib imports only; no home or lab path in the shipped file
@@ -727,6 +733,57 @@ def _main():
           and rc2 == 0 and any(l.startswith("unchanged .gitattributes") for l in out2.splitlines()) and rc_c1 == 0
           and rc_c2 == 1 and "MERGE-ATTR-MISSING\t%s\tunion" % LEDGER_REL in out_c2,
           (rc1, attr, rc_c1, rc_c2, out_c2.strip().replace("\n", " | ")[:200], err1[-200:]))
+
+    # 21b. a prior om_feedback_file (and ledger_file) override survives a re-init and its union row is rendered
+    #      (om-worker ship fix round 1, refuter B1: the cfg rewrite kept only DEFAULTS keys)
+    r_root = os.path.join(TMP, "reinit")
+    os.makedirs(r_root)
+    git(r_root, "init", "-q", "-b", "main")
+    run([PY, "-B", INIT, r_root, "--profile", "capture", "--context", "selftest"], cwd=r_root)
+    r_cfg_path = os.path.join(r_root, ".claude", "hyp.json")
+    r_cfg = json.loads(read_bytes(r_cfg_path).decode("utf-8"))
+    r_roles = {"maintainer": ["owner@example.invalid"]}
+    r_cfg.update({"om_feedback_file": "ledger/custom-feedback.jsonl", "ledger_file": "ledger/work-ledger.jsonl",
+                  "decision_roles": r_roles, "decision_door_legacy_max_id": 35})
+    write(r_cfg_path, json.dumps(r_cfg) + "\n")
+    rc_r, out_r, err_r = run([PY, "-B", INIT, r_root, "--profile", "capture", "--context", "selftest"], cwd=r_root)
+    r_after = json.loads(read_bytes(r_cfg_path).decode("utf-8"))
+    r_ga = read_bytes(os.path.join(r_root, ".gitattributes")).decode("utf-8", "replace").splitlines()
+    r_attr = git(r_root, "check-attr", "merge", "--", "ledger/custom-feedback.jsonl", "ledger/work-ledger.jsonl").strip().splitlines()
+    write(os.path.join(r_root, "ledger", "custom-feedback.jsonl"), '{"kind":"session-observed","schema":1,"date":null}\n')
+    write(os.path.join(r_root, "ledger", "work-ledger.jsonl"), "")
+    rc_rc, out_rc, _ = run([PY, "-B", CHECK, "--root", r_root])
+    rc_r2, out_r2, _ = run([PY, "-B", INIT, r_root, "--profile", "capture", "--context", "selftest"], cwd=r_root)
+    check("prior-om-feedback-file-survives-reinit",
+          rc_r == 0 and r_after.get("om_feedback_file") == "ledger/custom-feedback.jsonl"
+          and r_after.get("ledger_file") == "ledger/work-ledger.jsonl" and r_after.get("decision_roles") == r_roles
+          and r_after.get("decision_door_legacy_max_id") == 35 and r_after.get("profile") == "capture"
+          and "ledger/custom-feedback.jsonl merge=union" in r_ga and "ledger/work-ledger.jsonl merge=union" in r_ga
+          and sorted(r_attr) == ["ledger/custom-feedback.jsonl: merge: union", "ledger/work-ledger.jsonl: merge: union"]
+          and rc_rc == 0 and "MERGE-ATTR-MISSING" not in out_rc
+          and rc_r2 == 0 and any(l.startswith("unchanged .claude/hyp.json") for l in out_r2.splitlines()),
+          (rc_r, sorted(r_after), r_attr, rc_rc, out_rc.strip().replace("\n", " | ")[:200], err_r[-200:]))
+
+    # 21c. one validator, three readers (refuter A1): an absolute om_feedback_file falls back to the default everywhere
+    a_root = os.path.join(TMP, "absfb")
+    os.makedirs(a_root)
+    git(a_root, "init", "-q", "-b", "main")
+    run([PY, "-B", INIT, a_root, "--profile", "capture", "--context", "selftest"], cwd=a_root)
+    a_cfg_path = os.path.join(a_root, ".claude", "hyp.json")
+    a_cfg = json.loads(read_bytes(a_cfg_path).decode("utf-8"))
+    a_cfg["om_feedback_file"] = "/abs/fb.jsonl"
+    write(a_cfg_path, json.dumps(a_cfg) + "\n")
+    rc_a, _, err_a = run([PY, "-B", INIT, a_root, "--profile", "capture", "--context", "selftest"], cwd=a_root)
+    a_ga = read_bytes(os.path.join(a_root, ".gitattributes")).decode("utf-8", "replace").splitlines()
+    rc_ao, _, _ = worker(a_root, "observe", transcripts[2]["path"])
+    rc_as, out_as, _ = worker(a_root, "status")
+    a_st = json.loads(out_as.strip().splitlines()[-1]) if out_as.strip() else {}
+    rc_ac, out_ac, _ = run([PY, "-B", CHECK, "--root", a_root])
+    check("absolute-override-falls-back-in-every-reader",
+          rc_a == 0 and "%s merge=union" % LEDGER_REL in a_ga and not any(l.split()[0] in ("abs/fb.jsonl", "/abs/fb.jsonl") for l in a_ga if l.strip())
+          and rc_ao == 0 and n_lines(ledger(a_root)) == 1 and a_st.get("ledger") == LEDGER_REL
+          and rc_ac == 0 and "MERGE-ATTR-MISSING" not in out_ac,
+          (rc_a, [l for l in a_ga if "fb" in l], rc_ao, a_st, rc_ac, out_ac.strip().replace("\n", " | ")[:200], err_a[-200:]))
 
     # 22. two worktrees, one appended row each, a union merge
     m_root = os.path.join(TMP, "merge", "main")

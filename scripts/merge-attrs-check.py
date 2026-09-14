@@ -36,6 +36,7 @@ import sys
 
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "hooks", "scripts"))
+from hyp_config import safe_rel_path  # noqa: E402  (the one rule every override reader applies)
 
 DEFAULT_LEDGER = "ledger/ledger.jsonl"
 DEFAULT_OM_FEEDBACK = "ledger/om-feedback.jsonl"
@@ -45,12 +46,14 @@ DERIVED_GLOB_DIR = "ledger/north-stars"
 
 
 def _config_rel(root, key, default):
+    """The configured path, through hyp_config.safe_rel_path -- the rule scripts/om-worker.py and
+    init-scaffold.py apply, so an absolute or `..` value is expected at the DEFAULT path here too
+    (the path the worker actually writes), never at a mangled spelling."""
     try:
         with open(os.path.join(root, ".claude", "hyp.json"), encoding="utf-8") as fh:
             data = json.load(fh)
         v = data.get(key) if isinstance(data, dict) else None
-        if isinstance(v, str) and v.strip():
-            return v.strip().strip("/")
+        return safe_rel_path(v, default)
     except (OSError, ValueError):
         pass
     return default

@@ -43,7 +43,7 @@ import sys
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "hooks", "scripts"))
 from hyp_config import (CONFIG_RELPATH, DEFAULTS, LEGACY_CONFIG_RELPATH,  # noqa: E402
-                        PROFILES, render)
+                        PROFILES, render, safe_rel_path)
 
 PATH_KEYS = [k for k in DEFAULTS if k not in ("profile", "context", "model_dir")]
 # The work ledger: the append-only JSONL store that scripts/decisions.py, the
@@ -389,10 +389,23 @@ def main():
         cfg["context"] = slugify(os.path.basename(root))
     profile = cfg["profile"]
     at_least = lambda wanted: PROFILES.index(profile) >= PROFILES.index(wanted)
+    # Consumer-owned keys ride along (om-worker ship fix round 1, refuter B1): the config rewrite
+    # below is canonical for DEFAULTS only, so every prior key outside DEFAULTS -- ledger_file,
+    # om_feedback_file, compile_command, the decision-brief settings, anything a later release or
+    # the consumer added -- is carried verbatim (any JSON value). Before this, the documented
+    # "re-run /hyp:init once" dropped the override on every re-init, and the worker fell back to
+    # the default ledger path with no union row behind it. Only string values reach render().
+    carried = {}
+    if isinstance(prior, dict):
+        for key, value in prior.items():
+            if key not in DEFAULTS:
+                carried[key] = value
+    config_out = dict(cfg)
+    config_out.update(carried)
 
-    # 1. Config file (plugin-owned; canonical for the chosen profile + paths).
+    # 1. Config file (plugin-owned; canonical for the chosen profile + paths; consumer keys kept).
     ensure_file(root, CONFIG_RELPATH,
-                json.dumps(cfg, indent=2, sort_keys=True) + "\n",
+                json.dumps(config_out, indent=2, sort_keys=True) + "\n",
                 "profile + path configuration", overwrite=True)
 
     # 2. Capture layer (every profile).
@@ -405,15 +418,11 @@ def main():
     # leak-meter fires log merge by union; the compiled projections are derived, regenerated
     # after a merge and never merged by lines. A .gitattributes travels with the repository,
     # unlike a merge driver in git config.
-    ledger_rel = LEDGER_RELPATH.replace(os.sep, "/")
-    om_feedback_rel = OM_FEEDBACK_RELPATH.replace(os.sep, "/")
-    if existing is not None and isinstance(prior, dict):
-        override = prior.get("ledger_file")
-        if isinstance(override, str) and override.strip():
-            ledger_rel = override.strip().strip("/")
-        override = prior.get("om_feedback_file")
-        if isinstance(override, str) and override.strip():
-            om_feedback_rel = override.strip().strip("/")
+    # One validator for both overrides (hyp_config.safe_rel_path, the worker's own rule): a value
+    # the worker refuses (absolute, or a `..` hop) renders the DEFAULT row, never a mangled one.
+    ledger_rel = safe_rel_path(carried.get("ledger_file"), LEDGER_RELPATH.replace(os.sep, "/"))
+    om_feedback_rel = safe_rel_path(carried.get("om_feedback_file"),
+                                    OM_FEEDBACK_RELPATH.replace(os.sep, "/"))
     ensure_gitattributes(root, render(template("gitattributes"),
                                       dict(cfg, ledger_file=ledger_rel, om_feedback_file=om_feedback_rel)),
                          "merge shapes: ledger rows merge by union, projections regenerate")

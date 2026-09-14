@@ -25,6 +25,9 @@ of those skills (deviations, node prose, defect-versus-discovery), which stays a
 
 Every verb exits 0 on its own refusals and prints one marker line, `om-worker 1 <verb> rc 0 [written|duplicate|refused-...]`;
 stderr carries refusal lines only, so "zero rows and one refusal line" is countable on stderr alone.
+One exception, kept as the lane graded it: `observe` handed a transcript whose assistant rows lack
+`usage` (a format shift) raises -- a traceback, exit 1, nothing written -- where `drain` quarantines
+the same file with a `quarantine` row and exits 0.
 
 ## The row schema (`schema: 1`)
 
@@ -45,6 +48,13 @@ exactly as `model-lint.py` prints them, `parse_skipped` when pyyaml was missing 
 not parse), `compiled` (`stale`: the newest `compiled/*.md` by commit date predates the tree's last
 commit; `compiled_path`, `compiled_commit_date`, `model_commit_date`; `null` when a date is
 unknown), `compile_command` (`{command, rc}` of the `.claude/hyp.json` `compile_command`, when declared).
+The command string is stored verbatim, so declare it repository-relative (`node tools/compile.js`,
+`sh bin/compile.sh`): a declared command carrying an absolute or `~/` path makes every
+`model-evaluated` row refuse on the absolute-path net -- fail-closed, one stderr line per `evaluate`,
+zero rows.
+
+`templates/event-nodes/session-observed.md` and `templates/event-nodes/model-evaluated.md` are the
+copy-into-your-model event nodes for the two row kinds (the representation line names this ledger).
 
 `quarantine`: `file` (basename), `reason` (the exception class name). `spool-overflow`: `moved`.
 
@@ -60,7 +70,12 @@ Rows append to `.claude/hyp.json` `om_feedback_file`, default `ledger/om-feedbac
 same mechanism as the work ledger's row, so two worktrees that each appended a row merge without a
 conflict (`scripts/selftest-om-worker.py` proves it with two worktrees, add/add included);
 `scripts/merge-attrs-check.py` (harden `ADVISORY-36`) names the row as missing once the file exists,
-and lints its rows like the work ledger's.
+and lints its rows like the work ledger's. A re-run of `/hyp:init` keeps every key your
+`.claude/hyp.json` carries beyond the plugin's defaults (`om_feedback_file`, `ledger_file`,
+`compile_command`, the decision settings) and renders the union row for the configured path; the
+three readers of the override (the worker, init, the check) apply one rule
+(`hyp_config.safe_rel_path`): an absolute value or one with a `..` segment falls back to the default
+path everywhere, so the row rendered is always the row the worker writes to.
 
 ## Running it by hand
 
@@ -95,19 +110,24 @@ an absolute-path-shaped string (`/...`, `~/...`), a relative path that leaves th
 `tmp/...`, `var/...`, `opt/...`, `etc/...`), or the executor's login or host name. Two disclosed
 heuristics: a consumer whose rows legitimately carry a string starting with one of those root
 names would be refused, and a login shorter than four characters, a generic word, or a word the
-rows carry anyway (a tool name, a row key) is not detectable as an identity leak on that host.
+rows carry anyway (a tool name, a row key) is not detectable as an identity leak on that host. The
+converse false positive: the net skips only the worker's own row vocabulary, not the transcript's
+program names, so a login equal to a program basename the session ran (`printf`, say) refuses every
+`session-observed` row on that host -- fail-closed, one stderr line per row, zero rows.
 `$HYP_OM_MUTANT` exists only for the selftest's known-answer control (`redact-disabled`: the
 self-check must refuse; `blind`: the leak must reach the file); production never sets it.
 
 ## Regression test
 
-`python3 scripts/selftest-om-worker.py` -- 24 checks over throwaway consumers, the fixture grade
+`python3 scripts/selftest-om-worker.py` -- 26 checks over throwaway consumers, the fixture grade
 behaviours ported: parity with `observatory.tally_ratios` on planted transcripts (the
 Skill-in-catalogue branch included), lint equality with `model-lint.py`, staleness true then false,
 the six canary classes absent, every self-check net, the mutant pair, idempotence, the cursor and
 latest-wins, byte identity across two trees, the N and T caps, the floor, rotation, quarantine, a
 SIGKILL mid-drain with a clean resume, `schema: 2` tolerance, the configured path, the scaffold's
-union row, the two-worktree union merge, zero `claude` spawns, stdlib-only imports.
+union row, a configured path surviving a re-init with its row rendered, an absolute value falling
+back to the default in every reader, the two-worktree union merge, zero `claude` spawns, stdlib-only
+imports.
 
 ## What does not ship yet, and why
 
@@ -121,6 +141,13 @@ the keep that licenses them -- and none had kept when this worker shipped:
   session into the inbox. Until it keeps, you name transcripts by hand (`observe`) or write pointers yourself.
 - **the commit path** (lane 7): the clause that stages the appended row into the session's commit.
 - **the catalogue projection** (lane 2): the `model.md` renderer the worker's `compile-check` would run first.
+- **the `om_feedback_file` key in `hooks/scripts/hyp_config.py` `DEFAULTS`** (named by the design and
+  by the lane's on-keep row; deferred, recorded here and in the lane's `SHIP.md`): every reader of the
+  override today (the worker, `/hyp:init`'s union row, `merge-attrs-check.py`) reads `.claude/hyp.json`
+  directly through the one shared validator, so the key has no hook-side reader yet. Putting it in
+  `DEFAULTS` would rewrite every consumer's `.claude/hyp.json` on the next `/hyp:init` and widen
+  `load_config` for all hooks before the wake lane (lane 8) -- the first hook that will read it -- has
+  kept. It ships with the wake. The two event-node templates the same row names do ship (above).
 
 Also not here: the judgment tier (a model reading these rows for deviations and node prose), which
 registers as its own spec citing this row schema.
@@ -134,7 +161,9 @@ the fixture grader's A3 nets instead of two markers; a drain sweeps `processing/
 mid-drain strands no pointer; staleness reads the newest compiled artifact by commit date rather
 than the first by name. Left as kept: the T cap is checked between files only (one very slow
 transcript can overrun it); `evaluate` and `compile-check` write the same row; `hook_timeouts` is
-recorded but nothing reads it yet.
+recorded but nothing reads it yet, and it counts every attachment with `timedOut` or type
+`hook_cancelled` (one real 85-line transcript read 18, more than its hook timeouts), so the wake lane
+reads it as an unread, over-counting field until a lane pins the attachment shape.
 
 Undo: revert the release's merge commit. Rows already written are plain JSON lines in your ledger;
 the attribute row is plain text in your `.gitattributes`.

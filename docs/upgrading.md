@@ -114,5 +114,6 @@ it for you yet -- the startup wake, the pointer outbox and the commit path each 
 upgrading there is nothing to do; to try it, run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-worker.py" observe
 <transcript.jsonl> --root .` and `... evaluate --root .`, then `... status --root .`. Re-run `/hyp:init` once (or add
 `ledger/om-feedback.jsonl merge=union` to `.gitattributes` by hand) so two checkouts' appended rows merge without conflict
-markers; `merge-attrs-check.py` names the row as missing only once the file exists. No existing file changes shape. Undo:
+markers -- the re-run keeps every key your `.claude/hyp.json` carries beyond the plugin defaults (`ledger_file`,
+`om_feedback_file`, `compile_command`, the decision settings), which earlier releases dropped on a re-init; `merge-attrs-check.py` names the row as missing only once the file exists. No existing file changes shape. Undo:
 revert the release's merge commit; rows already written are plain JSON lines. See `docs/passive-feedback.md`.
