@@ -211,19 +211,29 @@ def _normalize_pointer_common_dir(common_dir_p, root_p):
 
 def resolve_pointer_root(pointer):
     """(root_p, status) for one pointer, status in `root` (live checkout matching its recorded
-    `common_dir`), `missing` (root no longer exists), `not-a-checkout` (root exists but is not a
-    git checkout, its live common-dir does not match the recorded one, or the pointer is
-    malformed -- a null/empty/non-string `root`, A2 -- which must quarantine rather than enter the
-    outbox carry path under a meaningless key)."""
+    `common_dir`), `missing` (root no longer exists AND the pointer names the repository it
+    belonged to), `not-a-checkout` (root exists but is not a git checkout, its live common-dir
+    does not match the recorded one, or the pointer is malformed -- a null/empty/non-string
+    `root`, A2, or no usable `common_dir` at all, B1 of ship fix round 3 -- which must quarantine
+    rather than enter the outbox carry path under a meaningless or borrowed key).
+
+    The `common_dir` test runs BEFORE the `isdir` test on purpose: a pointer that cannot prove
+    which repository it belongs to quarantines whether or not its `root` still exists. Before
+    round 3 a pointer with a dead `root` and no `common_dir` reached `missing`, and the
+    missing-root branch then fell back to the DRAINING repository's own outbox -- so the row was
+    carried into a repository the pointer never named, exactly the reading the keep rules out
+    (and the opposite of what docs/passive-feedback.md already promised for that shape)."""
     root_p = pointer.get("root")
     common_dir_p = pointer.get("common_dir")
     if not root_p or not isinstance(root_p, str):
         return root_p, "not-a-checkout"
+    norm_common_dir_p = _normalize_pointer_common_dir(common_dir_p, root_p)
+    if not norm_common_dir_p:
+        return root_p, "not-a-checkout"
     if not os.path.isdir(root_p):
         return root_p, "missing"
     live_common_dir = resolve_common_dir(root_p)
-    norm_common_dir_p = _normalize_pointer_common_dir(common_dir_p, root_p)
-    if not norm_common_dir_p or not live_common_dir or live_common_dir != norm_common_dir_p:
+    if not live_common_dir or live_common_dir != norm_common_dir_p:
         return root_p, "not-a-checkout"
     return root_p, "root"
 
@@ -809,6 +819,7 @@ def _carry_outbox_locked(root, inbox_root):
         claimed_path = claim_dest
     rows, _ = read_rows(claimed_path)
     carried = 0
+    refused = 0
     if rows:
         target_ledger_rows, _ = read_rows(ledger_path(root))
         seen = set((r.get("session"), r.get("through")) for r in target_ledger_rows
@@ -824,7 +835,19 @@ def _carry_outbox_locked(root, inbox_root):
             result = append_row(root, out_row)
             if result == "written":
                 carried += 1
+            elif result in ("refused-floor", "refused-redaction"):
+                refused += 1
             seen.add(key)
+    if refused:
+        # A1 (ship fix round 3, advisory): a row the target ledger REFUSED (floor reached between
+        # the drain's own floor check and this append, or the redaction self-check firing on a
+        # row that passed it at outbox-write time) was not carried; finalizing the claim to
+        # `.carried.jsonl` now would file it away unread. Leave the `.carrying.jsonl` where it is:
+        # the next drain's `_sweep_carrying` resumes it, and the `(session, through)` dedupe skips
+        # every row that did land.
+        sys.stderr.write("om-worker drain: %d outbox row(s) refused by the target ledger; "
+                         "claim left for the next drain\n" % refused)
+        return carried
     # A4 (ship fix round 2, advisory): bump the epoch on a collision, exactly as the claim step
     # above does, rather than appending another ".carried.jsonl" suffix outside the documented
     # `outbox.<epoch>.carried.jsonl` pattern.
@@ -911,8 +934,12 @@ def drain(root, plugin_scripts, inbox_override=None, n_cap=20, t_cap=60.0):
                 # repository Y's inbox must wait for X's own next live drain, not Y's. `--inbox`
                 # still wins when a caller names an explicit directory: it overrides where the
                 # outbox itself lives too, same as it overrides where pointers are read from.
+                # `resolve_pointer_root` only returns `missing` when the pointer's `common_dir`
+                # normalizes to a real string (ship fix round 3, B1), so there is no "no key"
+                # fallback here any more: a pointer without one quarantined above, never borrowing
+                # the draining repository's outbox.
                 pointer_common_dir = _normalize_pointer_common_dir(pointer.get("common_dir"), root_p)
-                outbox_dir = inbox_root if (inbox_override or not pointer_common_dir) else state_root_for_repo(pointer_common_dir)
+                outbox_dir = inbox_root if inbox_override else state_root_for_repo(pointer_common_dir)
                 outbox_path = os.path.join(outbox_dir, "outbox.jsonl")
                 _append_to_outbox_locked(outbox_dir, outbox_path, row)
                 written["landed"] += 1

@@ -10,7 +10,8 @@ pointer's own recorded `common_dir`) instead of the pointer being quarantined, a
 and carry an outbox at a time, renaming it (`outbox.jsonl` -> `outbox.<epoch>.carrying.jsonl` ->
 `outbox.<epoch>.carried.jsonl`) so a second drain -- or a second live checkout racing the first --
 carries nothing twice; a pointer whose root exists but was never a git checkout of its recorded
-`common_dir`, or whose `root` is null/empty/non-string, still quarantines unconditionally.
+`common_dir`, whose `root` is null/empty/non-string, or that carries no `common_dir` at all
+(whether or not its `root` still exists) still quarantines unconditionally.
 `templates/event-nodes/session-observed.md` documents the new `landed_in` values and
 `carried_from`/`origin_root_key`; `docs/passive-feedback.md` documents the pointer's optional
 `root`/`common_dir` fields, the outbox and carry-forward contract, and the default inbox
@@ -26,7 +27,12 @@ lock above. A second cold-refuter round then caught the missing-root write path 
 taking that same lock before its append -- a write already open on `outbox.jsonl` when a
 concurrent carry renames it away could land inside the `.carrying.jsonl` the carrier already read
 and be finalized away unread; the write path now blocks on the same per-`inbox_root`
-`.outbox-carry.lock` before appending. After upgrading: no pointer carries `root`/`common_dir` yet (the startup wake
+`.outbox-carry.lock` before appending. A third round caught a pointer with a dead `root` and no
+`common_dir` slipping past the documented quarantine into the DRAINING repository's outbox, from
+where the next drain carried it into a ledger the pointer never named; the `common_dir` test now
+runs before the existence test, so a pointer that cannot prove its repository quarantines either
+way, and a carry the target ledger refuses leaves its claim for the next drain instead of
+finalizing the unread row away. After upgrading: no pointer carries `root`/`common_dir` yet (the startup wake
 lane, H-DRAFT-10383178, writes them), so every pointer that IS found still lands exactly as
 before -- BUT for any `root` that is itself a live git checkout, `drain` with no `--inbox`
 override now reads a DIFFERENT default inbox directory than the release before this one

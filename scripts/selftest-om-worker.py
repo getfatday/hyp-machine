@@ -53,7 +53,11 @@ checkout and two linked worktrees, one removed after its pointer is written:
                                              outbox, and a further drain carries nothing twice
   not-a-checkout-root-quarantines-unconditionally  a pointer whose root exists but was never a git
                                              checkout of its recorded `common_dir` quarantines the same
-                                             way regardless of the outbox rule
+                                             way regardless of the outbox rule; so does (ship fix
+                                             round 3 B1) a pointer whose root is GONE but that carries
+                                             no `common_dir` -- it must never borrow the draining
+                                             repository's outbox and be carried into a repository it
+                                             never named
   pointer-with-no-root-field-drains-as-before  a pointer carrying no `root`/`common_dir` (the pre-outbox
                                              shape) lands into the drain target exactly as before
   concurrent-drains-carry-outbox-exactly-once  two DIFFERENT live checkouts of one repository (main
@@ -885,6 +889,13 @@ def _main():
     write(os.path.join(ob_inbox, "null-root.json"),
           json.dumps({"session_id": "sess-null-root", "transcript_path": transcripts[0]["path"],
                      "root": None, "common_dir": ob_common_dir}))
+    # B1 (ship fix round 3): a pointer whose `root` is already gone and that carries NO
+    # `common_dir` cannot prove which repository it belonged to. Before the fix it reached the
+    # missing-root branch and fell back to the DRAINING repository's outbox (this scratch repo's),
+    # from where the next drain carried it into a ledger the pointer never named.
+    write(os.path.join(ob_inbox, "dead-nocd.json"),
+          json.dumps({"session_id": "sess-dead-nocd", "transcript_path": transcripts[0]["path"],
+                     "root": os.path.join(TMP, "outbox", "gone-nocd")}))
     git(ob_root, "worktree", "remove", "--force", ob_wt_a)
 
     rc_ob1, out_ob1, err_ob1 = worker(ob_wt_b, "drain", "--inbox", ob_state)
@@ -896,7 +907,7 @@ def _main():
     ob_quarantine_reasons = {r.get("reason") for r in ob_main_rows_after1 + ob_wtb_rows if r.get("kind") == "quarantine"}
     ob_wtb_session_rows = [r for r in ob_wtb_rows if r.get("kind") == "session-observed"]
     check("outbox-landing-for-missing-root",
-          res_ob1.get("outbox") == 1 and res_ob1.get("quarantined") == 2
+          res_ob1.get("outbox") == 1 and res_ob1.get("quarantined") == 3
           and len(ob_outbox_rows) == 1 and ob_outbox_rows[0].get("session") == "sess-wt-a"
           and ob_outbox_rows[0].get("landed_in") == "outbox" and ob_outbox_rows[0].get("origin_root_key")
           # wt_b's ledger gets its own pointer's row plus the back-compat "legacy" pointer's row
@@ -913,7 +924,15 @@ def _main():
     check("pointer-with-no-root-field-drains-as-before",
           any(r.get("session") == "sess-legacy" and r.get("landed_in") == "root" for r in ob_main_rows_after1 + ob_wtb_rows),
           ob_main_rows_after1 + ob_wtb_rows)
-    check("not-a-checkout-root-quarantines-unconditionally", "NotAGitCheckout" in ob_quarantine_reasons, ob_quarantine_reasons)
+    ob_quarantine_files = {r.get("file"): r.get("reason") for r in ob_main_rows_after1 + ob_wtb_rows if r.get("kind") == "quarantine"}
+    check("not-a-checkout-root-quarantines-unconditionally",
+          ob_quarantine_files.get("plain.json") == "NotAGitCheckout"
+          # B1 (ship fix round 3): dead root + no common_dir quarantines too, and its row is in
+          # no outbox and no ledger -- not this repository's, which the pointer never named
+          and ob_quarantine_files.get("dead-nocd.json") == "NotAGitCheckout"
+          and all(r.get("session") != "sess-dead-nocd" for r in ob_outbox_rows + ob_main_rows_after1 + ob_wtb_rows
+                  if r.get("kind") == "session-observed"),
+          (ob_quarantine_files, ob_outbox_rows))
 
     # 24. the next drain for a live checkout of the same repository carries the outbox row in
     rc_ob2, out_ob2, err_ob2 = worker(ob_root, "drain", "--inbox", ob_state)

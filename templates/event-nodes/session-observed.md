@@ -21,8 +21,7 @@ with an `origin_root_key` naming the dead root) or `carried` (a later `drain` fo
 of the same repository moved it into that checkout's own ledger; `carried_from` names the origin
 key it came from) — lab H-DRAFT-a4a14ff4-om-outbox-carry-forward, kept 2026-09-14
 (`docs/passive-feedback.md`, "The outbox and carry-forward"). A transcript that grew writes a
-second row with a higher `through`;
-`om-worker.py latest` is the latest-wins view. Attribution stays in git — no author fields. If your
-`.claude/hyp.json` overrides `om_feedback_file`, name that path in the representation line instead;
-name your own command and read-model ids once you have them (the ids above are placeholders the
-lint will flag as dangling until you do).
+second row with a higher `through`; `om-worker.py latest` is the latest-wins view. Attribution
+stays in git — no author fields. If your `.claude/hyp.json` overrides `om_feedback_file`, name that
+path in the representation line instead; name your own command and read-model ids once you have
+them (the ids above are placeholders the lint will flag as dangling until you do).

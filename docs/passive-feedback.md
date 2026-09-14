@@ -96,8 +96,8 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-worker.py" latest --root .
 (no lane writes them yet; see "The outbox and carry-forward" below). A pointer WITHOUT a `root`
 key drains exactly as the first release of this worker did: straight into the `drain` call's own
 `--root` target (the branch is `"root" not in pointer`, not "both fields absent" -- a pointer
-with `root` but no `common_dir` instead quarantines as `NotAGitCheckout`, and one with
-`common_dir` but no `root` takes this same back-compat path).
+with `root` but no `common_dir` instead quarantines as `NotAGitCheckout` whether or not that
+`root` still exists, and one with `common_dir` but no `root` takes this same back-compat path).
 
 Which INBOX DIRECTORY a drain reads from by default changed in this release, independent of any
 one pointer's shape: for a `root` that is itself a live git checkout, `drain` with no `--inbox`
@@ -139,15 +139,20 @@ row goes:
   still matches the recorded `common_dir`): the row lands in that checkout's own ledger,
   `landed_in: root`, exactly as a pointer with no `root` field always has.
 - **missing** (`root` is a non-empty string naming a path that no longer exists -- the checkout
-  was removed): the row lands in the outbox instead, `landed_in: outbox`, with `origin_root_key`
+  was removed -- AND the pointer carries a usable `common_dir` naming the repository it belonged
+  to): the row lands in the outbox instead, `landed_in: outbox`, with `origin_root_key`
   naming the dead root's own state key. The outbox is keyed by the POINTER's own recorded
   `common_dir` (`<state>/om/<repo-key>/outbox.jsonl`), not by whichever repository happens to be
   draining -- a pointer for repository X waits under X's own key even when it is found sitting in
   repository Y's inbox. Nothing is lost; the row waits for a live checkout of the same repository.
 - **not a checkout** (`root` exists but its live `common_dir` does not match the recorded one, or
-  resolves to nothing; OR `root` is null, empty, or not a string -- a malformed pointer either
-  way, not the case above): the pointer quarantines exactly as it always has, unconditionally,
-  whether or not the outbox rule exists.
+  resolves to nothing; OR `root` is null, empty, or not a string; OR the pointer carries no usable
+  `common_dir` at all, whether or not its `root` still exists -- a malformed pointer either way,
+  not the case above): the pointer quarantines exactly as it always has, unconditionally, whether
+  or not the outbox rule exists. The `common_dir` test runs before the existence test: a pointer
+  that cannot prove which repository it belonged to never enters the outbox under a borrowed key
+  (ship fix round 3 -- before it, a dead `root` with no `common_dir` fell into the DRAINING
+  repository's outbox and was carried into a ledger the pointer never named).
 
 At the START of every `drain` for a live checkout, before any pointer is read, every row waiting in
 that repository's outbox is carried into the checkout's own ledger: `landed_in: carried` and
@@ -174,7 +179,14 @@ races this deterministically). Once every row is carried, the claimed file is re
 `outbox.<epoch>.carried.jsonl` (never truncated), so a further drain finds no outbox file and
 carries nothing twice; a claim left behind by a drain that crashed mid-carry (and so never held
 the lock at the same time as anyone else) is resumed, not stranded, the next time the lock is
-free. A repository whose `common_dir` is itself gone (the whole repository deleted) has no live
+free -- as is a claim whose carry the target ledger REFUSED for any row (the free-space floor
+reached between the drain's own check and the append, or the redaction self-check firing): the
+drain reports the refusal on stderr and leaves the `.carrying.jsonl` in place rather than
+finalizing an unread row away; one leftover claim is resumed per drain. Under `--inbox DIR` the
+outbox lives in `DIR` itself and the carry does not check repository membership (outbox rows
+carry no repository key), so `--inbox` must name a directory used by ONE repository -- a live
+checkout of repository Y draining a directory shared with repository X would carry X's
+dead-worktree rows into Y's ledger. A repository whose `common_dir` is itself gone (the whole repository deleted) has no live
 checkout to carry into; its rows stay in the outbox with `landed_in: outbox` -- the design's
 disclosed residual, not a failure.
 
@@ -216,9 +228,13 @@ back to the default in every reader, the two-worktree union merge, zero `claude`
 imports, and (lab `H-DRAFT-a4a14ff4-om-outbox-carry-forward`, plus ship fix round 1) a scratch
 repository with a main checkout and two linked worktrees, one removed after its pointer is
 written: the outbox landing keyed by the pointer's own `common_dir`, a malformed `root: null`
-pointer quarantining rather than entering the outbox, the exactly-once carry, a `not-a-checkout`
-quarantine unconditional in both cases, a pointer with no `root` field draining as before, and two
-DIFFERENT live checkouts racing a 400-row outbox landing every row in exactly one ledger.
+pointer quarantining rather than entering the outbox, the exactly-once carry, a second drain of
+another live checkout carrying nothing twice, every landed row's `landed_in` inside the
+`root`/`outbox`/`carried` allowlist, a `not-a-checkout` quarantine unconditional in both cases
+(a live root under the wrong `common_dir`, and a dead root with no `common_dir` at all -- ship
+fix round 3), a pointer with no `root` field draining as before, two DIFFERENT live checkouts
+racing a 400-row outbox landing every row in exactly one ledger, and the missing-root write
+blocking behind a concurrent carry on the same lock (ship fix round 2).
 
 ## What does not ship yet, and why
 
