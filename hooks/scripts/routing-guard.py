@@ -12,11 +12,15 @@ Deny is conveyed the way every other guard in this plugin conveys it --
 `hookSpecificOutput.permissionDecision: deny` on stdout, exit 0 (write-once-guard.py,
 preflight-gate.py) -- never a bare exit code. Advise prints one JSON object carrying a
 top-level `systemMessage` (the field the plugin's SessionStart announce already uses to
-reach the person) plus `hookSpecificOutput.permissionDecision: allow` with the same text
-as `permissionDecisionReason`, and exits 0. Plain stdout text (license-join-hook.py's
-convention) is written to the debug log only on a PreToolUse hook and never reaches the
-transcript or the model, which made every advise-mode finding here silently unobservable
-until fixed.
+reach the person) plus `hookSpecificOutput.additionalContext` with the same text, and
+exits 0 -- with no `permissionDecision` field at all (round-2 cold refuter B1): the
+installed CLI's PreToolUse output handler drops any value but `deny`/`ask`, so a
+`permissionDecision: allow` never reached the model either, and in CLI versions that DO
+honour `allow` it silently skipped the permission prompt for exactly the non-conformant
+scripts this hook exists to flag. Plain stdout text (license-join-hook.py's convention)
+is written to the debug log only on a PreToolUse hook and never reaches the transcript
+or the model, which made every advise-mode finding here silently unobservable until
+fixed.
 
 Fail-open is reserved for payload- or IO-level errors (a missing scriptPath file, a
 malformed payload, a missing or unreadable table) -- never for a parse exception over
@@ -40,6 +44,7 @@ import json
 import os
 import re
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hyp_config  # noqa: E402
@@ -119,6 +124,31 @@ def _safe_mark_name(tool_use_id):
     return re.sub(r"[^A-Za-z0-9_.-]", "_", tool_use_id)[:200]
 
 
+MARKS_MAX_AGE_S = 3600  # A1: nothing else prunes this directory; keep an hour of history
+
+
+def _prune_marks(root):
+    """A1 (advisory, cheap): every Workflow/Agent call writes two mark files here and
+    nothing shipped ever reads or prunes them, so the directory grows without bound on
+    a consumer that tracks `.claude/`. Best-effort, called once per guard invocation --
+    any failure (permissions, a mark deleted by a concurrent invocation) is swallowed,
+    never turned into a fail-open or a finding."""
+    d = os.path.join(root, MARKS_DIRNAME)
+    try:
+        if not os.path.isdir(d):
+            return
+        cutoff = time.time() - MARKS_MAX_AGE_S
+        for name in os.listdir(d):
+            p = os.path.join(d, name)
+            try:
+                if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
+                    os.remove(p)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def write_mark(root, tool_use_id, which):
     if not tool_use_id:
         return
@@ -186,13 +216,19 @@ def _deny(reason):
 
 
 def _advise(lines):
-    """B3: an advise-mode finding must actually reach someone. Plain stdout on a
-    PreToolUse hook is written to the debug log only (never the transcript, never the
-    model), so under the shipped default `routing.enforce: advise` no finding was ever
-    observable -- print one JSON object instead: a top-level `systemMessage` (the field
-    the plugin's SessionStart announce already uses) and `hookSpecificOutput` with
-    `permissionDecision: allow` and the same text as `permissionDecisionReason`, so a
-    human and a machine reader both see it."""
+    """B3/B1: an advise-mode finding must actually reach someone, and must not carry a
+    `permissionDecision` at all. Plain stdout on a PreToolUse hook is written to the
+    debug log only (never the transcript, never the model), so under the shipped
+    default `routing.enforce: advise` no finding was ever observable -- print one JSON
+    object instead: a top-level `systemMessage` (the field the plugin's SessionStart
+    announce already uses) and `hookSpecificOutput.additionalContext` carrying the same
+    text, so a human and a machine reader both see it. B1 (round-2 cold refuter): the
+    installed CLI's PreToolUse output handler drops anything but `deny`/`ask` on
+    `permissionDecision` (so the earlier `allow` value never reached the model either),
+    and in CLI versions that DO honour `allow` it skips the permission prompt for
+    exactly the non-conformant scripts this hook exists to flag -- omit the field
+    entirely; the call was never going to be denied in advise mode, so there is nothing
+    for a decision field to say."""
     if not lines:
         return 0
     joined = "\n".join(lines)
@@ -200,8 +236,7 @@ def _advise(lines):
         "systemMessage": joined,
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "permissionDecisionReason": joined,
+            "additionalContext": joined,
         },
     }))
     return 0
@@ -253,6 +288,7 @@ def main():
 
 
 def _run_checks(root, tool_use_id, tool_name, tool_input):
+    _prune_marks(root)
     write_mark(root, tool_use_id, "started")
 
     matcher = "Agent" if tool_name == "Agent" else "Workflow"

@@ -41,7 +41,8 @@ mismatch is its own advisory finding, `default-sha-mismatch`.
 - **`Workflow`** — reads `routing.enforce` from `.claude/hyp.json` (`deny` | `advise` | `off`,
   default **`advise`**). Under `deny` it blocks a workflow script whose `agent()` calls have a
   finding; under `advise` it prints one line per finding and lets the call through; under
-  `off` it does nothing. Nothing is denied anywhere until you set `routing.enforce: deny`.
+  `off` it writes its start/finish marks and exits 0 before opening the script -- no scan, no
+  finding, no advisory line. Nothing is denied anywhere until you set `routing.enforce: deny`.
 - **`Agent`** — advise-only, always, regardless of `routing.enforce`.
 
 A finding names the script, the line, and one of these classes: `no-model` / `no-effort`

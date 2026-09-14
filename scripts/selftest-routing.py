@@ -168,7 +168,7 @@ def run_guard(script_text, root, tool_name="Workflow", tool_use_id="tu-1",
         try:
             obj = json.loads(json_lines[0])
             hso = obj.get("hookSpecificOutput", {})
-            decision = hso.get("permissionDecision", "?")
+            decision = hso.get("permissionDecision", "allow")  # B1: advise carries no field now
             reason = hso.get("permissionDecisionReason", "")
             system_message = obj.get("systemMessage") or ""
             if system_message:
