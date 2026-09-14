@@ -218,7 +218,7 @@ is about the host's state, not the row's, and the drain's own start-of-drain flo
 a race window only: the carry halts for that wake with the claim left intact and nothing filed,
 and the next drain that passes the floor check resumes it and goes on to the live outbox. Beside every claim sits a
 `.roots` sidecar (`outbox.<epoch>.carrying.roots`, removed with the claim when it finalizes) naming
-each checkout that has carried from it; a DIFFERENT checkout resuming the claim dedupes against
+each checkout that has carried from it (by realpath, so absolute checkout paths do live in the state directory: in this sidecar and in the pointer files the drain moves into `processed/` and `quarantine/`, whose `root` the producer wrote; never in a row or a ledger); a DIFFERENT checkout resuming the claim dedupes against
 those checkouts' ledgers as well as its own, so rows the first carrier already landed are not
 carried a second time into the resumer's ledger (ship fix round 4, A1 -- before it, main carrying 2
 of 4 rows and a worktree resuming carried all 4 into the worktree). Under `--inbox DIR` the
