@@ -1,0 +1,6 @@
+# hyp: the operating-model catalogue is a regenerated projection, never tracked (written by
+# /hyp:init; re-running init adds any missing row and never removes yours). Two adopters
+# adding nodes to the same context on separate branches would otherwise both edit model.md
+# and conflict; regenerate with scripts/compile-catalog.py <context-dir> wherever the model
+# is read (H-DRAFT-4e06e157-om-rows-merge-shape).
+/{{MODEL_DIR}}/*/model.md
