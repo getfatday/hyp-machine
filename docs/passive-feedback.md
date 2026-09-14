@@ -19,7 +19,7 @@ of those skills (deviations, node prose, defect-versus-discovery), which stays a
 |---|---|---|
 | `observe <transcript.jsonl> --root R` | the transcript's `tool_use` blocks and `usage`; the repository's catalogue (`operating-model/*/model.md`, `skills/`, `scripts/`) through the live board's own classifier (`observatory.Catalog.classify`, `op_tokens_bash`, `ratio_block`, `unmodeled_top`) | one `session-observed` row |
 | `evaluate --root R` / `compile-check --root R` | every `<model_dir>/<context>/` tree, regenerated in place first by the shipped `scripts/compile-catalog.py`, then linted by `scripts/model-lint.py`; the last commit dates of the tree and of `compiled/*.md`; the declared `compile_command` | one `model-evaluated` row per tree carrying `catalog_regen`, plus (`compile-check` only) a fail-closed exit: a missing renderer or a nonzero exit fails the whole verb, rc 1, rather than report rc 0 over an unregenerated catalogue (today both verbs write the same row and run the same regeneration; `compile-check` is the name the startup wake will call, and the one that fails closed) |
-| `drain [--root R] [--inbox DIR]` | pointer files in the per-root inbox | one row per pointer, `quarantine` rows for poison files, one `spool-overflow` row when the inbox rotated |
+| `drain [--root R] [--inbox DIR]` | pointer files in the per-repository inbox | one row per pointer, `quarantine` rows for poison files, one `spool-overflow` row when the inbox rotated; a pointer git cannot answer for in time is deferred to the next wake; a pointer whose checkout has since been removed lands in a per-repository outbox and rides into the next live checkout of the same repository exactly once |
 | `status --root R` | the feedback ledger | one JSON line: row count, rows per `schema` value, unparsed lines, the ledger's repository-relative path |
 | `latest --root R` | the feedback ledger | the latest-wins view: the highest-`through` `session-observed` row per session, canonical bytes, session order |
 
@@ -33,7 +33,9 @@ the same file with a `quarantine` row and exits 0.
 
 Rows are one JSON object per line, keys sorted, no spaces, newline-terminated (canonical bytes), so
 the ledger dedupes by exact bytes and merges by union. Every row carries `kind`, `schema`,
-`landed_in` (`root`) and `date`.
+`landed_in` and `date`; `landed_in` is one of `root` (the checkout the session worked in), `outbox`
+(that checkout no longer existed at drain time; see "The outbox and carry-forward" below) or
+`carried` (a later drain moved an outbox row into a live checkout's own ledger).
 
 `session-observed`: `session` (the transcript's basename, or the pointer's `session_id`), `through`
 (the transcript line count the row covers -- the cursor), `head` (sha256 of the transcript bytes),
@@ -41,7 +43,10 @@ the ledger dedupes by exact bytes and merges by union. Every row carries `kind`,
 `determinism`, `handoff_share` (the classifier's own ratio arithmetic; `null` when a denominator is
 0), `top_step` (`{msg, output_tokens}`: the assistant step with the most output tokens),
 `unmodeled_top` (`[{op, tool, count, suggested_node}]`: program basenames only, never arguments),
-`hook_timeouts`, `date` (the transcript's last timestamp).
+`hook_timeouts`, `date` (the transcript's last timestamp), and, only when `landed_in` is `outbox`,
+`origin_root_key` (the dead root's state key), or only when `landed_in` is `carried`,
+`carried_from` (the origin key it was carried from) -- lab H-DRAFT-a4a14ff4-om-outbox-carry-forward,
+kept 2026-09-14.
 
 `model-evaluated`: `model_tree` (repository-relative), `catalog_regen` (`{ran, rc, renderer_found}`:
 whether `scripts/compile-catalog.py` was invoked over this tree before the lint and staleness reads
@@ -90,17 +95,149 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-worker.py" status --root .
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-worker.py" latest --root .
 ```
 
-`drain` reads pointer files `<state>/om/<sha256(realpath root)[:16]>/inbox/<name>.json`, each
-`{"session_id": ..., "transcript_path": ...}` (state root `~/.hyp-state`, or `$HYP_STATE_DIR`;
-`--inbox DIR` names the directory holding `inbox/` directly). Each pointer is renamed into
-`processing/` before it is parsed, then into `processed/` (or `quarantine/` with a `quarantine` row
-naming the basename and the exception class). Bounds per wake: at most N = 20 pointers and T = 60 s
-on a monotonic clock (checked between files); a 1 GiB free-space floor below which nothing is
-appended (one refusal line, exit 0; `$HYP_OM_FREE_FLOOR_BYTES` raises it, never lowers it); an inbox
-over 1 MiB rotates its oldest files by mtime into `overflow/<epoch>/` and writes one
-`spool-overflow` row. A drain killed mid-way leaves only complete lines (canonical bytes under
-`O_APPEND`); the next drain sweeps `processing/` back into the inbox and dedupe makes the re-run
-harmless. Nothing here schedules the worker: run it by hand until the wake ships (below).
+`drain` reads pointer files `<name>.json` from an inbox, each `{"session_id": ...,
+"transcript_path": ..., "root": ..., "common_dir": ...}` -- `root` and `common_dir` are optional
+(no lane writes them yet; see "The outbox and carry-forward" below). A pointer WITHOUT a `root`
+key drains exactly as the first release of this worker did: straight into the `drain` call's own
+`--root` target (the branch is `"root" not in pointer`, not "both fields absent" -- a pointer
+with `root` but no `common_dir` instead quarantines as `NotAGitCheckout` whether or not that
+`root` still exists, and one with `common_dir` but no `root` takes this same back-compat path).
+
+Which INBOX DIRECTORY a drain reads from by default changed in this release, independent of any
+one pointer's shape: for a `root` that is itself a live git checkout, `drain` with no `--inbox`
+override now always reads `<state>/om/<repo-key>/inbox/` (`repo-key` derived from `root`'s own
+live `common_dir`; state root `~/.hyp-state`, or `$HYP_STATE_DIR`) -- NOT the previous release's
+`<state>/om/<sha256(realpath root)[:16]>/inbox/`, which is still used, unchanged, only as the
+fallback for a `root` that is not (or is no longer) a git checkout. A pointer hand-written
+straight into that old path is no longer found by a default-location drain; move it under the
+new path, or pass `--inbox` naming the old directory explicitly (`--inbox DIR` overrides which
+directory holds `inbox/`, never whether the carry step below runs). Each pointer is renamed into
+`processing/` before it is parsed,
+then into `processed/` (or `quarantine/` with a `quarantine` row naming the basename and the
+exception class). Bounds per wake: at most N = 20 pointers and T = 60 s on a monotonic clock
+(checked between files); a 1 GiB free-space floor below which nothing is appended (one refusal
+line, exit 0; `$HYP_OM_FREE_FLOOR_BYTES` raises it, never lowers it); an inbox over 1 MiB rotates
+its oldest files by mtime into `overflow/<epoch>/` and writes one `spool-overflow` row. A drain
+killed mid-way leaves only complete lines (canonical bytes under `O_APPEND`); the next drain sweeps
+`processing/` back into the inbox and dedupe makes the re-run harmless. That sweep, the rotation,
+the carry and the pointer loop all run under an exclusive, non-blocking `flock` on
+`<inbox_root>/.drain.lock` (ship fix round 4): every checkout of one repository now shares one
+inbox, and two wakes inside it at once (main and a linked worktree starting together) made the
+second wake's sweep move the first wake's IN-FLIGHT pointer back into `inbox/`, so it was
+processed twice and the first wake wrote a false `FileNotFoundError` quarantine row for it. A
+drain that cannot get the lock prints one stderr line, moves nothing, and exits 0 with an all-zero
+result; the wake that holds it does the work. The backing-off wake lands NO pointer that wake, not
+only no carry: with two frequent wakers on one repository, the wake that loses the lock is a
+no-op and its pointers wait for whichever wake next takes the lock -- correct and lossless, but
+not free work. Every `git rev-parse` the worker runs is bounded by a
+5 s timeout, and a timeout is NOT read as "not a checkout" (ship fix round 4, B1 -- on a loaded
+host it was, and live worktrees' pointers were quarantined while a default-location drain fell
+back silently to the old single-path inbox and found nothing): when git cannot answer for the
+drain's own `--root` in time the whole drain refuses with one stderr line and moves nothing (the
+next wake retries); when it cannot answer for one POINTER's live root in time, that pointer is put
+back into `inbox/` for the next wake, counted as `deferred` in the result and named in one stderr
+line, never quarantined. The drain result JSON always carries the same keys on every exit
+(`rows`, `quarantined`, `rotated`, `landed`, `recovered`, `outbox`, `carried`, `deferred`). Nothing
+here schedules the worker: run it by hand until the wake ships (below).
+
+## The outbox and carry-forward
+
+Evidence: lab `H-DRAFT-a4a14ff4-om-outbox-carry-forward`, kept 2026-09-14 -- five counted looks,
+A1-A5 passing in every one, the frozen SPRT walking to 2.9389 over the 2.8904 promote bound,
+cold-verified (`VERDICT.json`, `VERIFY.md`, journal fragment 0537 in the lab; five cold refute
+rounds preceded the looks). The keep rules out the reading that a row produced in a worktree
+removed before the worker runs is lost, or that it must be written into a checkout the session
+never worked in.
+
+For each pointer with a `root` (the checkout the session worked in) and a `common_dir` (that
+repository's `git rev-parse --git-common-dir` at pointer-write time, as an ABSOLUTE, realpath-
+resolved directory -- `drain` normalizes the field the same way it normalizes git's own live
+output, joining a relative value such as the bare `.git` a main checkout's own `git rev-parse`
+prints to `root` and then resolving it, before comparing), `drain` resolves the pointer's own
+landing root -- never just the `--root` target it was called with -- before deciding where the
+row goes:
+
+- **live** (`root` exists and its own `git rev-parse --git-common-dir`, normalized the same way,
+  still matches the recorded `common_dir`): the row lands in that checkout's own ledger,
+  `landed_in: root`, exactly as a pointer with no `root` field always has.
+- **missing** (`root` is a non-empty string naming a path that no longer exists -- the checkout
+  was removed -- AND the pointer carries a usable `common_dir` naming the repository it belonged
+  to): the row lands in the outbox instead, `landed_in: outbox`, with `origin_root_key`
+  naming the dead root's own state key. The outbox is keyed by the POINTER's own recorded
+  `common_dir` (`<state>/om/<repo-key>/outbox.jsonl`), not by whichever repository happens to be
+  draining -- a pointer for repository X waits under X's own key even when it is found sitting in
+  repository Y's inbox. Nothing is lost; the row waits for a live checkout of the same repository.
+- **not a checkout** (`root` exists but its live `common_dir` does not match the recorded one, or
+  resolves to nothing; OR `root` is null, empty, or not a string; OR the pointer carries no usable
+  `common_dir` at all, whether or not its `root` still exists -- a malformed pointer either way,
+  not the case above): the pointer quarantines exactly as it always has, unconditionally, whether
+  or not the outbox rule exists. The `common_dir` test runs before the existence test: a pointer
+  that cannot prove which repository it belonged to never enters the outbox under a borrowed key
+  (ship fix round 3 -- before it, a dead `root` with no `common_dir` fell into the DRAINING
+  repository's outbox and was carried into a ledger the pointer never named). A git TIMEOUT on a
+  root that exists is none of these: git did not answer, so nothing about the pointer was decided
+  -- it is deferred back into `inbox/` for the next wake, neither landed nor quarantined (ship fix
+  round 4, B1; see "Running it by hand").
+
+At the START of every `drain` for a live checkout, before any pointer is read, every row waiting in
+that repository's outbox is carried into the checkout's own ledger: `landed_in: carried` and
+`carried_from` (the origin key) replace `landed_in: outbox` and `origin_root_key`; every other field
+is byte-identical to the outbox copy. Carries dedupe by `(session, through)`, not by exact bytes
+(a carry's bytes differ from the outbox copy by construction). The whole claim step runs under an
+exclusive, non-blocking `flock` on `<inbox_root>/.outbox-carry.lock`, a file every consumer's
+state directory now gains beside `outbox.jsonl`: only the drain that acquires it proceeds to claim
+the outbox (renamed from `outbox.jsonl` to `outbox.<epoch>.carrying.jsonl`), read it, and carry
+every row; a drain that cannot get the lock backs off immediately and carries nothing, rather than
+reading the outbox at all (`scripts/selftest-om-worker.py` proves this for two DIFFERENT live
+checkouts of one repository racing a 400-row outbox at once, not only a same-checkout pair). A
+rename claim alone, without that lock, still races: two drains starting close together can both
+pass a lockless existence check on `outbox.jsonl`, and the second one's crash-recovery sweep
+(below) then "resumes" the first one's still-in-flight claim in parallel, carrying the same rows a
+second time into a DIFFERENT ledger -- caught while porting this lane into the plugin, not present
+in the lane's own looks (its selftest never raced two DIFFERENT checkouts). The missing-root
+write path (the row for a dead worktree landing into the outbox in the first place) takes the
+SAME lock, blocking, before its append: without that, a write already open on `outbox.jsonl` when
+a concurrent carry renames it away can land inside the very `.carrying.jsonl` the carrier is
+already reading, and be finalized to `.carried.jsonl` -- a file no later drain ever rereads --
+before the write completes, losing the row (ship fix round 2, `scripts/selftest-om-worker.py`
+races this deterministically). The carrier's non-blocking attempt also loses to that blocking
+write while it is in flight -- a drain of ANOTHER repository landing a misplaced dead pointer into
+this repository's outbox at that instant -- and the carry then skips that wake; the rows wait one
+more wake and the next drain carries them (harmless, noted here so it is not read as a loss). Once every row is carried, the claimed file is renamed on to
+`outbox.<epoch>.carried.jsonl` (never truncated), so a further drain finds no outbox file and
+carries nothing twice; a claim left behind by a drain that crashed mid-carry (and so never held
+the lock at the same time as anyone else) is resumed, not stranded, the next time the lock is
+free -- EVERY leftover claim is resumed, oldest first, and the live `outbox.jsonl` is then claimed
+in the same drain (ship fix round 5, B2: a drain used to resume only the oldest leftover and never
+reach `outbox.jsonl` behind it). A row the target ledger REFUSES has one of two fates. A row the
+redaction self-check refuses is refused for what it contains, so every later attempt would refuse
+it too: it is filed verbatim into `outbox.<epoch>.refused.jsonl` beside its claim (kept for a
+reader, never re-carried), one `quarantine` row naming that file with reason
+`CarryRefused-redaction` lands in the target ledger (counted in the result's `quarantined`), and
+the claim finalizes -- before round 5 any refusal left the claim in place "for the next drain",
+and one such permanently refused row held the live outbox unclaimed on every later drain of the
+repository (three consecutive drains of a live checkout, carried 0 each), stranding every later
+dead-worktree row behind it for as long as the claim lived. A row refused on the free-space floor
+is about the host's state, not the row's, and the drain's own start-of-drain floor check makes it
+a race window only: the carry halts for that wake with the claim left intact and nothing filed,
+and the next drain that passes the floor check resumes it and goes on to the live outbox. Beside every claim sits a
+`.roots` sidecar (`outbox.<epoch>.carrying.roots`, removed with the claim when it finalizes) naming
+each checkout that has carried from it (by realpath, so absolute checkout paths do live in the state directory: in this sidecar and in the pointer files the drain moves into `processed/` and `quarantine/`, whose `root` the producer wrote; never in a row or a ledger); a DIFFERENT checkout resuming the claim dedupes against
+those checkouts' ledgers as well as its own, so rows the first carrier already landed are not
+carried a second time into the resumer's ledger (ship fix round 4, A1 -- before it, main carrying 2
+of 4 rows and a worktree resuming carried all 4 into the worktree). Under `--inbox DIR` the
+outbox lives in `DIR` itself and the carry does not check repository membership (outbox rows
+carry no repository key), so `--inbox` must name a directory used by ONE repository -- a live
+checkout of repository Y draining a directory shared with repository X would carry X's
+dead-worktree rows into Y's ledger. A repository whose `common_dir` is itself gone (the whole repository deleted) has no live
+checkout to carry into; its rows stay in the outbox with `landed_in: outbox` -- the design's
+disclosed residual, not a failure.
+
+Nothing writes `root`/`common_dir` into a pointer yet: that is the startup wake lane's job
+(`H-DRAFT-10383178`, not yet kept). Until it keeps, every pointer lacks both fields and every row
+that IS found still lands `root`, per-pointer landing exactly as before this lane -- but which
+inbox directory it is found in follows the default-location change noted above, not "before this
+lane" (that change ships with this release regardless of the wake lane).
 
 ## What never enters a row
 
@@ -123,7 +260,7 @@ self-check must refuse; `blind`: the leak must reach the file); production never
 
 ## Regression test
 
-`python3 scripts/selftest-om-worker.py` -- 26 checks over throwaway consumers, the fixture grade
+`python3 scripts/selftest-om-worker.py` -- 41 checks over throwaway consumers, the fixture grade
 behaviours ported: parity with `observatory.tally_ratios` on planted transcripts (the
 Skill-in-catalogue branch included), lint equality with `model-lint.py`, staleness true then false,
 the six canary classes absent, every self-check net, the mutant pair, idempotence, the cursor and
@@ -131,7 +268,29 @@ latest-wins, byte identity across two trees, the N and T caps, the floor, rotati
 SIGKILL mid-drain with a clean resume, `schema: 2` tolerance, the configured path, the scaffold's
 union row, a configured path surviving a re-init with its row rendered, an absolute value falling
 back to the default in every reader, the two-worktree union merge, zero `claude` spawns, stdlib-only
-imports.
+imports, and (lab `H-DRAFT-a4a14ff4-om-outbox-carry-forward`, plus ship fix round 1) a scratch
+repository with a main checkout and two linked worktrees, one removed after its pointer is
+written: the outbox landing keyed by the pointer's own `common_dir`, a malformed `root: null`
+pointer quarantining rather than entering the outbox, the exactly-once carry, a second drain of
+another live checkout carrying nothing twice, every landed row's `landed_in` inside the
+`root`/`outbox`/`carried` allowlist, a `not-a-checkout` quarantine unconditional in both cases
+(a live root under the wrong `common_dir`, and a dead root with no `common_dir` at all -- ship
+fix round 3), a pointer with no `root` field draining as before, two DIFFERENT live checkouts
+racing a 400-row outbox landing every row in exactly one ledger, the missing-root write
+blocking behind a concurrent carry on the same lock (ship fix round 2), and (ship fix round 4) a
+git that cannot answer in time refusing the whole drain rather than falling back to the old inbox,
+a live pointer whose root git cannot answer for being deferred rather than quarantined and landing
+`root` on the next drain, two live checkouts waking on the SAME shared inbox landing every pointer
+exactly once with no false quarantine row, a claim resumed by a different checkout carrying
+only the rows the first carrier never landed, and (ship fix round 5) a leftover claim holding a
+permanently refused row filing that row beside itself, finalizing, and the live outbox being
+carried in the same drain (three rows landed, one quarantine row, a second drain changing
+nothing), plus a floor refusal mid-carry halting with the claim intact and the next carry
+resuming it and the live outbox together. The run prints the host load average first: the
+concurrent and wall-clock cases are time-sensitive, and the whole run has needed over 300 s at a
+load of 12-20 (the SIGKILL case retries on a fresh tree, up to three times, when the kill lands in
+the gap between two pointers and strands nothing -- a harness miss seen once at load 12.5, not a
+worker behaviour).
 
 `python3 scripts/selftest-compile-catalog.py` -- 19 checks over throwaway consumers and worktree
 pairs: the renderer byte-identical on re-run and sorted by type then id, a zero-node context
@@ -184,10 +343,11 @@ names three more pieces beyond the catalogue projection above (shipped this rele
 only after its own lane keeps -- plugin bytes change only after the keep that licenses them -- and
 none had kept when this worker shipped:
 
-- **the wake** (lane 8): the `SessionStart` row that runs `drain` at startup. Until it keeps, nothing
-  runs the worker for you.
-- **the outbox carry-forward** (lane 6): the recorder hook that writes a pointer file per finished
-  session into the inbox. Until it keeps, you name transcripts by hand (`observe`) or write pointers yourself.
+- **the wake** (lane 8, `H-DRAFT-10383178`): the `SessionStart` row that runs `drain` at startup
+  and writes `root`/`common_dir` into every pointer it produces. Until it keeps, nothing runs the
+  worker for you, and every pointer lacks both fields (its row always lands `root`, per "The
+  outbox and carry-forward" above) -- you name transcripts by hand (`observe`) or write pointers
+  yourself.
 - **the commit path** (lane 7): the clause that stages the appended row into the session's commit.
 - **the `om_feedback_file` key in `hooks/scripts/hyp_config.py` `DEFAULTS`** (named by the design and
   by the lane's on-keep row; deferred, recorded here and in the lane's `SHIP.md`): every reader of the
@@ -212,6 +372,70 @@ transcript can overrun it); `evaluate` and `compile-check` write the same row; `
 recorded but nothing reads it yet, and it counts every attachment with `timedOut` or type
 `hook_cancelled` (one real 85-line transcript read 18, more than its hook timeouts), so the wake lane
 reads it as an unread, over-counting field until a lane pins the attachment shape.
+
+`H-DRAFT-a4a14ff4-om-outbox-carry-forward`'s kept bytes are the lane fixture's `impl/om-worker.py`
+(baseline-plus-rule) ported the same way: `repo_key`/`path_key` hash with the plugin's existing
+crc32+adler32 state-directory key (`hooks/scripts/session-start-budget.py`, kept
+`H-DRAFT-a10fd3f7`) rather than the fixture's own sha256[:16] -- the lane's spec names "the shipped
+state key" and its `VERIFY.md` flagged the fixture's literal bytes as unpinned to it. One bug found
+while porting, fixed and not present in the lane's own looks (its fixture scratch root was always
+`/private/tmp`, never symlinked): `resolve_common_dir` now `realpath`s its result, because `git`'s
+own worktree admin file already stores a canonicalized absolute path and a checkout under a
+symlinked mount (macOS `/tmp`, `/var`) would otherwise resolve to a different string for its main
+checkout than for one of its own linked worktrees, quarantining a live worktree as
+`not-a-checkout`.
+
+Ship fix round 1 (cold refuter, applied before release): the concurrent-drain case its `VERIFY.md`
+carried as untested (pre-mortem (ii)) is now a selftest case racing two DIFFERENT live checkouts
+against a 400-row outbox, not only a same-checkout pair -- it caught a real defect the lane's own
+looks never exercised (a rename-only claim, with no lock, let both racers carry the full outbox
+into two different ledgers), fixed by moving the whole claim+carry step under a per-`inbox_root`
+`flock`. Three more findings from that same round: `common_dir` on a pointer is now normalized
+(joined to `root`, then realpath'd) the same way `resolve_common_dir` normalizes git's own live
+output, so a pointer written per the documented contract for a main checkout, or reached through a
+symlinked mount, no longer false-quarantines; the default inbox location for any live git checkout
+changed in this release even for a pointer with neither `root` nor `common_dir` (documented above,
+not silently claimed "exactly as before"); and the outbox is now keyed by the POINTER's own
+recorded `common_dir` rather than by whichever repository happens to be draining. A malformed
+pointer (`root: null`) now quarantines instead of entering the outbox under a meaningless
+key.
+
+Ship fix round 4 (cold refuter, applied before release), two blocking findings the earlier
+rounds' fixture never reached because it never ran on a loaded host and never woke two checkouts
+on one inbox: a `git rev-parse` timeout (or an `OSError` running git) was folded into "not a
+checkout", so live worktrees' pointers quarantined as `NotAGitCheckout` under load (5 of 20 in one
+wake at a load of 13-20) and a default-location drain fell back silently to the v0.29.0 sha256
+inbox and found nothing -- `resolve_common_dir` now answers `UNKNOWN` distinctly, such a pointer is
+deferred to the next wake and such a drain refuses outright; and the inbox every checkout of a
+repository now shares let two concurrent wakes race on `processing/`, one wake's crash-recovery
+sweep re-queuing the other's in-flight pointer (21 landings for 20 pointers, plus a false
+`FileNotFoundError` quarantine row) -- the sweep, rotation, carry and pointer loop now run under a
+per-inbox `.drain.lock`, mirroring the round-1 `.outbox-carry.lock`. Advisories applied: a
+resumed claim dedupes against the prior carrier's ledger through a `.roots` sidecar; the drain
+result carries the same keys on every exit; the selftest prints the host load and allows 180 s
+for the 400-row race. Left as is, on purpose: a pointer with a live `root` but no `common_dir`
+still quarantines (the kept lane's own bytes quarantine that shape -- `not common_dir_p` is the
+first test in its `resolve_pointer_root` -- so landing it would ship beyond the evidence; the
+startup wake lane writes both fields together).
+
+Ship fix round 5 (cold refuter, applied before release), one blocking finding on the code and one
+on the docs. The code: `_carry_outbox_locked` resumed only the OLDEST leftover `.carrying.jsonl`
+and, when the target ledger refused any row in it, returned without finalizing and without ever
+reaching `outbox.jsonl` -- so one permanently refused row (a claim row carrying an absolute-path
+string, which the redaction self-check refuses on every attempt) held the live outbox unclaimed
+across three consecutive drains of a live checkout, stranding every later dead-worktree row of
+that repository for as long as the claim lived. Every leftover claim is now resumed and the live
+outbox claimed in the same drain; a redaction-refused row is filed verbatim into
+`outbox.<epoch>.refused.jsonl` beside its claim with one `quarantine` row
+(`CarryRefused-redaction`) in the target ledger and the claim finalizes; a floor refusal alone
+still leaves the claim for the next drain, since the floor is the host's state, not the row's. The
+docs: the README's and the changeset's selftest counts had drifted from what the script ran; both
+now name the script's own count (41 with the two round-5 cases). Advisories applied: the
+resumed-claim sentence above rewritten around the two fates; one sentence each on the backing-off
+wake landing nothing that wake and on a carry skipping a wake behind a concurrent outbox write;
+the finalize path proven by the refused-claim case, not only the resume path. Recorded, no
+change: v0.29.0's `free_bytes` already walks up to an existing ancestor and that release resolves
+no git common-dir at all, so neither a free-space-floor nor a relative-`.git` defect exists there.
 
 The catalogue projection above ports the lane fixture's `render_catalog.py` prototype as
 `scripts/compile-catalog.py`, and drifts from those kept bytes in four places: the rendered header

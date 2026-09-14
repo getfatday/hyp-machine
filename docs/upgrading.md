@@ -118,6 +118,20 @@ markers -- the re-run keeps every key your `.claude/hyp.json` carries beyond the
 `om_feedback_file`, `compile_command`, the decision settings), which earlier releases dropped on a re-init; `merge-attrs-check.py` names the row as missing only once the file exists. No existing file changes shape. Undo:
 revert the release's merge commit; rows already written are plain JSON lines. See `docs/passive-feedback.md`.
 
+From the release that carries the outbox carry-forward (source lab H-DRAFT-a4a14ff4-om-outbox-carry-forward, kept
+2026-09-14), `om-worker.py drain` stops losing the row of a session whose worktree was removed before the worker ran:
+a pointer whose own `root` no longer exists lands its row in a per-repository outbox instead of the pointer being
+quarantined, and the next `drain` of any live checkout of that same repository carries it in, `landed_in` reading
+`root`, `outbox` or `carried`. After upgrading: no pointer carries `root`/`common_dir` yet (the startup wake lane,
+H-DRAFT-10383178, writes them), so every pointer that IS found still lands exactly as before -- BUT for any `root`
+that is itself a live git checkout, `drain` with no `--inbox` override now reads a DIFFERENT default inbox directory
+than the release before this one (`<state>/om/<repo-key>/inbox/`, keyed by `root`'s own live `common_dir`, not
+`<state>/om/<sha256(realpath root)[:16]>/inbox/`). If you hand-write pointer files straight into that old default
+path without going through `--inbox`, move them under the new path or pass `--inbox` naming the old directory
+explicitly -- everything scripted through `om-worker.py drain --root .` with no pointers of your own is unaffected.
+See `docs/passive-feedback.md`, "The outbox and carry-forward" and "Running it by hand". Undo: revert the release's
+merge commit; rows already written are plain JSON lines, distinguishable only by their `landed_in` value.
+
 From the release that carries the model-routing guard (source lab H-DRAFT-314c8d17-routing-guard,
 VERDICT.json evidence-sufficient promote), every `agent()` call inside a Workflow script is checked
 against a committed role -> model/effort table (`rules/routing-default.json` merged with
