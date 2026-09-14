@@ -688,10 +688,36 @@ def _run_compile_command(root):
         return {"command": cmd, "rc": -1}
 
 
+def _catalog_compile_path(plugin_scripts):
+    return os.path.join(plugin_scripts, "compile-catalog.py")
+
+
+def _regen_catalog(model_tree, plugin_scripts):
+    """Regenerate model_tree/model.md with scripts/compile-catalog.py before the lint and
+    staleness reads below see it (H-DRAFT-4e06e157-om-rows-merge-shape: the catalogue is an
+    untracked projection, so a compile-check that skipped this step would lint and date-stamp
+    whatever stale bytes happened to be on disk). Fail-closed, not fail-open like the rest of
+    this file's subprocess calls: a missing renderer is reported as `renderer_found: False`
+    and the compile-check verb turns that into a non-zero exit (main()), because a compile-check
+    that silently reports rc 0 over an unregenerated catalogue would be worse than one that
+    never ran."""
+    path = _catalog_compile_path(plugin_scripts)
+    if not os.path.isfile(path):
+        return {"ran": False, "rc": None, "renderer_found": False}
+    try:
+        proc = subprocess.run([sys.executable, path, model_tree, "--write"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {"ran": True, "rc": proc.returncode, "renderer_found": True}
+    except Exception:
+        return {"ran": False, "rc": -1, "renderer_found": True}
+
+
 def evaluate(root, plugin_scripts, do_compile_check=True):
     rows = []
     for tree in _model_trees(root):
         rel_tree = os.path.relpath(tree, root).replace(os.sep, "/")
+        catalog_regen = (_regen_catalog(tree, plugin_scripts) if do_compile_check
+                         else {"ran": None, "rc": None, "renderer_found": None})
         lint = _lint(tree, plugin_scripts)
         compiled = _compiled_staleness(root, tree) if do_compile_check else {"stale": None}
         cc = _run_compile_command(root) if do_compile_check else {"command": None, "rc": None}
@@ -700,6 +726,7 @@ def evaluate(root, plugin_scripts, do_compile_check=True):
             "schema": SCHEMA,
             "model_tree": rel_tree,
             "landed_in": "root",
+            "catalog_regen": catalog_regen,
             "lint": lint,
             "compiled": compiled,
             "compile_command": cc,
@@ -1341,8 +1368,23 @@ def main(argv=None):
         print("om-worker %s evaluate rc 0" % SCHEMA)
         return 0
     if verb == "compile-check":
-        for row in evaluate(root, plugin_scripts, do_compile_check=True):
+        rows = evaluate(root, plugin_scripts, do_compile_check=True)
+        for row in rows:
             append_row(root, row)
+        # fail-closed (H-DRAFT-4e06e157-om-rows-merge-shape): a missing scripts/compile-catalog.py
+        # or a nonzero renderer exit means at least one row's catalogue was NOT regenerated before
+        # this compile-check's lint and staleness read it; report that on stderr and a nonzero
+        # exit rather than the usual rc 0 marker, so a caller that gates on this verb's exit code
+        # never mistakes an unregenerated catalogue for a clean compile-check.
+        broken = [row["model_tree"] for row in rows
+                 if not row["catalog_regen"].get("renderer_found")
+                 or row["catalog_regen"].get("rc") not in (0, None)]
+        if broken:
+            sys.stderr.write("om-worker: compile-check catalogue regeneration failed for %s "
+                             "(scripts/compile-catalog.py missing or nonzero exit)\n"
+                             % ", ".join(sorted(broken)))
+            print("om-worker %s compile-check rc 1" % SCHEMA)
+            return 1
         print("om-worker %s compile-check rc 0" % SCHEMA)
         return 0
     if verb == "drain":

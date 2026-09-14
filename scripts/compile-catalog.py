@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""compile-catalog.py -- regenerates operating-model/<context>/model.md deterministically from
+the node files under it: one line per node from frontmatter id/type/summary, sorted by type then
+id, byte-identical on re-run over unchanged nodes. Never edits a node file; never reads model.md
+before rendering (only ever writes it). Stdlib only (a hand-rolled frontmatter reader, no PyYAML
+dependency, unlike model-lint.py's optional import).
+
+Usage:
+    compile-catalog.py <context-dir> [--write] [--context NAME]
+    compile-catalog.py --model-dir <dir> [--write]
+
+The single-context form prints the rendered catalog to stdout by default; pass --write to write
+<context-dir>/model.md in place. The --model-dir form renders every context directory found
+directly under <dir> and always writes each one (there is no useful multi-context stdout form);
+it is available for regenerating every context in one call by hand -- scripts/om-worker.py's
+compile-check step instead calls the single-context form once per model tree it finds -- and
+what the `/hyp:init` scaffold's ignore row makes safe to run unconditionally (the catalogue this
+writes is never tracked, so two branches regenerating it independently never conflict).
+
+Exit 0 always -- a directory with zero nodes renders a catalog with empty sections, matching
+the section headings of the plugin's own templates/model.md stub (not byte-identical: the H1
+rule and the "grep recipes" sentence differ; see templates/model.md).
+
+Ported from the lab fixture's render_catalog.py prototype: H-DRAFT-4e06e157-om-rows-merge-shape,
+kept 2026-09-14 (five counted looks, A1-A5 pass in every one, SPRT llr 2.9389 over the 2.8904
+promote bound; VERDICT.json beside the lane). This file drifts from that prototype's kept bytes
+in four places: the doc comment inside the rendered file's header line; the added --model-dir
+multi-context form; EXTRA_TYPE_DIRS (Externals/Aggregates headings, emitted only when the
+context has at least one such node -- the prototype had no equivalent); and read-model's two
+extra accepted directory spellings, read-models and read-model, alongside the prototype's single
+readmodels. Everything else is unchanged.
+"""
+import argparse
+import os
+import re
+import sys
+
+# The five node types templates/model.md always renders a heading for (with "(none yet)"
+# when empty), matching SCHEMA.md's core set. read-model accepts model-lint.py's three
+# directory spellings (house convention "readmodels", plus "read-models"/"read-model").
+TYPE_DIRS = [
+    ("actor", ("actors",), "Actors"),
+    ("command", ("commands",), "Commands"),
+    ("event", ("events",), "Events"),
+    ("policy", ("policies",), "Policies"),
+    ("read-model", ("readmodels", "read-models", "read-model"), "Read models"),
+]
+
+# external/aggregate (SCHEMA.md: "model only when one exists") get a heading only when the
+# context actually has at least one such node -- so a zero-node context still renders exactly
+# the five stub sections templates/model.md ships (selftest-compile-catalog.py check 3).
+EXTRA_TYPE_DIRS = [
+    ("external", ("externals",), "Externals"),
+    ("aggregate", ("aggregates",), "Aggregates"),
+]
+
+ALL_TYPE_DIRS = TYPE_DIRS + EXTRA_TYPE_DIRS
+
+FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.S)
+KEY_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$")
+
+
+def read_frontmatter(path):
+    """Minimal, dependency-free reader for the flat scalar keys this renderer needs
+    (id, type, context, summary, status). model-lint.py's E-CATALOG check only needs a node's
+    id to appear in model.md, so this reader never needs PyYAML."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    m = FRONTMATTER_RE.match(text)
+    if not m:
+        return None
+    data = {}
+    for line in m.group(1).splitlines():
+        km = KEY_RE.match(line)
+        if not km:
+            continue
+        key, val = km.group(1), km.group(2).strip()
+        if val.startswith('"') and val.endswith('"') and len(val) >= 2:
+            val = val[1:-1]
+        data[key] = val
+    return data
+
+
+def scan(ctx_dir):
+    """[(type, id, relpath, summary)] for every *.md under the type directories, sorted by
+    type (ALL_TYPE_DIRS order) then id -- deterministic regardless of filesystem readdir order.
+    A type may have more than one accepted directory spelling (read-model); every candidate is
+    scanned."""
+    rows = []
+    for ntype, subdirs, _label in ALL_TYPE_DIRS:
+        for subdir in subdirs:
+            d = os.path.join(ctx_dir, subdir)
+            if not os.path.isdir(d):
+                continue
+            for fn in sorted(os.listdir(d)):
+                if not fn.endswith(".md"):
+                    continue
+                path = os.path.join(d, fn)
+                data = read_frontmatter(path)
+                if not data:
+                    continue
+                nid = data.get("id") or ("%s/%s" % (ntype, fn[:-3]))
+                summary = data.get("summary", "")
+                rows.append((ntype, nid, "%s/%s" % (subdir, fn), summary))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return rows
+
+
+def render(ctx_dir, context_name):
+    rows = scan(ctx_dir)
+    by_type = {}
+    for ntype, nid, relpath, summary in rows:
+        by_type.setdefault(ntype, []).append((nid, relpath, summary))
+    lines = []
+    lines.append("# Operating model -- %s context" % context_name)
+    lines.append("")
+    lines.append("Catalog of every node in this context, one line each (grammar: "
+                 "`../SCHEMA.md`). Regenerated by scripts/compile-catalog.py -- never edited by "
+                 "hand (it is gitignored; see templates/gitignore).")
+    lines.append("")
+    for ntype, _subdirs, label in TYPE_DIRS:
+        lines.append("## %s" % label)
+        lines.append("")
+        entries = by_type.get(ntype, [])
+        if not entries:
+            lines.append("(none yet)")
+        else:
+            for nid, relpath, summary in entries:
+                lines.append("- [%s](%s) -- %s" % (nid, relpath, summary))
+        lines.append("")
+    for ntype, _subdirs, label in EXTRA_TYPE_DIRS:
+        entries = by_type.get(ntype, [])
+        if not entries:
+            continue
+        lines.append("## %s" % label)
+        lines.append("")
+        for nid, relpath, summary in entries:
+            lines.append("- [%s](%s) -- %s" % (nid, relpath, summary))
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def render_one(ctx_dir, context_name, write):
+    out = render(ctx_dir, context_name)
+    if write:
+        with open(os.path.join(ctx_dir, "model.md"), "w", encoding="utf-8") as f:
+            f.write(out)
+    else:
+        sys.stdout.write(out)
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("ctx_dir", nargs="?", default=None)
+    ap.add_argument("--write", action="store_true")
+    ap.add_argument("--context", default=None,
+                    help="context name for the header; defaults to the directory's basename")
+    ap.add_argument("--model-dir", default=None,
+                    help="render every context directory directly under this model directory "
+                         "(always writes each one; there is no useful multi-context stdout form)")
+    args = ap.parse_args()
+
+    if args.model_dir:
+        model_dir = os.path.abspath(args.model_dir)
+        if not os.path.isdir(model_dir):
+            return 0
+        for name in sorted(os.listdir(model_dir)):
+            ctx_dir = os.path.join(model_dir, name)
+            if os.path.isdir(ctx_dir):
+                render_one(ctx_dir, name, write=True)
+        return 0
+
+    if not args.ctx_dir:
+        sys.stderr.write("usage: compile-catalog.py <context-dir> [--write] | --model-dir <dir>\n")
+        return 2
+    ctx_dir = os.path.abspath(args.ctx_dir)
+    context_name = args.context or os.path.basename(ctx_dir)
+    render_one(ctx_dir, context_name, write=args.write)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

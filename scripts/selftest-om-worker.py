@@ -525,11 +525,18 @@ def _main():
     cc_rows = [r for r in rows_of(led) if r and r.get("kind") == "model-evaluated"]
     pre = cc_rows[-1] if cc_rows else {}
     core_snapshot = read_bytes(led)   # everything a fresh tree with the same inputs must reproduce (check 12)
+    # compile-check regenerates operating-model/ops/model.md as a working-tree-only side effect
+    # (H-DRAFT-4e06e157-om-rows-merge-shape); this fixture keeps model.md TRACKED (a consumer
+    # that has not re-run /hyp:init to retire it yet), so discard that regen before the commits
+    # below or an unrelated `git add -A` would sweep it in and skew the staleness dates this
+    # check measures.
+    git(root, "checkout", "--", "operating-model/ops/model.md")
     write(os.path.join(root, "compiled", "SOP.md"), "<!-- COMPILED ARTIFACT -->\nSOP v2 (regenerated)\n")
     git(root, "add", "-A")
     git(root, "commit", "-q", "-m", "compiled v2 (regenerated, fresh)", date=COMMIT_DATES["compiled_v2"])
     rc2, out2, err2 = worker(root, "compile-check")
     post = [r for r in rows_of(led) if r and r.get("kind") == "model-evaluated"][-1]
+    git(root, "checkout", "--", "operating-model/ops/model.md")
     check("compile-staleness-stale-then-fresh",
           rc == 0 and rc2 == 0 and pre.get("compiled", {}).get("stale") is True and post["compiled"]["stale"] is False
           and pre.get("compile_command") == {"command": "sh bin/compile-stub.sh", "rc": 0}

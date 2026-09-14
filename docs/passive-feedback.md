@@ -18,8 +18,8 @@ of those skills (deviations, node prose, defect-versus-discovery), which stays a
 | Verb | Reads | Writes |
 |---|---|---|
 | `observe <transcript.jsonl> --root R` | the transcript's `tool_use` blocks and `usage`; the repository's catalogue (`operating-model/*/model.md`, `skills/`, `scripts/`) through the live board's own classifier (`observatory.Catalog.classify`, `op_tokens_bash`, `ratio_block`, `unmodeled_top`) | one `session-observed` row |
-| `evaluate --root R` / `compile-check --root R` | every `<model_dir>/<context>/` tree through the shipped `scripts/model-lint.py`; the last commit dates of the tree and of `compiled/*.md`; the declared `compile_command` | one `model-evaluated` row per tree (today both verbs write the same row; `compile-check` is the name the startup wake will call) |
-| `drain [--root R] [--inbox DIR]` | pointer files in the per-repository inbox | one row per pointer, `quarantine` rows for poison files, one `spool-overflow` row when the inbox rotated; a pointer git cannot answer for in time is deferred to the next wake |
+| `evaluate --root R` / `compile-check --root R` | every `<model_dir>/<context>/` tree, regenerated in place first by the shipped `scripts/compile-catalog.py`, then linted by `scripts/model-lint.py`; the last commit dates of the tree and of `compiled/*.md`; the declared `compile_command` | one `model-evaluated` row per tree carrying `catalog_regen`, plus (`compile-check` only) a fail-closed exit: a missing renderer or a nonzero exit fails the whole verb, rc 1, rather than report rc 0 over an unregenerated catalogue (today both verbs write the same row and run the same regeneration; `compile-check` is the name the startup wake will call, and the one that fails closed) |
+| `drain [--root R] [--inbox DIR]` | pointer files in the per-repository inbox | one row per pointer, `quarantine` rows for poison files, one `spool-overflow` row when the inbox rotated; a pointer git cannot answer for in time is deferred to the next wake; a pointer whose checkout has since been removed lands in a per-repository outbox and rides into the next live checkout of the same repository exactly once |
 | `status --root R` | the feedback ledger | one JSON line: row count, rows per `schema` value, unparsed lines, the ledger's repository-relative path |
 | `latest --root R` | the feedback ledger | the latest-wins view: the highest-`through` `session-observed` row per session, canonical bytes, session order |
 
@@ -48,11 +48,15 @@ the ledger dedupes by exact bytes and merges by union. Every row carries `kind`,
 `carried_from` (the origin key it was carried from) -- lab H-DRAFT-a4a14ff4-om-outbox-carry-forward,
 kept 2026-09-14.
 
-`model-evaluated`: `model_tree` (repository-relative), `lint` (`errors`, sorted `findings` lines
-exactly as `model-lint.py` prints them, `parse_skipped` when pyyaml was missing and the lint could
-not parse), `compiled` (`stale`: the newest `compiled/*.md` by commit date predates the tree's last
-commit; `compiled_path`, `compiled_commit_date`, `model_commit_date`; `null` when a date is
-unknown), `compile_command` (`{command, rc}` of the `.claude/hyp.json` `compile_command`, when declared).
+`model-evaluated`: `model_tree` (repository-relative), `catalog_regen` (`{ran, rc, renderer_found}`:
+whether `scripts/compile-catalog.py` was invoked over this tree before the lint and staleness reads
+below, its exit code, and whether the renderer script was even found; `null` for every key when
+`evaluate`/`compile-check` is called with regeneration off), `lint` (`errors`, sorted `findings`
+lines exactly as `model-lint.py` prints them, `parse_skipped` when pyyaml was missing and the lint
+could not parse), `compiled` (`stale`: the newest `compiled/*.md` by commit date predates the
+tree's last commit; `compiled_path`, `compiled_commit_date`, `model_commit_date`; `null` when a
+date is unknown), `compile_command` (`{command, rc}` of the `.claude/hyp.json` `compile_command`,
+when declared).
 The command string is stored verbatim, so declare it repository-relative (`node tools/compile.js`,
 `sh bin/compile.sh`): a declared command carrying an absolute or `~/` path makes every
 `model-evaluated` row refuse on the absolute-path net -- fail-closed, one stderr line per `evaluate`,
@@ -288,11 +292,56 @@ load of 12-20 (the SIGKILL case retries on a fresh tree, up to three times, when
 the gap between two pointers and strands nothing -- a harness miss seen once at load 12.5, not a
 worker behaviour).
 
+`python3 scripts/selftest-compile-catalog.py` -- 19 checks over throwaway consumers and worktree
+pairs: the renderer byte-identical on re-run and sorted by type then id, a zero-node context
+rendering the template's stub sections, never touching a node file or reading the prior `model.md`,
+the scaffold's ignore row appended once and byte-stable on re-run without disturbing a consumer's
+own line (an un-anchored `operating-model/*/model.md` row already present counts as the row, so no
+duplicate is appended), the retire step removing exactly one index entry while keeping the
+work-tree file and no-op-ing once untracked, a retire git declines (a staged `model.md` edit
+differing from both HEAD and the work tree) reported as one `retire-refused` line with no
+`retired` line and the path still tracked, two worktrees adding one node each to the same context merging with
+exit 0 in both orders and a fresh clone rendering the union, `compile-check`'s row recording the
+renderer's run and failing closed when the renderer script is missing, Externals/Aggregates rows
+and headings rendered (and every read-model directory spelling read) only when such nodes exist
+with a core-only context gaining no extra heading, `model-lint.py` reporting 0 `E-CATALOG` over a
+regenerated extra-types context, and the A2 grep proving no shipped template or skill tells a
+reader to `git add`/`git commit` `model.md`.
+
+## The catalogue projection
+
+`operating-model/<context>/model.md` is a regenerated projection, never hand-maintained and never
+tracked: `/hyp:init` installs a `.gitignore` row (`templates/gitignore`) naming it and, the first
+time it runs in a repository that still tracks a copy from the old hand-maintained shape, retires
+that copy from the index with one `git rm --cached` (the work-tree file is left in place); if
+git declines -- a staged `model.md` edit differing from both HEAD and the work tree -- init prints
+one `retire-refused` line, never `retired`, and leaves the file tracked for you to resolve.
+`evaluate` and `compile-check` regenerate it first with `scripts/compile-catalog.py`, so the lint
+and staleness reads that follow always see the current node set, never a copy two branches might
+otherwise have edited into conflict; `observe` reads the catalogue through the classifier as it
+stands (`observatory.Catalog`) and never regenerates it. `compile-catalog.py` never
+edits a node file and never reads the existing `model.md` before overwriting it; run it by hand
+(`compile-catalog.py operating-model/<context> --write`, or `--model-dir operating-model` to
+regenerate every context at once) any time you want a fresh catalogue without waiting for
+`evaluate`. Before the first regeneration in a fresh clone (nothing has run `evaluate` or
+`compile-check` there yet), `model.md` is simply whatever the last committed copy was -- absent
+entirely once a repository has retired tracking, present and possibly stale if it has not yet.
+
+Evidence: lab `H-DRAFT-4e06e157-om-rows-merge-shape`, kept 2026-09-14 -- five counted looks, every
+assertion passing in every one, the frozen SPRT walking to 2.9389 over the 2.8904 promote bound
+(`VERDICT.json` beside the lane; six cold refute rounds of the fixture preceded the looks). The
+keep proves two worktrees each adding a node to the same context merge with `git merge` exiting 0
+in both orders, and a fresh clone renders the union once regenerated, where a tracked `model.md`
+conflicted in both orders of the same scenario (the OFF control). It claims nothing about a
+custom merge driver or a central store, and nothing about the feedback ledger's own `merge=union`
+row above (a different keep, H-DRAFT-b9e771b2's extension).
+
 ## What does not ship yet, and why
 
 The design (lab `experiments/runs/DESIGN-passive-om-feedback/DESIGN.md`, section 6, changeset A)
-names four more pieces. Each ships only after its own lane keeps -- plugin bytes change only after
-the keep that licenses them -- and none had kept when this worker shipped:
+names three more pieces beyond the catalogue projection above (shipped this release). Each ships
+only after its own lane keeps -- plugin bytes change only after the keep that licenses them -- and
+none had kept when this worker shipped:
 
 - **the wake** (lane 8, `H-DRAFT-10383178`): the `SessionStart` row that runs `drain` at startup
   and writes `root`/`common_dir` into every pointer it produces. Until it keeps, nothing runs the
@@ -300,7 +349,6 @@ the keep that licenses them -- and none had kept when this worker shipped:
   outbox and carry-forward" above) -- you name transcripts by hand (`observe`) or write pointers
   yourself.
 - **the commit path** (lane 7): the clause that stages the appended row into the session's commit.
-- **the catalogue projection** (lane 2): the `model.md` renderer the worker's `compile-check` would run first.
 - **the `om_feedback_file` key in `hooks/scripts/hyp_config.py` `DEFAULTS`** (named by the design and
   by the lane's on-keep row; deferred, recorded here and in the lane's `SHIP.md`): every reader of the
   override today (the worker, `/hyp:init`'s union row, `merge-attrs-check.py`) reads `.claude/hyp.json`
@@ -388,6 +436,29 @@ wake landing nothing that wake and on a carry skipping a wake behind a concurren
 the finalize path proven by the refused-claim case, not only the resume path. Recorded, no
 change: v0.29.0's `free_bytes` already walks up to an existing ancestor and that release resolves
 no git common-dir at all, so neither a free-space-floor nor a relative-`.git` defect exists there.
+
+The catalogue projection above ports the lane fixture's `render_catalog.py` prototype as
+`scripts/compile-catalog.py`, and drifts from those kept bytes in four places: the rendered header
+line (names the shipped script, not the fixture's); an added `--model-dir` multi-context form,
+available for regenerating every context in one call by hand -- the worker's `compile-check`
+instead calls the single-context form once per model tree it finds; `EXTRA_TYPE_DIRS`, rendering
+Externals/Aggregates headings only when the context has at least one such node, which the fixture
+had no equivalent for; and read-model's two extra accepted directory spellings, `read-models` and
+`read-model`, alongside the fixture's single `readmodels`. `scripts/init-scaffold.py` gains
+`ensure_gitignore` (the `ensure_gitattributes` shape, for a plain ignore file) and
+`retire_tracked_model_md` (a one-time `git rm --cached`), wired immediately before the existing
+`model.md` stub write, ported from the lane's `impl/patch_on.py` with two drifts: the ignore row
+`templates/gitignore` installs is anchored (`/{{MODEL_DIR}}/*/model.md`), unlike `patch_on.py`'s
+un-anchored row (and `ensure_gitignore` accepts an already present un-anchored row as the row, so
+a consumer carrying the fixture's form is not handed a duplicate); and the retire step reads
+`git rm --cached`'s exit status -- `patch_on.py` printed `retired` unconditionally after a
+`check=False` call, so a retire git refused (staged content differing from both HEAD and the work
+tree, exit 1) left the file tracked while init reported it retired; the shipped step prints
+`retired` only on exit 0 and one `retire-refused <path>: <git's first stderr line>` line
+otherwise, still fail-open (cold-refuter finding, ship round 4). `om-worker.py`'s `evaluate()` gained one step,
+`catalog_regen`, run before the lint and staleness reads it now precedes; fail-closed is new here
+(every other subprocess call in this file is fail-open) because a compile-check that reported rc 0
+over a catalogue it never actually regenerated would be worse than one that visibly failed.
 
 Undo: revert the release's merge commit. Rows already written are plain JSON lines in your ledger;
 the attribute row is plain text in your `.gitattributes`.
