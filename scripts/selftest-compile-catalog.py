@@ -11,9 +11,14 @@ caller's cwd, or any lab path) and checks the INSTALLED plugin (the tree this fi
                         node file; never reads model.md (a stale model.md is fully overwritten,
                         never merged with)
   init-scaffold         ensure_gitignore appends the model.md row once, is byte-stable on
-                        re-run, and keeps a consumer's own ignore line
+                        re-run, keeps a consumer's own ignore line, and treats an already
+                        present un-anchored `operating-model/*/model.md` row as the row (no
+                        duplicate appended)
   init-scaffold         retire_tracked_model_md removes model.md from the index exactly once,
-                        keeps the work-tree file, and is a silent no-op once untracked
+                        keeps the work-tree file, is a silent no-op once untracked, and when
+                        git declines the rm --cached (a staged edit differing from both HEAD
+                        and the work tree) prints `retire-refused`, never `retired`, leaving
+                        the path tracked
   union merge (A1)      two linked worktrees each add one new command node to the SAME context;
                         with the ignore row in place the merge exits 0 in both orders (the
                         catalogue is never a tracked path to conflict on), and a fresh clone of
@@ -179,6 +184,16 @@ def main():
         check("ensure-gitignore-rerun-byte-stable",
               read(os.path.join(r2, ".gitignore")) == gi_before and "unchanged .gitignore" in out2)
 
+        # 6b. an un-anchored row already present counts as the row: nothing is appended
+        r2b = os.path.join(tmp, "gitignore-unanchored")
+        mk_repo(r2b)
+        write(os.path.join(r2b, ".gitignore"), "operating-model/*/model.md\n")
+        out2b = run_init(r2b)
+        gi2b = read(os.path.join(r2b, ".gitignore"))
+        check("ensure-gitignore-unanchored-row-counts-no-duplicate",
+              gi2b == "operating-model/*/model.md\n" and "unchanged .gitignore" in out2b,
+              gi2b)
+
         # 7. retire: removes the index entry once, keeps the work-tree file, no-op once untracked.
         # Simulates an upgrade from the OLD hand-maintained shape: model.md tracked and committed
         # BEFORE the ignore row ever existed (running the new init-scaffold straight away would
@@ -200,6 +215,27 @@ def main():
         check("retire-is-a-silent-no-op-once-untracked",
               "retired" not in out3
               and git(r3, "ls-files", "--", "operating-model/ops/model.md").stdout.strip() == "")
+
+        # 7b. git declines the retire: a staged model.md edit differing from both HEAD and the
+        # work tree makes `git rm --cached` exit 1 and leave the path tracked. init must not
+        # claim `retired`; it prints one `retire-refused` line and the path stays in ls-files.
+        r3b = os.path.join(tmp, "retire-refused")
+        mk_repo(r3b)
+        model_md_b = os.path.join(r3b, "operating-model", "ops", "model.md")
+        write(model_md_b, "# committed copy\n")
+        commit_all(r3b, "old hand-maintained model.md, pre-upgrade")
+        write(model_md_b, "# staged edit\n")
+        git(r3b, "add", "--", "operating-model/ops/model.md")
+        write(model_md_b, "# work-tree edit\n")
+        out3b = run_init(r3b)
+        still_tracked = git(r3b, "ls-files", "--", "operating-model/ops/model.md").stdout.strip()
+        check("retire-refused-reported-and-path-left-tracked",
+              "retired" not in out3b
+              and "retire-refused operating-model/ops/model.md: " in out3b
+              and still_tracked == "operating-model/ops/model.md"
+              and read(model_md_b) == "# work-tree edit\n",
+              {"tracked": still_tracked,
+               "lines": [l for l in out3b.splitlines() if "retire" in l]})
 
         # 8. A1 shape: two worktrees add one node each to the SAME context; merge exits 0 both
         #    orders with the ignore row in place, and a fresh clone renders the union.

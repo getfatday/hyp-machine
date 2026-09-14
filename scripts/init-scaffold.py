@@ -191,8 +191,10 @@ def _ignore_rows(text):
 
 def ensure_gitignore(root, canonical, label):
     """created / updated / unchanged: rows the plugin needs ignored (templates/gitignore).
-    A row is present when some existing non-comment line matches it verbatim; missing rows are
-    APPENDED under a header comment; a consumer's own lines are never removed or rewritten;
+    A row is present when some existing non-comment line matches it verbatim, or matches its
+    un-anchored form (a consumer already carrying `operating-model/*/model.md` is not handed
+    `/operating-model/*/model.md` as a second row: the un-anchored pattern ignores a superset);
+    missing rows are APPENDED under a header comment; a consumer's own lines are never removed or rewritten;
     re-running with the same inputs is a byte-level no-op. Mirrors ensure_gitattributes's
     contract (H-DRAFT-b9e771b2), for a plain ignore file with no per-line attributes.
     Lab H-DRAFT-4e06e157-om-rows-merge-shape: two adopters editing model.md by hand on separate
@@ -207,7 +209,7 @@ def ensure_gitignore(root, canonical, label):
     have = _ignore_rows(current)
     canon_rows = [ln.strip() for ln in canonical.splitlines()
                   if ln.strip() and not ln.strip().startswith("#")]
-    missing = [ln for ln in canon_rows if ln not in have]
+    missing = [ln for ln in canon_rows if ln not in have and ln.lstrip("/") not in have]
     if not missing:
         print("unchanged %s  (%s)" % (relpath, label))
         return
@@ -224,10 +226,15 @@ def ensure_gitignore(root, canonical, label):
 def retire_tracked_model_md(root, relpath, label):
     """One-time retire: if git already tracks relpath (an upgrade from the old, hand-maintained
     shape), `git rm --cached -q` it -- index only, the work-tree file is left in place -- and
-    print one line naming the retire. A no-op (silent) when the path is untracked already (a
-    fresh scaffold, or a repository already retired): re-running is idempotent. Requires no git
-    repository; failures are swallowed (fail-open, like every other init-scaffold step) because
-    a consumer scaffolding outside a repository has nothing to retire."""
+    print one `retired` line naming the retire -- only when git's exit status is 0. When git
+    declines (a staged model.md edit differing from both HEAD and the work tree makes
+    `git rm --cached` exit 1 and leave the path tracked) print one
+    `retire-refused <relpath>: <git's first stderr line>` line instead, never `retired`, so init
+    never reports a retire that did not happen (cold-refuter finding, ship round 4). A no-op
+    (silent) when the path is untracked already (a fresh scaffold, or a repository already
+    retired): re-running is idempotent. Requires no git repository; failures are swallowed
+    (fail-open, like every other init-scaffold step) because a consumer scaffolding outside a
+    repository has nothing to retire."""
     import subprocess
     try:
         out = subprocess.run(["git", "-C", root, "ls-files", "--", relpath],
@@ -237,9 +244,13 @@ def retire_tracked_model_md(root, relpath, label):
     if out.returncode != 0 or not out.stdout.strip():
         return
     try:
-        subprocess.run(["git", "-C", root, "rm", "--cached", "-q", "--", relpath],
-                        capture_output=True, text=True, timeout=30, check=False)
+        rm = subprocess.run(["git", "-C", root, "rm", "--cached", "-q", "--", relpath],
+                            capture_output=True, text=True, timeout=30, check=False)
     except OSError:
+        return
+    if rm.returncode != 0:
+        reason = (rm.stderr or rm.stdout or "").strip().splitlines()
+        print("retire-refused %s: %s" % (relpath, reason[0] if reason else "git rm --cached exit %d" % rm.returncode))
         return
     print("retired   %s  (%s -- git rm --cached; work-tree file kept)" % (relpath, label))
 
