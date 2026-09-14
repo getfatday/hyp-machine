@@ -39,6 +39,28 @@ grade behaviours of lab H-DRAFT-35397146-om-worker-deterministic ported as PASS/
   zero-model-calls-claude-shim               a PATH-first `claude` shim logs zero spawns
   installed-copy-stdlib-and-no-lab-paths     stdlib imports only; no home or lab path in the shipped file
 
+Ported from lab H-DRAFT-a4a14ff4-om-outbox-carry-forward (kept 2026-09-14, five counted looks
+A1-A5 5/5, VERDICT.json + VERIFY.md, journal fragment 0537) on a scratch repo with a main
+checkout and two linked worktrees, one removed after its pointer is written:
+
+  outbox-landing-for-missing-root            a pointer whose `root` no longer exists lands its row in
+                                             the repository-keyed outbox with `landed_in: outbox`,
+                                             never in any checkout's ledger; the live worktree's own
+                                             pointer still lands `root` in its own ledger
+  carry-forward-exactly-once                 the next drain for a live checkout of the same repository
+                                             carries the outbox row in with `landed_in: carried` and
+                                             `carried_from`, byte-identical otherwise, renames the
+                                             outbox, and a further drain carries nothing twice
+  not-a-checkout-root-quarantines-unconditionally  a pointer whose root exists but was never a git
+                                             checkout of its recorded `common_dir` quarantines the same
+                                             way regardless of the outbox rule
+  pointer-with-no-root-field-drains-as-before  a pointer carrying no `root`/`common_dir` (the pre-outbox
+                                             shape) lands into the drain target exactly as before
+  concurrent-drains-carry-outbox-exactly-once  two drains for the same live checkout launched against
+                                             the same outbox at once (pre-mortem (ii), never exercised
+                                             by the lane) land the carried row exactly once, and the
+                                             loser's outbox rename fails closed, not crashed
+
 Usage: python3 scripts/selftest-om-worker.py        exit 0 = all PASS, 1 = any FAIL
 Standard library only, Python 3.9; pyyaml is needed by model-lint.py for the lint checks.
 """
@@ -86,6 +108,8 @@ OVERFLOW_KEYS = {"kind", "schema", "landed_in", "moved", "date"}
 RESULTS = []
 TMP = None
 SHIM_LOG = None
+
+_MISSING = object()  # sentinel: ob_pointer's default distinguishes "omit the field" from None
 
 
 def check(name, cond, detail=""):
@@ -806,11 +830,135 @@ def _main():
     check("union-merge-keeps-both-appended-rows", rc_m == 0 and len(m_rows) == 2 and {r["session"] for r in m_rows} == {"scn-transcript-0", "scn-transcript-1"}
           and "<<<<<<<" not in merged and merged.endswith("\n") and git(wts[0], "status", "--porcelain").strip() == "", (rc_m, err_m[-200:], len(m_rows)))
 
-    # 23. zero model calls
+    # -------------------------------------------------------------- outbox carry-forward (H-DRAFT-a4a14ff4)
+    # 23. a scratch repository with a main checkout and two linked worktrees (wt_a, wt_b); wt_a is
+    # removed after its pointer is written, so its root is gone before any drain runs.
+    ob_root = os.path.join(TMP, "outbox", "main")
+    os.makedirs(ob_root)
+    git(ob_root, "init", "-q", "-b", "main")
+    write(os.path.join(ob_root, "f.txt"), "seed\n")
+    git(ob_root, "add", "-A")
+    git(ob_root, "commit", "-q", "-m", "seed")
+    ob_wt_a = os.path.join(TMP, "outbox", "wt_a")
+    ob_wt_b = os.path.join(TMP, "outbox", "wt_b")
+    git(ob_root, "worktree", "add", "-q", ob_wt_a, "-b", "wt_a")
+    git(ob_root, "worktree", "add", "-q", ob_wt_b, "-b", "wt_b")
+    ob_common_dir = git(ob_root, "rev-parse", "--git-common-dir").strip()
+    if not os.path.isabs(ob_common_dir):
+        ob_common_dir = os.path.abspath(os.path.join(ob_root, ob_common_dir))
+    # realpath, matching om-worker.py's own resolve_common_dir: a `tempfile.mkdtemp()` root lives
+    # under macOS's symlinked /var (-> /private/var), and the wake lane that will write this field
+    # in production uses the worker's own resolution, never an unresolved join.
+    ob_common_dir = os.path.realpath(ob_common_dir)
+    ob_state = os.path.join(TMP, "outbox", "state")
+    ob_inbox = os.path.join(ob_state, "inbox")
+    os.makedirs(ob_inbox, exist_ok=True)
+
+    def ob_pointer(name, session_id, croot, common_dir=_MISSING):
+        p = {"session_id": session_id, "transcript_path": transcripts[0]["path"]}
+        if common_dir is not _MISSING:
+            p["root"] = croot
+            p["common_dir"] = common_dir
+        write(os.path.join(ob_inbox, name + ".json"), json.dumps(p))
+
+    ob_plain = os.path.join(TMP, "outbox", "plain-dir")
+    os.makedirs(ob_plain, exist_ok=True)
+    ob_pointer("wt_a", "sess-wt-a", ob_wt_a, ob_common_dir)
+    ob_pointer("wt_b", "sess-wt-b", ob_wt_b, ob_common_dir)
+    ob_pointer("plain", "sess-plain", ob_plain, "/bogus/common-dir")
+    ob_pointer("legacy", "sess-legacy", None)   # no root/common_dir at all -- back-compat shape
+    git(ob_root, "worktree", "remove", "--force", ob_wt_a)
+
+    rc_ob1, out_ob1, err_ob1 = worker(ob_wt_b, "drain", "--inbox", ob_state)
+    res_ob1 = json.loads(out_ob1.split("rc 0 ", 1)[1]) if "rc 0 " in out_ob1 else {}
+    ob_outbox_path = os.path.join(ob_state, "outbox.jsonl")
+    ob_outbox_rows = rows_of(ob_outbox_path)
+    ob_wtb_rows = rows_of(ledger(ob_wt_b))
+    ob_main_rows_after1 = rows_of(ledger(ob_root))
+    ob_quarantine_reasons = {r.get("reason") for r in ob_main_rows_after1 + ob_wtb_rows if r.get("kind") == "quarantine"}
+    ob_wtb_session_rows = [r for r in ob_wtb_rows if r.get("kind") == "session-observed"]
+    check("outbox-landing-for-missing-root",
+          res_ob1.get("outbox") == 1 and res_ob1.get("quarantined") == 1
+          and len(ob_outbox_rows) == 1 and ob_outbox_rows[0].get("session") == "sess-wt-a"
+          and ob_outbox_rows[0].get("landed_in") == "outbox" and ob_outbox_rows[0].get("origin_root_key")
+          # wt_b's ledger gets its own pointer's row plus the back-compat "legacy" pointer's row
+          # (both land in the drain target); wt_a's row is neither here nor in main's ledger
+          and {r.get("session") for r in ob_wtb_session_rows} == {"sess-wt-b", "sess-legacy"}
+          and all(r.get("landed_in") == "root" for r in ob_wtb_session_rows)
+          and all(r.get("session") != "sess-wt-a" for r in ob_main_rows_after1)
+          and "NotAGitCheckout" in ob_quarantine_reasons,
+          (res_ob1, ob_outbox_rows, ob_wtb_rows, ob_quarantine_reasons))
+    check("pointer-with-no-root-field-drains-as-before",
+          any(r.get("session") == "sess-legacy" and r.get("landed_in") == "root" for r in ob_main_rows_after1 + ob_wtb_rows),
+          ob_main_rows_after1 + ob_wtb_rows)
+    check("not-a-checkout-root-quarantines-unconditionally", "NotAGitCheckout" in ob_quarantine_reasons, ob_quarantine_reasons)
+
+    # 24. the next drain for a live checkout of the same repository carries the outbox row in
+    rc_ob2, out_ob2, err_ob2 = worker(ob_root, "drain", "--inbox", ob_state)
+    res_ob2 = json.loads(out_ob2.split("rc 0 ", 1)[1]) if "rc 0 " in out_ob2 else {}
+    ob_main_rows_after2 = rows_of(ledger(ob_root))
+    ob_carried = [r for r in ob_main_rows_after2 if r.get("session") == "sess-wt-a"]
+    ob_carried_row = ob_carried[0] if ob_carried else {}
+    ob_outbox_row_fields = {k: v for k, v in ob_outbox_rows[0].items() if k not in ("landed_in", "origin_root_key")}
+    ob_carried_row_fields = {k: v for k, v in ob_carried_row.items() if k not in ("landed_in", "carried_from")}
+    check("carry-forward-exactly-once",
+          res_ob2.get("carried") == 1 and len(ob_carried) == 1 and ob_carried_row.get("landed_in") == "carried"
+          and ob_carried_row.get("carried_from") == ob_outbox_rows[0].get("origin_root_key")
+          and ob_carried_row_fields == ob_outbox_row_fields
+          and not os.path.isfile(ob_outbox_path)
+          and len(glob.glob(os.path.join(ob_state, "outbox.*.carried.jsonl"))) == 1,
+          (res_ob2, ob_carried, ob_outbox_row_fields, ob_carried_row_fields))
+
+    # 25. a further drain of a different live checkout of the same repository carries nothing twice
+    rc_ob3, out_ob3, _ = worker(ob_wt_b, "drain", "--inbox", ob_state)
+    res_ob3 = json.loads(out_ob3.split("rc 0 ", 1)[1]) if "rc 0 " in out_ob3 else {}
+    check("carry-forward-second-drain-carries-nothing",
+          res_ob3.get("carried") == 0 and res_ob3.get("outbox") == 0
+          and len([r for r in rows_of(ledger(ob_wt_b)) if r.get("session") == "sess-wt-a"]) == 0,
+          res_ob3)
+
+    # 26. every landed row's landed_in is one of root/outbox/carried (A4)
+    ob_all_landed_in = {r.get("landed_in") for r in ob_main_rows_after2 + ob_wtb_rows + rows_of(ob_outbox_path)
+                        if r.get("kind") == "session-observed"}
+    check("outbox-rows-landed-in-allowlist", ob_all_landed_in <= {"root", "outbox", "carried"} and ob_all_landed_in,
+          ob_all_landed_in)
+
+    # 27. pre-mortem (ii): two drains for the same live checkout, racing the same outbox, land the
+    # carried row exactly once -- a fresh outbox is planted so this case is independent of #24 above.
+    cc_state = os.path.join(TMP, "outbox-concurrent", "state")
+    cc_root = os.path.join(TMP, "outbox-concurrent", "main")
+    os.makedirs(cc_root)
+    git(cc_root, "init", "-q", "-b", "main")
+    write(os.path.join(cc_root, "f.txt"), "seed\n")
+    git(cc_root, "add", "-A")
+    git(cc_root, "commit", "-q", "-m", "seed")
+    cc_common_dir = git(cc_root, "rev-parse", "--git-common-dir").strip()
+    if not os.path.isabs(cc_common_dir):
+        cc_common_dir = os.path.abspath(os.path.join(cc_root, cc_common_dir))
+    cc_common_dir = os.path.realpath(cc_common_dir)
+    cc_inbox = os.path.join(cc_state, "inbox")
+    os.makedirs(cc_inbox, exist_ok=True)
+    cc_dead_root = os.path.join(TMP, "outbox-concurrent", "gone")
+    write(os.path.join(cc_inbox, "dead.json"), json.dumps({"session_id": "sess-cc-dead", "transcript_path": transcripts[1]["path"],
+                                                           "root": cc_dead_root, "common_dir": cc_common_dir}))
+    rc_seed, out_seed, _ = worker(cc_root, "drain", "--inbox", cc_state)
+    assert json.loads(out_seed.split("rc 0 ", 1)[1]).get("outbox") == 1, out_seed
+    procs = [subprocess.Popen([PY, "-B", WORKER, "drain", "--root", cc_root, "--inbox", cc_state], env=env(),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
+    outs = [p.communicate(timeout=60) for p in procs]
+    cc_rows = [r for r in rows_of(ledger(cc_root)) if r.get("session") == "sess-cc-dead"]
+    cc_rcs = [p.returncode for p in procs]
+    check("concurrent-drains-carry-outbox-exactly-once",
+          cc_rcs == [0, 0] and len(cc_rows) == 1 and cc_rows[0].get("landed_in") == "carried"
+          and not os.path.isfile(os.path.join(cc_state, "outbox.jsonl"))
+          and len(glob.glob(os.path.join(cc_state, "outbox.*.carried.jsonl"))) >= 1,
+          (cc_rcs, cc_rows, [o[1].decode("utf-8", "replace")[-200:] for o in outs]))
+
+    # 28. zero model calls
     spawns = read_bytes(SHIM_LOG).decode("utf-8", "replace").splitlines()
     check("zero-model-calls-claude-shim", len(spawns) == 0, spawns[:2])
 
-    # 24. the installed copy: stdlib only, no home or lab path
+    # 29. the installed copy: stdlib only, no home or lab path
     src = read_bytes(WORKER).decode("utf-8")
     tree_ = ast.parse(src)
     imported = set()
@@ -819,7 +967,7 @@ def _main():
             imported.update(a.name.split(".")[0] for a in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
-    stdlib = {"errno", "fcntl", "getpass", "glob", "hashlib", "json", "os", "re", "shutil", "socket", "subprocess", "sys", "time"}
+    stdlib = {"errno", "fcntl", "getpass", "glob", "hashlib", "json", "os", "re", "shutil", "socket", "subprocess", "sys", "time", "zlib"}
     lab_tokens = ("/Users/", "cause-n-effect", "experiments/runs/", "experiments/deploy")
     check("installed-copy-stdlib-and-no-lab-paths", imported <= stdlib and not any(tok in src for tok in lab_tokens)
           and os.access(WORKER, os.X_OK), (sorted(imported - stdlib), [t for t in lab_tokens if t in src]))

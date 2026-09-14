@@ -33,7 +33,9 @@ the same file with a `quarantine` row and exits 0.
 
 Rows are one JSON object per line, keys sorted, no spaces, newline-terminated (canonical bytes), so
 the ledger dedupes by exact bytes and merges by union. Every row carries `kind`, `schema`,
-`landed_in` (`root`) and `date`.
+`landed_in` and `date`; `landed_in` is one of `root` (the checkout the session worked in), `outbox`
+(that checkout no longer existed at drain time; see "The outbox and carry-forward" below) or
+`carried` (a later drain moved an outbox row into a live checkout's own ledger).
 
 `session-observed`: `session` (the transcript's basename, or the pointer's `session_id`), `through`
 (the transcript line count the row covers -- the cursor), `head` (sha256 of the transcript bytes),
@@ -41,7 +43,10 @@ the ledger dedupes by exact bytes and merges by union. Every row carries `kind`,
 `determinism`, `handoff_share` (the classifier's own ratio arithmetic; `null` when a denominator is
 0), `top_step` (`{msg, output_tokens}`: the assistant step with the most output tokens),
 `unmodeled_top` (`[{op, tool, count, suggested_node}]`: program basenames only, never arguments),
-`hook_timeouts`, `date` (the transcript's last timestamp).
+`hook_timeouts`, `date` (the transcript's last timestamp), and, only when `landed_in` is `outbox`,
+`origin_root_key` (the dead root's state key), or only when `landed_in` is `carried`,
+`carried_from` (the origin key it was carried from) -- lab H-DRAFT-a4a14ff4-om-outbox-carry-forward,
+kept 2026-09-14.
 
 `model-evaluated`: `model_tree` (repository-relative), `lint` (`errors`, sorted `findings` lines
 exactly as `model-lint.py` prints them, `parse_skipped` when pyyaml was missing and the lint could
@@ -86,17 +91,63 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-worker.py" status --root .
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-worker.py" latest --root .
 ```
 
-`drain` reads pointer files `<state>/om/<sha256(realpath root)[:16]>/inbox/<name>.json`, each
-`{"session_id": ..., "transcript_path": ...}` (state root `~/.hyp-state`, or `$HYP_STATE_DIR`;
-`--inbox DIR` names the directory holding `inbox/` directly). Each pointer is renamed into
-`processing/` before it is parsed, then into `processed/` (or `quarantine/` with a `quarantine` row
-naming the basename and the exception class). Bounds per wake: at most N = 20 pointers and T = 60 s
-on a monotonic clock (checked between files); a 1 GiB free-space floor below which nothing is
-appended (one refusal line, exit 0; `$HYP_OM_FREE_FLOOR_BYTES` raises it, never lowers it); an inbox
-over 1 MiB rotates its oldest files by mtime into `overflow/<epoch>/` and writes one
-`spool-overflow` row. A drain killed mid-way leaves only complete lines (canonical bytes under
-`O_APPEND`); the next drain sweeps `processing/` back into the inbox and dedupe makes the re-run
-harmless. Nothing here schedules the worker: run it by hand until the wake ships (below).
+`drain` reads pointer files `<name>.json` from an inbox, each `{"session_id": ...,
+"transcript_path": ..., "root": ..., "common_dir": ...}` -- `root` and `common_dir` are optional
+(no lane writes them yet; see "The outbox and carry-forward" below) and their absence drains
+exactly as the first release of this worker did: straight into the `drain` call's own `--root`
+target. When present, the inbox itself is shared by every checkout of the repository named by
+`common_dir` (`<state>/om/<repo-key>/inbox/`, `repo-key` derived from `common_dir`; state root
+`~/.hyp-state`, or `$HYP_STATE_DIR`; `--inbox DIR` overrides which directory holds `inbox/`, never
+whether the carry step below runs). Each pointer is renamed into `processing/` before it is parsed,
+then into `processed/` (or `quarantine/` with a `quarantine` row naming the basename and the
+exception class). Bounds per wake: at most N = 20 pointers and T = 60 s on a monotonic clock
+(checked between files); a 1 GiB free-space floor below which nothing is appended (one refusal
+line, exit 0; `$HYP_OM_FREE_FLOOR_BYTES` raises it, never lowers it); an inbox over 1 MiB rotates
+its oldest files by mtime into `overflow/<epoch>/` and writes one `spool-overflow` row. A drain
+killed mid-way leaves only complete lines (canonical bytes under `O_APPEND`); the next drain sweeps
+`processing/` back into the inbox and dedupe makes the re-run harmless. Nothing here schedules the
+worker: run it by hand until the wake ships (below).
+
+## The outbox and carry-forward
+
+Evidence: lab `H-DRAFT-a4a14ff4-om-outbox-carry-forward`, kept 2026-09-14 -- five counted looks,
+A1-A5 passing in every one, the frozen SPRT walking to 2.9389 over the 2.8904 promote bound,
+cold-verified (`VERDICT.json`, `VERIFY.md`, journal fragment 0537 in the lab; five cold refute
+rounds preceded the looks). The keep rules out the reading that a row produced in a worktree
+removed before the worker runs is lost, or that it must be written into a checkout the session
+never worked in.
+
+For each pointer with a `root` (the checkout the session worked in) and a `common_dir` (that
+repository's `git rev-parse --git-common-dir` at pointer-write time), `drain` resolves the
+pointer's own landing root -- never just the `--root` target it was called with -- before deciding
+where the row goes:
+
+- **live** (`root` exists and its own `git rev-parse --git-common-dir` still matches the recorded
+  `common_dir`): the row lands in that checkout's own ledger, `landed_in: root`, exactly as a
+  pointer with no `root` field always has.
+- **missing** (`root` no longer exists -- the checkout was removed): the row lands in
+  `<state>/om/<repo-key>/outbox.jsonl` instead, `landed_in: outbox`, with `origin_root_key` naming
+  the dead root's own state key. Nothing is lost; the row waits for a live checkout of the same
+  repository.
+- **not a checkout** (`root` exists but its live `common_dir` does not match the recorded one, or
+  resolves to nothing -- a malformed pointer, not the case above): the pointer quarantines exactly
+  as it always has, unconditionally, whether or not the outbox rule exists.
+
+At the START of every `drain` for a live checkout, before any pointer is read, every row waiting in
+that repository's outbox is carried into the checkout's own ledger: `landed_in: carried` and
+`carried_from` (the origin key) replace `landed_in: outbox` and `origin_root_key`; every other field
+is byte-identical to the outbox copy. Carries dedupe by `(session, through)`, not by exact bytes
+(a carry's bytes differ from the outbox copy by construction). The outbox is then renamed --
+never truncated -- to `outbox.<epoch>.carried.jsonl`, so a second drain for any live checkout finds
+no outbox file and carries nothing twice; the rename is the single-flight claim between two drains
+racing the same outbox (`scripts/selftest-om-worker.py` proves a concurrent pair carries exactly
+once). A repository whose `common_dir` is itself gone (the whole repository deleted) has no live
+checkout to carry into; its rows stay in the outbox with `landed_in: outbox` -- the design's
+disclosed residual, not a failure.
+
+Nothing writes `root`/`common_dir` into a pointer yet: that is the startup wake lane's job
+(`H-DRAFT-10383178`, not yet kept). Until it keeps, every pointer lacks both fields and every row
+lands `root`, exactly as before this lane.
 
 ## What never enters a row
 
@@ -119,7 +170,7 @@ self-check must refuse; `blind`: the leak must reach the file); production never
 
 ## Regression test
 
-`python3 scripts/selftest-om-worker.py` -- 26 checks over throwaway consumers, the fixture grade
+`python3 scripts/selftest-om-worker.py` -- 33 checks over throwaway consumers, the fixture grade
 behaviours ported: parity with `observatory.tally_ratios` on planted transcripts (the
 Skill-in-catalogue branch included), lint equality with `model-lint.py`, staleness true then false,
 the six canary classes absent, every self-check net, the mutant pair, idempotence, the cursor and
@@ -127,7 +178,10 @@ latest-wins, byte identity across two trees, the N and T caps, the floor, rotati
 SIGKILL mid-drain with a clean resume, `schema: 2` tolerance, the configured path, the scaffold's
 union row, a configured path surviving a re-init with its row rendered, an absolute value falling
 back to the default in every reader, the two-worktree union merge, zero `claude` spawns, stdlib-only
-imports.
+imports, and (lab `H-DRAFT-a4a14ff4-om-outbox-carry-forward`) a scratch repository with two linked
+worktrees, one removed after its pointer is written: the outbox landing, the exactly-once carry, a
+`not-a-checkout` quarantine unconditional in both cases, a pointer with no `root` field draining as
+before, and two drains racing the same outbox carrying exactly once.
 
 ## What does not ship yet, and why
 
@@ -135,10 +189,11 @@ The design (lab `experiments/runs/DESIGN-passive-om-feedback/DESIGN.md`, section
 names four more pieces. Each ships only after its own lane keeps -- plugin bytes change only after
 the keep that licenses them -- and none had kept when this worker shipped:
 
-- **the wake** (lane 8): the `SessionStart` row that runs `drain` at startup. Until it keeps, nothing
-  runs the worker for you.
-- **the outbox carry-forward** (lane 6): the recorder hook that writes a pointer file per finished
-  session into the inbox. Until it keeps, you name transcripts by hand (`observe`) or write pointers yourself.
+- **the wake** (lane 8, `H-DRAFT-10383178`): the `SessionStart` row that runs `drain` at startup
+  and writes `root`/`common_dir` into every pointer it produces. Until it keeps, nothing runs the
+  worker for you, and every pointer lacks both fields (its row always lands `root`, per "The
+  outbox and carry-forward" above) -- you name transcripts by hand (`observe`) or write pointers
+  yourself.
 - **the commit path** (lane 7): the clause that stages the appended row into the session's commit.
 - **the catalogue projection** (lane 2): the `model.md` renderer the worker's `compile-check` would run first.
 - **the `om_feedback_file` key in `hooks/scripts/hyp_config.py` `DEFAULTS`** (named by the design and
@@ -164,6 +219,20 @@ transcript can overrun it); `evaluate` and `compile-check` write the same row; `
 recorded but nothing reads it yet, and it counts every attachment with `timedOut` or type
 `hook_cancelled` (one real 85-line transcript read 18, more than its hook timeouts), so the wake lane
 reads it as an unread, over-counting field until a lane pins the attachment shape.
+
+`H-DRAFT-a4a14ff4-om-outbox-carry-forward`'s kept bytes are the lane fixture's `impl/om-worker.py`
+(baseline-plus-rule) ported the same way: `repo_key`/`path_key` hash with the plugin's existing
+crc32+adler32 state-directory key (`hooks/scripts/session-start-budget.py`, kept
+`H-DRAFT-a10fd3f7`) rather than the fixture's own sha256[:16] -- the lane's spec names "the shipped
+state key" and its `VERIFY.md` flagged the fixture's literal bytes as unpinned to it; the
+concurrent-drain case its `VERIFY.md` carried as untested (pre-mortem (ii)) is now a selftest case,
+with the outbox rename wrapped in a caught `OSError` so the losing side of a race fails closed
+instead of raising. One bug found while porting, fixed and not present in the lane's own looks (its
+fixture scratch root was always `/private/tmp`, never symlinked): `resolve_common_dir` now
+`realpath`s its result, because `git`'s own worktree admin file already stores a canonicalized
+absolute path and a checkout under a symlinked mount (macOS `/tmp`, `/var`) would otherwise resolve
+to a different string for its main checkout than for one of its own linked worktrees, quarantining
+a live worktree as `not-a-checkout`.
 
 Undo: revert the release's merge commit. Rows already written are plain JSON lines in your ledger;
 the attribute row is plain text in your `.gitattributes`.
