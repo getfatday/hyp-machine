@@ -205,13 +205,18 @@ recorded but nothing reads it yet, and it counts every attachment with `timedOut
 reads it as an unread, over-counting field until a lane pins the attachment shape.
 
 The catalogue projection above ports the lane fixture's `render_catalog.py` prototype as
-`scripts/compile-catalog.py`, unchanged except its rendered header line (names the shipped script,
-not the fixture's) and an added `--model-dir` multi-context form, available for regenerating
-every context in one call by hand -- the worker's `compile-check` instead calls the
-single-context form once per model tree it finds; `scripts/init-scaffold.py` gains `ensure_gitignore`
-(the `ensure_gitattributes` shape, for a plain ignore file) and `retire_tracked_model_md` (a
-one-time `git rm --cached`), wired immediately before the existing `model.md` stub write, ported
-from the lane's `impl/patch_on.py` byte-for-byte. `om-worker.py`'s `evaluate()` gained one step,
+`scripts/compile-catalog.py`, and drifts from those kept bytes in four places: the rendered header
+line (names the shipped script, not the fixture's); an added `--model-dir` multi-context form,
+available for regenerating every context in one call by hand -- the worker's `compile-check`
+instead calls the single-context form once per model tree it finds; `EXTRA_TYPE_DIRS`, rendering
+Externals/Aggregates headings only when the context has at least one such node, which the fixture
+had no equivalent for; and read-model's two extra accepted directory spellings, `read-models` and
+`read-model`, alongside the fixture's single `readmodels`. `scripts/init-scaffold.py` gains
+`ensure_gitignore` (the `ensure_gitattributes` shape, for a plain ignore file) and
+`retire_tracked_model_md` (a one-time `git rm --cached`), wired immediately before the existing
+`model.md` stub write, ported from the lane's `impl/patch_on.py` with one drift: the ignore row
+`templates/gitignore` installs is anchored (`/{{MODEL_DIR}}/*/model.md`), unlike `patch_on.py`'s
+un-anchored row. `om-worker.py`'s `evaluate()` gained one step,
 `catalog_regen`, run before the lint and staleness reads it now precedes; fail-closed is new here
 (every other subprocess call in this file is fail-open) because a compile-check that reported rc 0
 over a catalogue it never actually regenerated would be worse than one that visibly failed.

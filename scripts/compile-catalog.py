@@ -23,9 +23,12 @@ rule and the "grep recipes" sentence differ; see templates/model.md).
 
 Ported from the lab fixture's render_catalog.py prototype: H-DRAFT-4e06e157-om-rows-merge-shape,
 kept 2026-09-14 (five counted looks, A1-A5 pass in every one, SPRT llr 2.9389 over the 2.8904
-promote bound; VERDICT.json beside the lane). Everything below is that prototype unchanged except
-the doc comment inside the rendered file's header line and the added --model-dir multi-context
-form.
+promote bound; VERDICT.json beside the lane). This file drifts from that prototype's kept bytes
+in four places: the doc comment inside the rendered file's header line; the added --model-dir
+multi-context form; EXTRA_TYPE_DIRS (Externals/Aggregates headings, emitted only when the
+context has at least one such node -- the prototype had no equivalent); and read-model's two
+extra accepted directory spellings, read-models and read-model, alongside the prototype's single
+readmodels. Everything else is unchanged.
 """
 import argparse
 import os

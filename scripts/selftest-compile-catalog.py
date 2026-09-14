@@ -20,6 +20,9 @@ caller's cwd, or any lab path) and checks the INSTALLED plugin (the tree this fi
                         either resulting main renders the union of both nodes once regenerated
   om-worker              compile-check's row records that the renderer ran, and fails closed
                         (rc 1) when scripts/compile-catalog.py is missing
+  extra types/spellings  an external, an aggregate and a read-models/ node each render their
+                        row and the Externals/Aggregates headings (absent for a core-only
+                        context); model-lint.py reads 0 E-CATALOG over the result
   templates/skills grep  no shipped template or skill text tells a reader to `git add` or
                         `git commit` model.md (the A2 assumption check from the lane's grade.py)
 
@@ -260,7 +263,39 @@ def main():
               p2.returncode == 1 and "compile-catalog.py missing" in p2.stderr,
               (p2.returncode, p2.stderr.strip()[-160:]))
 
-        # 10. A2: no shipped template or skill tells a reader to git add/commit model.md
+        # 10. EXTRA_TYPE_DIRS + read-model spellings: an external, an aggregate and a
+        # read-models/ node render their rows and the two extra headings only when present;
+        # a core-only context (ctx, seeded in checks 1-2, no externals/aggregates) renders
+        # neither heading; model-lint.py reads 0 E-CATALOG over the regenerated catalogue.
+        r5 = os.path.join(tmp, "extra-types")
+        ectx = os.path.join(r5, "operating-model", "ops")
+        seed_context(ectx)
+        node(os.path.join(ectx, "externals", "vendor-api.md"), "external", "external/vendor-api",
+            "third-party vendor API")
+        node(os.path.join(ectx, "aggregates", "order-aggregate.md"), "aggregate",
+            "aggregate/order-aggregate", "order aggregate root")
+        node(os.path.join(ectx, "read-models", "inventory.md"), "read-model",
+            "read-model/inventory", "inventory read model", "maintainer: command/build\n")
+        py([COMPILE_CATALOG, ectx, "--write"])
+        rendered = read(os.path.join(ectx, "model.md"))
+        check("renderer-extra-types-and-spellings-render-rows-and-headings",
+              "## Externals" in rendered and "## Aggregates" in rendered
+              and "external/vendor-api" in rendered and "aggregate/order-aggregate" in rendered
+              and "read-model/inventory" in rendered,
+              [l for l in rendered.splitlines() if l.startswith("## ") or "vendor-api" in l
+               or "order-aggregate" in l or "read-model/inventory" in l])
+
+        core_only = py([COMPILE_CATALOG, ctx]).stdout
+        check("renderer-core-only-context-has-no-extra-headings",
+              "## Externals" not in core_only and "## Aggregates" not in core_only,
+              [l for l in core_only.splitlines() if l.startswith("## ")])
+
+        lint = py([os.path.join(PLUGIN, "scripts", "model-lint.py"), ectx])
+        check("model-lint-zero-e-catalog-over-extra-types-context",
+              lint.returncode == 0 and "E-CATALOG" not in lint.stdout,
+              (lint.returncode, lint.stdout.strip()[-400:]))
+
+        # 11. A2: no shipped template or skill tells a reader to git add/commit model.md
         pattern = re.compile(r"git\s+(add|commit)[^\n]*model\.md")
         hits = []
         for sub in ("templates", "skills"):
