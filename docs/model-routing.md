@@ -24,15 +24,22 @@ promote bound) — see that lane for the full evidence trail.
 
 ...and a `roles` map from label head (`build`, `fix`, `design`, `refute`, ...) to one of those
 classes. `frontier: [fable, opus]` names the expensive tier; an `execute`-class role on a
-frontier model is flagged unless the call carries a repository override with a `reason` and an
-`evidence` pointer (a deliberate escalation, not a default).
+frontier model is always flagged `frontier-on-execute`. The table's `overrides` block and its
+`frontier_on_execute_requires: [reason, evidence]` list are carried through the merged table
+but not yet consulted by the scanner (the scanner ships byte-identical to the graded keep;
+consulting them is a later, selftest-backed change), so neither a per-role `overrides.<role>`
+nor a `classes.execute` re-point carrying `reason` and `evidence` admits the call today -- the
+finding's fix hint still names that override because the hint text is part of the same graded
+bytes. The two escapes that do admit an execute role on fable/opus: the
+`// route-override: guard-false-positive <reason>` marker on the line before the call (below),
+or mapping the role to a `think`/`adversarial` class under `roles` in `.claude/routing.json`.
 
 The **effective table** for a repository is this default merged with `.claude/routing.json`
 (scaffolded once by `/hyp:init` from `templates/routing.json`, an empty override — your edits
 to it are never overwritten by a later `/hyp:init`). Add roles or override a class's
 model/effort there; `table_sha`/`default_sha` (in the merged table, and printable with
 `routing.py table`) let you pin the plugin default your override was written against — a
-mismatch is its own advisory finding, `default-sha-mismatch`.
+mismatch is its own finding, `default-sha-mismatch` (denied under `deny`, advised under `advise`).
 
 ## The guard
 
@@ -48,7 +55,8 @@ mismatch is its own advisory finding, `default-sha-mismatch`.
 A finding names the script, the line, and one of these classes: `no-model` / `no-effort`
 (the option is missing), `unknown-role` (the label's head is not in the roles map),
 `value-mismatch` (model/effort disagree with the table's row), `frontier-on-execute` (an
-`execute` role on a frontier model with no override), `non-literal` (a routing option is a
+`execute` role on a frontier model; the `overrides` block is not consulted -- see The table
+above for the two escapes that admit), `non-literal` (a routing option is a
 spread, variable, or template instead of a string literal), `phase-mismatch` (a
 `meta.phases[]` entry names a different model than the call), `agent-type-relabel`
 (`agentType` disagrees with the label's head), `alias` (the identifier `agent` used somewhere
@@ -67,8 +75,9 @@ immediately before it:
 An empty reason does not admit. The override is logged as a `guard-override` row in
 `.claude/routing-guard-ledger.jsonl`; every fail-open path (a missing table, an unreadable
 script, a malformed payload) logs a `guard-error` row there instead, and one line in
-`.claude/routing-guard-errors.log`. Both are durable local records, never only a transcript
-line — the guard fails open on payload/IO problems, but it never fails silently.
+`.claude/routing-guard-errors.log`, and carries the same note in the response's
+`systemMessage`. The two files are durable local records, never only a transcript line — the
+guard fails open on payload/IO problems, but it never fails silently.
 
 ## The CLI
 
@@ -79,9 +88,10 @@ line — the guard fails open on payload/IO problems, but it never fails silentl
   unmapped role.
 - `lint <script>` — print every finding for a script; exit 1 if any, 0 if clean.
 - `rewrite <script> --out <dir>` — write a table-conformant copy, touching only routing
-  option values (`model`, `effort`, `agentType`, `meta.phases[].model`) for calls whose label
-  head is already in the roles map. An unmapped or unlabelled call is never rewritten — it
-  stays an `unknown-role` finding.
+  option values (`model`, `effort`, `agentType`) for calls whose label head is already in the
+  roles map. An unmapped or unlabelled call is never rewritten — it stays an `unknown-role`
+  finding — and a `meta.phases[]` entry is never rewritten either: a `phase-mismatch` finding
+  stays until the phases block is edited by hand (`lint` reports it).
 
 ## Known limitation
 

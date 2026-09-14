@@ -13,11 +13,13 @@ Deny is conveyed the way every other guard in this plugin conveys it --
 preflight-gate.py) -- never a bare exit code. Advise prints one JSON object carrying a
 top-level `systemMessage` (the field the plugin's SessionStart announce already uses to
 reach the person) plus `hookSpecificOutput.additionalContext` with the same text, and
-exits 0 -- with no `permissionDecision` field at all (round-2 cold refuter B1): the
-installed CLI's PreToolUse output handler drops any value but `deny`/`ask`, so a
-`permissionDecision: allow` never reached the model either, and in CLI versions that DO
-honour `allow` it silently skipped the permission prompt for exactly the non-conformant
-scripts this hook exists to flag. Plain stdout text (license-join-hook.py's convention)
+exits 0 -- with no `permissionDecision` field at all (round-2 cold refuter B1; reason
+corrected by the round-3 cold refuter, A4): the installed CLI (2.1.270) honours `allow`,
+`deny`, `ask` and `defer` on a PreToolUse `permissionDecision`, so an `allow` here would
+have silently skipped the permission prompt for exactly the non-conformant scripts this
+hook exists to flag; omitting the field leaves the normal permission flow untouched, and
+both `permissionDecision` and `additionalContext` are optional PreToolUse fields, so the
+advise shape is schema-valid without it. Plain stdout text (license-join-hook.py's convention)
 is written to the debug log only on a PreToolUse hook and never reaches the transcript
 or the model, which made every advise-mode finding here silently unobservable until
 fixed.
@@ -27,7 +29,9 @@ malformed payload, a missing or unreadable table) -- never for a parse exception
 the script's own bytes, which is its own `cannot-parse` finding, denied like any other.
 A crashing PreToolUse hook would block every Workflow/Agent call, which is worse than a
 missed check, so every exception path here writes a durable record (an error-log line
-plus a `guard-error` ledger row) and still exits 0.
+plus a `guard-error` ledger row), carries its note in the same `systemMessage` shape the
+advise path uses (round-3 A3: plain stdout would reach only the debug log), and still
+exits 0.
 
 Ported from the lab keep H-DRAFT-314c8d17-routing-guard (VERDICT.json,
 experiments/runs/H-DRAFT-314c8d17-routing-guard/ in the source repository); the
@@ -222,13 +226,12 @@ def _advise(lines):
     default `routing.enforce: advise` no finding was ever observable -- print one JSON
     object instead: a top-level `systemMessage` (the field the plugin's SessionStart
     announce already uses) and `hookSpecificOutput.additionalContext` carrying the same
-    text, so a human and a machine reader both see it. B1 (round-2 cold refuter): the
-    installed CLI's PreToolUse output handler drops anything but `deny`/`ask` on
-    `permissionDecision` (so the earlier `allow` value never reached the model either),
-    and in CLI versions that DO honour `allow` it skips the permission prompt for
-    exactly the non-conformant scripts this hook exists to flag -- omit the field
-    entirely; the call was never going to be denied in advise mode, so there is nothing
-    for a decision field to say."""
+    text, so a human and a machine reader both see it. B1 (round-2 cold refuter; reason
+    corrected round 3, A4): the installed CLI honours `allow` on `permissionDecision`,
+    which means an `allow` here would skip the permission prompt for exactly the
+    non-conformant scripts this hook exists to flag -- omit the field entirely; the call
+    was never going to be denied in advise mode, so there is nothing for a decision
+    field to say."""
     if not lines:
         return 0
     joined = "\n".join(lines)
@@ -244,13 +247,23 @@ def _advise(lines):
 
 def _fail_open(root, tool_use_id, note):
     """Write the durable error-log line and `guard-error` ledger row, print one
-    advisory note, and return 0 -- the one path every payload/IO/table error takes."""
+    advisory note in the advise path's JSON shape (`systemMessage` +
+    `hookSpecificOutput.additionalContext`, no `permissionDecision`; round-3 A3 --
+    plain stdout on a PreToolUse hook reaches only the debug log), and return 0 --
+    the one path every payload/IO/table error takes."""
     try:
         _append_line(os.path.join(root, ERROR_LOG), "routing-guard: " + note)
         _append_ledger(root, {"kind": "guard-error", "v": 1, "tool_use_id": tool_use_id, "error": note})
     except Exception:
         pass  # never let the error-log write itself break fail-open
-    print("(advisory) routing-guard: failing open -- " + note)
+    note_line = "(advisory) routing-guard: failing open -- " + note
+    print(json.dumps({
+        "systemMessage": note_line,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": note_line,
+        },
+    }))
     return 0
 
 

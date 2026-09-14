@@ -71,8 +71,10 @@ def cmd_lint(args):
 
 def cmd_rewrite(args):
     """Write a table-conformant copy of `script`, touching only routing option
-    values (model, effort, agentType, meta.phases[].model) for calls whose label
-    head is in the roles map -- never label text, never an unmapped/no-label call."""
+    values (model, effort, agentType) for calls whose label head is in the roles
+    map -- never label text, never an unmapped/no-label call, and never a
+    meta.phases[] entry (a phase-mismatch finding stays until the phases block is
+    edited by hand; `lint` reports it)."""
     table = load_effective_table(args.root)
     with open(args.script) as f:
         text = f.read()
