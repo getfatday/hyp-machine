@@ -130,4 +130,5 @@ for the table, the finding classes, and the `// route-override: guard-false-posi
 escape for a single false positive; (3) when you are ready to enforce it, set
 `{"routing": {"enforce": "deny"}}` in `.claude/hyp.json`. Existing workflow scripts that already
 name `model`/`effort` on every call are unaffected either way. Undo: revert the release's merge
-commit, or set `routing.enforce: off` (the hook still runs but exits immediately).
+commit, or set `routing.enforce: off` (the hook still runs -- it writes its start/finish marks --
+but exits before it opens the script).

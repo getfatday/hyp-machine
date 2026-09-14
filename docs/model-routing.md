@@ -89,10 +89,12 @@ a much larger surface for a 10-second hook row to depend on). It sees every `age
 site the census counted and denies what it cannot balance (`cannot-parse`) rather than missing
 it silently, but it will never understand a script that builds its calls dynamically. The
 `Agent`-matcher row only advises; it does not yet check whether a subagent call is a shipped
-`hyp:` agent naming its own model, so a routed `Agent` tool call the same session makes may log
-a fail-open advisory line rather than a targeted finding.
+`hyp:` agent naming its own model. A real `Agent` tool call carries no `script`/`scriptPath` at
+all, so this row admits it with no scan and no record -- not a targeted finding, and (since the
+B1/B2 fix) not a fail-open advisory line either.
 
 ## Undo
 
 Revert the merge commit that landed this release, or set `routing.enforce: off` in
-`.claude/hyp.json` (the hook still runs but exits 0 immediately, before it opens the script).
+`.claude/hyp.json` (the hook still runs -- it writes its start/finish marks -- but exits 0
+before it opens the script).

@@ -33,10 +33,15 @@ def load_effective_table(root):
 
 
 def cmd_table(args):
+    """One line per role, then the effective table's two shas -- A2: docs/model-routing.md
+    says table_sha/default_sha are "printable with `routing.py table`"; print them so
+    that claim is true rather than dropping it."""
     table = load_effective_table(args.root)
     for role, cls in sorted(table["roles"].items()):
         row = table["classes"].get(cls, {})
         print("%-16s %-12s %-8s %-6s %s" % (role, cls, row.get("model"), row.get("effort"), row.get("basis")))
+    print("table_sha        %s" % table["table_sha"])
+    print("default_sha      %s" % table["default_sha"])
     return 0
 
 

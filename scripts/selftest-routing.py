@@ -14,8 +14,9 @@ subprocess against throwaway consumer repositories (the pattern of
             fixture named (no-model, unknown-role, frontier-on-execute, non-literal,
             phase-mismatch, agent-type-relabel, alias, cannot-parse), naming the class;
             admits the compliant script with zero findings
-  guard     enforce=advise admits every mutant (exit 0, no deny) with one advisory
-            line per finding
+  guard     enforce=advise admits every mutant (exit 0, no deny) with one finding
+            line per class, carried in the JSON response's `systemMessage` (B3 --
+            plain stdout on a PreToolUse hook reaches only the debug log)
   guard     enforce=off admits everything, including a no-model script, without
             scanning
   guard     a missing/unreadable default table fails open: one error-log line, one
@@ -24,6 +25,11 @@ subprocess against throwaway consumer repositories (the pattern of
             CLAUDE_PROJECT_DIR fallback root
   guard     the Agent-matcher row only ever advises, even when `.claude/hyp.json`
             sets `routing.enforce: deny`
+  guard     a real Agent-tool payload (prompt/description/subagent_type, no script
+            at all) is admitted with no scan, no error-log line, no `guard-error`
+            row -- not the IO-error fail-open path (B2)
+  guard     a non-dict `tool_input` falls open (one error-log line, admit) rather
+            than raising an uncaught exception (B1)
   guard     `// route-override: guard-false-positive <reason>` admits exactly the
             marked finding and writes one `guard-override` ledger row; an empty
             reason does not admit
@@ -130,10 +136,14 @@ def mk_consumer(path, enforce="deny"):
 
 
 def run_guard(script_text, root, tool_name="Workflow", tool_use_id="tu-1",
-              env_extra=None, malformed=False, script_path=None):
+              env_extra=None, malformed=False, script_path=None, raw_tool_input=None):
     """(rc, decision, reason, advisories) for one PreToolUse payload against the guard.
-    decision is 'deny', 'allow', or 'unparseable'; advisories is the list of stdout
-    lines starting with '(advisory) '."""
+    decision is 'deny', 'allow', or 'unparseable'; advisories merges the plain
+    '(advisory) '-prefixed fail-open lines with the finding lines a JSON response now
+    carries in `systemMessage` (B3). `raw_tool_input`, when given, replaces the
+    script/scriptPath-shaped `tool_input` entirely -- for a payload shape the guard
+    must handle without a `script` key at all (a real Agent-tool call, B2) or a
+    `tool_input` that is not even an object (B1)."""
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", "/"),
            "CLAUDE_PLUGIN_ROOT": PLUGIN, "CLAUDE_PROJECT_DIR": root}
     if env_extra:
@@ -141,7 +151,10 @@ def run_guard(script_text, root, tool_name="Workflow", tool_use_id="tu-1",
     if malformed:
         stdin_text = script_text  # raw, not JSON
     else:
-        tool_input = {"scriptPath": script_path} if script_path else {"script": script_text}
+        if raw_tool_input is not None:
+            tool_input = raw_tool_input
+        else:
+            tool_input = {"scriptPath": script_path} if script_path else {"script": script_text}
         payload = {"session_id": "selftest-routing", "cwd": root, "hook_event_name": "PreToolUse",
                    "tool_name": tool_name, "tool_input": tool_input, "tool_use_id": tool_use_id}
         stdin_text = json.dumps(payload)
@@ -153,9 +166,13 @@ def run_guard(script_text, root, tool_name="Workflow", tool_use_id="tu-1",
     json_lines = [line for line in out.splitlines() if line.startswith("{")]
     if json_lines:
         try:
-            hso = json.loads(json_lines[0])["hookSpecificOutput"]
+            obj = json.loads(json_lines[0])
+            hso = obj.get("hookSpecificOutput", {})
             decision = hso.get("permissionDecision", "?")
             reason = hso.get("permissionDecisionReason", "")
+            system_message = obj.get("systemMessage") or ""
+            if system_message:
+                advisories.extend(system_message.splitlines())
         except Exception:
             decision, reason = "unparseable", out.strip()[:160]
     return p.returncode, decision, reason, advisories
@@ -229,6 +246,35 @@ def main():
                                                 tool_name="Agent", tool_use_id="tu-agent")
         check("guard-agent-row-advise-only", rc == 0 and decision != "deny",
               "rc=%d decision=%s -- the Agent row must never deny" % (rc, decision))
+
+        # --- guard (B2): a real Agent-tool payload carries no script at all -- admit
+        # silently, never take the IO-error fail-open path (no error-log line, no
+        # guard-error ledger row) ---------------------------------------------------
+        real_agent_payload = {"prompt": "do the thing", "description": "a real subagent call",
+                               "subagent_type": "general-purpose"}
+        rc, decision, reason, adv = run_guard(None, deny_consumer, tool_name="Agent",
+                                              tool_use_id="tu-agent-real", raw_tool_input=real_agent_payload)
+        check("guard-agent-no-script-admits", rc == 0 and decision == "allow",
+              "rc=%d decision=%s" % (rc, decision))
+        check("guard-agent-no-script-not-fail-open", not any("failing open" in line for line in adv),
+              "adv=%r -- a real Agent call must never look like a guard error" % (adv,))
+        error_log_before = read(os.path.join(deny_consumer, ".claude", "routing-guard-errors.log")) or ""
+        check("guard-agent-no-script-no-error-log", "tu-agent-real" not in error_log_before,
+              "error_log tail=%r" % (error_log_before[-200:],))
+        ledger_before = read(os.path.join(deny_consumer, ".claude", "routing-guard-ledger.jsonl")) or ""
+        check("guard-agent-no-script-no-ledger-row", "tu-agent-real" not in ledger_before,
+              "ledger tail=%r" % (ledger_before[-200:],))
+
+        # --- guard (B1): a non-dict tool_input must fall open, never raise an uncaught
+        # exception (rc != 1, no traceback) ------------------------------------------
+        rc, decision, reason, _adv = run_guard(None, deny_consumer, tool_name="Workflow",
+                                               tool_use_id="tu-non-dict-input",
+                                               raw_tool_input="not-an-object")
+        check("guard-non-dict-tool-input-falls-open", rc == 0 and decision == "allow",
+              "rc=%d decision=%s" % (rc, decision))
+        error_log_nd = read(os.path.join(deny_consumer, ".claude", "routing-guard-errors.log")) or ""
+        check("guard-non-dict-tool-input-error-logged", "guard error" in error_log_nd,
+              "error_log tail=%r" % (error_log_nd[-200:],))
 
         # --- guard: malformed payload fails open from the CLAUDE_PROJECT_DIR fallback --
         rc, decision, reason, adv = run_guard("not json {{{", deny_consumer, malformed=True,

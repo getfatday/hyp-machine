@@ -10,8 +10,13 @@ and denies or advises naming each finding's script, line and class.
 
 Deny is conveyed the way every other guard in this plugin conveys it --
 `hookSpecificOutput.permissionDecision: deny` on stdout, exit 0 (write-once-guard.py,
-preflight-gate.py) -- never a bare exit code. Advise prints one line per finding to
-stdout and exits 0, same as license-join-hook.py's advisory contract.
+preflight-gate.py) -- never a bare exit code. Advise prints one JSON object carrying a
+top-level `systemMessage` (the field the plugin's SessionStart announce already uses to
+reach the person) plus `hookSpecificOutput.permissionDecision: allow` with the same text
+as `permissionDecisionReason`, and exits 0. Plain stdout text (license-join-hook.py's
+convention) is written to the debug log only on a PreToolUse hook and never reaches the
+transcript or the model, which made every advise-mode finding here silently unobservable
+until fixed.
 
 Fail-open is reserved for payload- or IO-level errors (a missing scriptPath file, a
 malformed payload, a missing or unreadable table) -- never for a parse exception over
@@ -181,8 +186,24 @@ def _deny(reason):
 
 
 def _advise(lines):
-    for line in lines:
-        print("(advisory) " + line)
+    """B3: an advise-mode finding must actually reach someone. Plain stdout on a
+    PreToolUse hook is written to the debug log only (never the transcript, never the
+    model), so under the shipped default `routing.enforce: advise` no finding was ever
+    observable -- print one JSON object instead: a top-level `systemMessage` (the field
+    the plugin's SessionStart announce already uses) and `hookSpecificOutput` with
+    `permissionDecision: allow` and the same text as `permissionDecisionReason`, so a
+    human and a machine reader both see it."""
+    if not lines:
+        return 0
+    joined = "\n".join(lines)
+    print(json.dumps({
+        "systemMessage": joined,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": joined,
+        },
+    }))
     return 0
 
 
@@ -216,6 +237,22 @@ def main():
         fallback_root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
         return _fail_open(fallback_root, tool_use_id, "payload error: %s" % (e,))
 
+    # B1: everything past this point still has to hit the module docstring's
+    # contract -- "every exception path here writes a durable record and still
+    # exits 0" -- even a `tool_input` that is not an object or a `script` that is
+    # not a string (both shapes a caller can send without the JSON itself being
+    # malformed). One outer try/except around the rest of the check is simpler and
+    # safer than auditing every `.get`/`.encode` call site for a defensive type
+    # check, and it still gives a durable error-log line and guard-error row
+    # instead of the uncaught traceback this used to raise.
+    try:
+        return _run_checks(root, tool_use_id, tool_name, tool_input)
+    except Exception as e:
+        write_mark(root, tool_use_id, "finished")
+        return _fail_open(root, tool_use_id, "guard error: %s" % (e,))
+
+
+def _run_checks(root, tool_use_id, tool_name, tool_input):
     write_mark(root, tool_use_id, "started")
 
     matcher = "Agent" if tool_name == "Agent" else "Workflow"
@@ -230,6 +267,16 @@ def main():
     script_text = tool_input.get("script")
     script_path = tool_input.get("scriptPath")
     script_label = script_path or "<inline>"
+
+    if matcher == "Agent" and script_text is None and script_path is None:
+        # B2: a real Agent-tool payload (prompt/description/subagent_type, ...)
+        # never carries a script at all -- that is not an IO error, it is simply
+        # nothing for this scanner to scan. Admit silently rather than falling into
+        # the IO-error fail-open path below, which used to turn every ordinary
+        # Agent call into a false `guard-error` ledger row and error-log line.
+        write_mark(root, tool_use_id, "finished")
+        return 0
+
     try:
         if script_text is None and script_path:
             with open(script_path) as f:
