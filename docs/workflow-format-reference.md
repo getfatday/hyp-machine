@@ -20,12 +20,16 @@ beginning with a PURE-LITERAL meta export (no variables, calls, spreads, interpo
 
 - agent(prompt, opts?) -> Promise<any>. Spawns one subagent. Without schema returns final
   text; with opts.schema (JSON Schema) the return is the validated object (retry on
-  mismatch). opts: label (display), phase (progress group — use inside pipeline/parallel to
-  avoid racing the global phase()), model ('sonnet'|'opus'|'haiku'|... — OMIT to inherit;
-  only set when a tier clearly fits), effort ('low'|'medium'|'high'|'xhigh'|'max' — 'low'
-  for mechanical stages), isolation: 'worktree' (EXPENSIVE, only for parallel file
-  mutation), agentType (custom agent from the registry). Returns null if skipped/dead —
-  filter with .filter(Boolean).
+  mismatch). opts: label (display — name the role, e.g. 'build:x'; the head before the
+  ':' is the routing table's lookup key), phase (progress group — use inside
+  pipeline/parallel to avoid racing the global phase()), model ('sonnet'|'opus'|'haiku'|...
+  — name the role in `label` and let model and effort come from the repository's routing
+  table, rules/routing-default.json merged with .claude/routing.json; see
+  docs/model-routing.md — a PreToolUse guard on this tool checks every call against that
+  table and denies one that omits or misroutes model/effort), effort
+  ('low'|'medium'|'high'|'xhigh'|'max' — 'low' for mechanical stages), isolation:
+  'worktree' (EXPENSIVE, only for parallel file mutation), agentType (custom agent from
+  the registry). Returns null if skipped/dead — filter with .filter(Boolean).
 - parallel([thunks]) — concurrency with a BARRIER; a throwing thunk resolves null, never
   rejects. Use ONLY when stage N needs ALL of stage N-1.
 - pipeline(items, stage1, stage2, ...) — per-item chains, NO barrier between stages; the
