@@ -1,0 +1,39 @@
+{
+  "schema": "routing/v1",
+  "classes": {
+    "mechanical": {"model": "haiku", "effort": "low", "basis": "prior",
+      "reason": "compiler literal at compile-model-workflow.py:909", "evidence": "experiments/runs/DESIGN-model-routing/DESIGN.md#4.1"},
+    "execute": {"model": "sonnet", "effort": "high", "basis": "prior",
+      "reason": "maintainer directive raw capture lines 16-20", "evidence": "research/raw/2026-09-13-model-routing-hypothesis-directive.md"},
+    "think": {"model": "fable", "effort": "high", "basis": "prior",
+      "reason": "platform default effort for fable is high", "evidence": "experiments/runs/DESIGN-model-routing/DESIGN.md#4.1"},
+    "adversarial": {"model": "fable", "effort": "high", "basis": "prior",
+      "reason": "platform default effort for fable is high", "evidence": "experiments/runs/DESIGN-model-routing/DESIGN.md#4.1"},
+    "unmodeled": {"model": "sonnet", "effort": "high", "basis": "prior",
+      "reason": "execute tier, explicit, used only under advise", "evidence": "experiments/runs/DESIGN-model-routing/DESIGN.md#4.9"}
+  },
+  "roles": {
+    "build": "execute", "fix": "execute", "harness-fix": "execute", "port": "execute",
+    "land": "execute", "sync": "execute", "migrate": "execute", "apply": "execute",
+    "publish": "execute", "ship": "execute", "render": "execute", "author": "execute",
+    "draft": "execute",
+    "census": "mechanical", "recon": "mechanical", "record": "mechanical", "state": "mechanical",
+    "settle": "mechanical", "seal": "mechanical", "look": "mechanical", "executor": "mechanical",
+    "grade": "mechanical", "extract": "mechanical", "corpus": "mechanical", "sweep": "mechanical",
+    "close": "mechanical", "run": "mechanical", "amend": "mechanical", "legs": "mechanical",
+    "gate": "mechanical", "grader": "mechanical", "reader": "mechanical",
+    "design": "think", "synthesize": "think", "research": "think", "survey": "think",
+    "diagnose": "think", "rule": "think", "judge": "think", "reconcile": "think",
+    "refute": "adversarial", "verify": "adversarial", "critique": "adversarial",
+    "critic": "adversarial", "review": "adversarial", "cold": "adversarial"
+  },
+  "grades_edges": {
+    "refute": ["build", "fix", "port", "land"],
+    "verify": ["build", "fix", "port", "land"],
+    "critique": ["build", "fix", "port", "land"],
+    "review": ["build", "fix", "port", "land"]
+  },
+  "frontier": ["fable", "opus"],
+  "frontier_on_execute_requires": ["reason", "evidence"],
+  "prices": "rules/model-prices.json"
+}
