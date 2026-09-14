@@ -56,10 +56,15 @@ checkout and two linked worktrees, one removed after its pointer is written:
                                              way regardless of the outbox rule
   pointer-with-no-root-field-drains-as-before  a pointer carrying no `root`/`common_dir` (the pre-outbox
                                              shape) lands into the drain target exactly as before
-  concurrent-drains-carry-outbox-exactly-once  two drains for the same live checkout launched against
-                                             the same outbox at once (pre-mortem (ii), never exercised
-                                             by the lane) land the carried row exactly once, and the
-                                             loser's outbox rename fails closed, not crashed
+  concurrent-drains-carry-outbox-exactly-once  two DIFFERENT live checkouts of one repository (main
+                                             and a linked worktree) draining a 400-row outbox at once
+                                             (pre-mortem (ii), ship fix round 1 B1: claim the outbox by
+                                             rename BEFORE reading it, not after) land every row in
+                                             exactly one of the two ledgers, never both, and the loser
+                                             finds no outbox file rather than re-carrying it
+  malformed-root-quarantines-not-outbox     (ship fix round 1 A2) a pointer with `root: null` quarantines
+                                             as a malformed pointer instead of entering the outbox path
+                                             under a meaningless key
 
 Usage: python3 scripts/selftest-om-worker.py        exit 0 = all PASS, 1 = any FAIL
 Standard library only, Python 3.9; pyyaml is needed by model-lint.py for the lint checks.
@@ -867,6 +872,11 @@ def _main():
     ob_pointer("wt_b", "sess-wt-b", ob_wt_b, ob_common_dir)
     ob_pointer("plain", "sess-plain", ob_plain, "/bogus/common-dir")
     ob_pointer("legacy", "sess-legacy", None)   # no root/common_dir at all -- back-compat shape
+    # A2 (ship fix round 1): a malformed pointer carrying an explicit `root: null` (present, not
+    # merely absent) must quarantine, not enter the outbox path keyed off e.g. str(None).
+    write(os.path.join(ob_inbox, "null-root.json"),
+          json.dumps({"session_id": "sess-null-root", "transcript_path": transcripts[0]["path"],
+                     "root": None, "common_dir": ob_common_dir}))
     git(ob_root, "worktree", "remove", "--force", ob_wt_a)
 
     rc_ob1, out_ob1, err_ob1 = worker(ob_wt_b, "drain", "--inbox", ob_state)
@@ -878,7 +888,7 @@ def _main():
     ob_quarantine_reasons = {r.get("reason") for r in ob_main_rows_after1 + ob_wtb_rows if r.get("kind") == "quarantine"}
     ob_wtb_session_rows = [r for r in ob_wtb_rows if r.get("kind") == "session-observed"]
     check("outbox-landing-for-missing-root",
-          res_ob1.get("outbox") == 1 and res_ob1.get("quarantined") == 1
+          res_ob1.get("outbox") == 1 and res_ob1.get("quarantined") == 2
           and len(ob_outbox_rows) == 1 and ob_outbox_rows[0].get("session") == "sess-wt-a"
           and ob_outbox_rows[0].get("landed_in") == "outbox" and ob_outbox_rows[0].get("origin_root_key")
           # wt_b's ledger gets its own pointer's row plus the back-compat "legacy" pointer's row
@@ -888,6 +898,10 @@ def _main():
           and all(r.get("session") != "sess-wt-a" for r in ob_main_rows_after1)
           and "NotAGitCheckout" in ob_quarantine_reasons,
           (res_ob1, ob_outbox_rows, ob_wtb_rows, ob_quarantine_reasons))
+    check("malformed-root-quarantines-not-outbox",
+          all(r.get("session") != "sess-null-root" for r in ob_outbox_rows + ob_main_rows_after1 + ob_wtb_rows
+              if r.get("kind") == "session-observed"),
+          ob_outbox_rows)
     check("pointer-with-no-root-field-drains-as-before",
           any(r.get("session") == "sess-legacy" and r.get("landed_in") == "root" for r in ob_main_rows_after1 + ob_wtb_rows),
           ob_main_rows_after1 + ob_wtb_rows)
@@ -923,8 +937,10 @@ def _main():
     check("outbox-rows-landed-in-allowlist", ob_all_landed_in <= {"root", "outbox", "carried"} and ob_all_landed_in,
           ob_all_landed_in)
 
-    # 27. pre-mortem (ii): two drains for the same live checkout, racing the same outbox, land the
-    # carried row exactly once -- a fresh outbox is planted so this case is independent of #24 above.
+    # 27. pre-mortem (ii), ship fix round 1 B1: two DIFFERENT live checkouts of one repository
+    # (main and a linked worktree) draining a 400-row outbox AT ONCE must land every row in exactly
+    # one of the two ledgers, never both -- the defect this replaces let both racers read the
+    # outbox before either renamed it away, so both carried the full set into their OWN ledgers.
     cc_state = os.path.join(TMP, "outbox-concurrent", "state")
     cc_root = os.path.join(TMP, "outbox-concurrent", "main")
     os.makedirs(cc_root)
@@ -932,6 +948,8 @@ def _main():
     write(os.path.join(cc_root, "f.txt"), "seed\n")
     git(cc_root, "add", "-A")
     git(cc_root, "commit", "-q", "-m", "seed")
+    cc_wt_b = os.path.join(TMP, "outbox-concurrent", "wt_b")
+    git(cc_root, "worktree", "add", "-q", cc_wt_b, "-b", "wt_b")
     cc_common_dir = git(cc_root, "rev-parse", "--git-common-dir").strip()
     if not os.path.isabs(cc_common_dir):
         cc_common_dir = os.path.abspath(os.path.join(cc_root, cc_common_dir))
@@ -939,20 +957,44 @@ def _main():
     cc_inbox = os.path.join(cc_state, "inbox")
     os.makedirs(cc_inbox, exist_ok=True)
     cc_dead_root = os.path.join(TMP, "outbox-concurrent", "gone")
-    write(os.path.join(cc_inbox, "dead.json"), json.dumps({"session_id": "sess-cc-dead", "transcript_path": transcripts[1]["path"],
-                                                           "root": cc_dead_root, "common_dir": cc_common_dir}))
-    rc_seed, out_seed, _ = worker(cc_root, "drain", "--inbox", cc_state)
-    assert json.loads(out_seed.split("rc 0 ", 1)[1]).get("outbox") == 1, out_seed
-    procs = [subprocess.Popen([PY, "-B", WORKER, "drain", "--root", cc_root, "--inbox", cc_state], env=env(),
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
+    CC_N = 400
+    for i in range(CC_N):
+        write(os.path.join(cc_inbox, "dead-%03d.json" % i),
+              json.dumps({"session_id": "sess-cc-dead-%03d" % i,
+                         "transcript_path": transcripts[i % len(transcripts)]["path"],
+                         "root": cc_dead_root, "common_dir": cc_common_dir}))
+    # seed from a PLAIN (non-git) directory, never from cc_root/cc_wt_b: a live checkout matching
+    # `cc_common_dir` would carry the outbox straight back into its own ledger on its very next
+    # drain call (n_cap=20 needs three calls for 50 pointers), contaminating the race's starting
+    # state before it begins. A non-git seed root's `target_common_dir` is None, so its own
+    # `_carry_outbox` no-ops every call and the outbox only ever grows.
+    cc_seed_dir = os.path.join(TMP, "outbox-concurrent", "seed-dir")
+    os.makedirs(cc_seed_dir, exist_ok=True)
+    outbox_seeded, seed_guard, out_seed = 0, 0, ""
+    while outbox_seeded < CC_N and seed_guard < 30:
+        rc_seed, out_seed, err_seed = worker(cc_seed_dir, "drain", "--inbox", cc_state)
+        res_seed = json.loads(out_seed.split("rc 0 ", 1)[1]) if "rc 0 " in out_seed else {}
+        outbox_seeded += res_seed.get("outbox", 0)
+        seed_guard += 1
+    assert outbox_seeded == CC_N, (outbox_seeded, out_seed)
+    procs = [subprocess.Popen([PY, "-B", WORKER, "drain", "--root", r, "--inbox", cc_state], env=env(),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) for r in (cc_root, cc_wt_b)]
     outs = [p.communicate(timeout=60) for p in procs]
-    cc_rows = [r for r in rows_of(ledger(cc_root)) if r.get("session") == "sess-cc-dead"]
     cc_rcs = [p.returncode for p in procs]
+    cc_main_rows = [r for r in rows_of(ledger(cc_root)) if str(r.get("session", "")).startswith("sess-cc-dead-")]
+    cc_wtb_rows = [r for r in rows_of(ledger(cc_wt_b)) if str(r.get("session", "")).startswith("sess-cc-dead-")]
+    cc_main_sessions = {r.get("session") for r in cc_main_rows}
+    cc_wtb_sessions = {r.get("session") for r in cc_wtb_rows}
     check("concurrent-drains-carry-outbox-exactly-once",
-          cc_rcs == [0, 0] and len(cc_rows) == 1 and cc_rows[0].get("landed_in") == "carried"
+          cc_rcs == [0, 0]
+          and not (cc_main_sessions & cc_wtb_sessions)
+          and len(cc_main_rows) + len(cc_wtb_rows) == CC_N
+          and (len(cc_main_rows) == CC_N or len(cc_wtb_rows) == CC_N)
+          and all(r.get("landed_in") == "carried" for r in cc_main_rows + cc_wtb_rows)
           and not os.path.isfile(os.path.join(cc_state, "outbox.jsonl"))
-          and len(glob.glob(os.path.join(cc_state, "outbox.*.carried.jsonl"))) >= 1,
-          (cc_rcs, cc_rows, [o[1].decode("utf-8", "replace")[-200:] for o in outs]))
+          and not glob.glob(os.path.join(cc_state, "outbox.*.carrying.jsonl"))
+          and len(glob.glob(os.path.join(cc_state, "outbox.*.carried.jsonl"))) == 1,
+          (cc_rcs, len(cc_main_rows), len(cc_wtb_rows), [o[1].decode("utf-8", "replace")[-300:] for o in outs]))
 
     # 28. zero model calls
     spawns = read_bytes(SHIM_LOG).decode("utf-8", "replace").splitlines()

@@ -122,7 +122,12 @@ From the release that carries the outbox carry-forward (source lab H-DRAFT-a4a14
 2026-09-14), `om-worker.py drain` stops losing the row of a session whose worktree was removed before the worker ran:
 a pointer whose own `root` no longer exists lands its row in a per-repository outbox instead of the pointer being
 quarantined, and the next `drain` of any live checkout of that same repository carries it in, `landed_in` reading
-`root`, `outbox` or `carried`. After upgrading there is nothing to do: no pointer carries `root`/`common_dir` yet (the
-startup wake lane, H-DRAFT-10383178, writes them), so every drain still behaves exactly as before this release. See
-`docs/passive-feedback.md`, "The outbox and carry-forward". Undo: revert the release's merge commit; rows already
-written are plain JSON lines, distinguishable only by their `landed_in` value.
+`root`, `outbox` or `carried`. After upgrading: no pointer carries `root`/`common_dir` yet (the startup wake lane,
+H-DRAFT-10383178, writes them), so every pointer that IS found still lands exactly as before -- BUT for any `root`
+that is itself a live git checkout, `drain` with no `--inbox` override now reads a DIFFERENT default inbox directory
+than the release before this one (`<state>/om/<repo-key>/inbox/`, keyed by `root`'s own live `common_dir`, not
+`<state>/om/<sha256(realpath root)[:16]>/inbox/`). If you hand-write pointer files straight into that old default
+path without going through `--inbox`, move them under the new path or pass `--inbox` naming the old directory
+explicitly -- everything scripted through `om-worker.py drain --root .` with no pointers of your own is unaffected.
+See `docs/passive-feedback.md`, "The outbox and carry-forward" and "Running it by hand". Undo: revert the release's
+merge commit; rows already written are plain JSON lines, distinguishable only by their `landed_in` value.

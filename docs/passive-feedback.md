@@ -93,12 +93,22 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-worker.py" latest --root .
 
 `drain` reads pointer files `<name>.json` from an inbox, each `{"session_id": ...,
 "transcript_path": ..., "root": ..., "common_dir": ...}` -- `root` and `common_dir` are optional
-(no lane writes them yet; see "The outbox and carry-forward" below) and their absence drains
-exactly as the first release of this worker did: straight into the `drain` call's own `--root`
-target. When present, the inbox itself is shared by every checkout of the repository named by
-`common_dir` (`<state>/om/<repo-key>/inbox/`, `repo-key` derived from `common_dir`; state root
-`~/.hyp-state`, or `$HYP_STATE_DIR`; `--inbox DIR` overrides which directory holds `inbox/`, never
-whether the carry step below runs). Each pointer is renamed into `processing/` before it is parsed,
+(no lane writes them yet; see "The outbox and carry-forward" below). A pointer WITHOUT a `root`
+key drains exactly as the first release of this worker did: straight into the `drain` call's own
+`--root` target (the branch is `"root" not in pointer`, not "both fields absent" -- a pointer
+with `root` but no `common_dir` instead quarantines as `NotAGitCheckout`, and one with
+`common_dir` but no `root` takes this same back-compat path).
+
+Which INBOX DIRECTORY a drain reads from by default changed in this release, independent of any
+one pointer's shape: for a `root` that is itself a live git checkout, `drain` with no `--inbox`
+override now always reads `<state>/om/<repo-key>/inbox/` (`repo-key` derived from `root`'s own
+live `common_dir`; state root `~/.hyp-state`, or `$HYP_STATE_DIR`) -- NOT the previous release's
+`<state>/om/<sha256(realpath root)[:16]>/inbox/`, which is still used, unchanged, only as the
+fallback for a `root` that is not (or is no longer) a git checkout. A pointer hand-written
+straight into that old path is no longer found by a default-location drain; move it under the
+new path, or pass `--inbox` naming the old directory explicitly (`--inbox DIR` overrides which
+directory holds `inbox/`, never whether the carry step below runs). Each pointer is renamed into
+`processing/` before it is parsed,
 then into `processed/` (or `quarantine/` with a `quarantine` row naming the basename and the
 exception class). Bounds per wake: at most N = 20 pointers and T = 60 s on a monotonic clock
 (checked between files); a 1 GiB free-space floor below which nothing is appended (one refusal
@@ -118,36 +128,55 @@ removed before the worker runs is lost, or that it must be written into a checko
 never worked in.
 
 For each pointer with a `root` (the checkout the session worked in) and a `common_dir` (that
-repository's `git rev-parse --git-common-dir` at pointer-write time), `drain` resolves the
-pointer's own landing root -- never just the `--root` target it was called with -- before deciding
-where the row goes:
+repository's `git rev-parse --git-common-dir` at pointer-write time, as an ABSOLUTE, realpath-
+resolved directory -- `drain` normalizes the field the same way it normalizes git's own live
+output, joining a relative value such as the bare `.git` a main checkout's own `git rev-parse`
+prints to `root` and then resolving it, before comparing), `drain` resolves the pointer's own
+landing root -- never just the `--root` target it was called with -- before deciding where the
+row goes:
 
-- **live** (`root` exists and its own `git rev-parse --git-common-dir` still matches the recorded
-  `common_dir`): the row lands in that checkout's own ledger, `landed_in: root`, exactly as a
-  pointer with no `root` field always has.
-- **missing** (`root` no longer exists -- the checkout was removed): the row lands in
-  `<state>/om/<repo-key>/outbox.jsonl` instead, `landed_in: outbox`, with `origin_root_key` naming
-  the dead root's own state key. Nothing is lost; the row waits for a live checkout of the same
-  repository.
+- **live** (`root` exists and its own `git rev-parse --git-common-dir`, normalized the same way,
+  still matches the recorded `common_dir`): the row lands in that checkout's own ledger,
+  `landed_in: root`, exactly as a pointer with no `root` field always has.
+- **missing** (`root` is a non-empty string naming a path that no longer exists -- the checkout
+  was removed): the row lands in the outbox instead, `landed_in: outbox`, with `origin_root_key`
+  naming the dead root's own state key. The outbox is keyed by the POINTER's own recorded
+  `common_dir` (`<state>/om/<repo-key>/outbox.jsonl`), not by whichever repository happens to be
+  draining -- a pointer for repository X waits under X's own key even when it is found sitting in
+  repository Y's inbox. Nothing is lost; the row waits for a live checkout of the same repository.
 - **not a checkout** (`root` exists but its live `common_dir` does not match the recorded one, or
-  resolves to nothing -- a malformed pointer, not the case above): the pointer quarantines exactly
-  as it always has, unconditionally, whether or not the outbox rule exists.
+  resolves to nothing; OR `root` is null, empty, or not a string -- a malformed pointer either
+  way, not the case above): the pointer quarantines exactly as it always has, unconditionally,
+  whether or not the outbox rule exists.
 
 At the START of every `drain` for a live checkout, before any pointer is read, every row waiting in
 that repository's outbox is carried into the checkout's own ledger: `landed_in: carried` and
 `carried_from` (the origin key) replace `landed_in: outbox` and `origin_root_key`; every other field
 is byte-identical to the outbox copy. Carries dedupe by `(session, through)`, not by exact bytes
-(a carry's bytes differ from the outbox copy by construction). The outbox is then renamed --
-never truncated -- to `outbox.<epoch>.carried.jsonl`, so a second drain for any live checkout finds
-no outbox file and carries nothing twice; the rename is the single-flight claim between two drains
-racing the same outbox (`scripts/selftest-om-worker.py` proves a concurrent pair carries exactly
-once). A repository whose `common_dir` is itself gone (the whole repository deleted) has no live
+(a carry's bytes differ from the outbox copy by construction). The whole claim step runs under an
+exclusive, non-blocking `flock` on a per-`inbox_root` lock file: only the drain that acquires it
+proceeds to claim the outbox (renamed from `outbox.jsonl` to `outbox.<epoch>.carrying.jsonl`),
+read it, and carry every row; a drain that cannot get the lock backs off immediately and carries
+nothing, rather than reading the outbox at all (`scripts/selftest-om-worker.py` proves this for
+two DIFFERENT live checkouts of one repository racing a 400-row outbox at once, not only a
+same-checkout pair). A rename claim alone, without that lock, still races: two drains starting
+close together can both pass a lockless existence check on `outbox.jsonl`, and the second one's
+crash-recovery sweep (below) then "resumes" the first one's still-in-flight claim in parallel,
+carrying the same rows a second time into a DIFFERENT ledger -- caught while porting this lane
+into the plugin, not present in the lane's own looks (its selftest never raced two DIFFERENT
+checkouts). Once every row is carried, the claimed file is renamed on to
+`outbox.<epoch>.carried.jsonl` (never truncated), so a further drain finds no outbox file and
+carries nothing twice; a claim left behind by a drain that crashed mid-carry (and so never held
+the lock at the same time as anyone else) is resumed, not stranded, the next time the lock is
+free. A repository whose `common_dir` is itself gone (the whole repository deleted) has no live
 checkout to carry into; its rows stay in the outbox with `landed_in: outbox` -- the design's
 disclosed residual, not a failure.
 
 Nothing writes `root`/`common_dir` into a pointer yet: that is the startup wake lane's job
 (`H-DRAFT-10383178`, not yet kept). Until it keeps, every pointer lacks both fields and every row
-lands `root`, exactly as before this lane.
+that IS found still lands `root`, per-pointer landing exactly as before this lane -- but which
+inbox directory it is found in follows the default-location change noted above, not "before this
+lane" (that change ships with this release regardless of the wake lane).
 
 ## What never enters a row
 
@@ -170,7 +199,7 @@ self-check must refuse; `blind`: the leak must reach the file); production never
 
 ## Regression test
 
-`python3 scripts/selftest-om-worker.py` -- 33 checks over throwaway consumers, the fixture grade
+`python3 scripts/selftest-om-worker.py` -- 34 checks over throwaway consumers, the fixture grade
 behaviours ported: parity with `observatory.tally_ratios` on planted transcripts (the
 Skill-in-catalogue branch included), lint equality with `model-lint.py`, staleness true then false,
 the six canary classes absent, every self-check net, the mutant pair, idempotence, the cursor and
@@ -178,10 +207,12 @@ latest-wins, byte identity across two trees, the N and T caps, the floor, rotati
 SIGKILL mid-drain with a clean resume, `schema: 2` tolerance, the configured path, the scaffold's
 union row, a configured path surviving a re-init with its row rendered, an absolute value falling
 back to the default in every reader, the two-worktree union merge, zero `claude` spawns, stdlib-only
-imports, and (lab `H-DRAFT-a4a14ff4-om-outbox-carry-forward`) a scratch repository with two linked
-worktrees, one removed after its pointer is written: the outbox landing, the exactly-once carry, a
-`not-a-checkout` quarantine unconditional in both cases, a pointer with no `root` field draining as
-before, and two drains racing the same outbox carrying exactly once.
+imports, and (lab `H-DRAFT-a4a14ff4-om-outbox-carry-forward`, plus ship fix round 1) a scratch
+repository with a main checkout and two linked worktrees, one removed after its pointer is
+written: the outbox landing keyed by the pointer's own `common_dir`, a malformed `root: null`
+pointer quarantining rather than entering the outbox, the exactly-once carry, a `not-a-checkout`
+quarantine unconditional in both cases, a pointer with no `root` field draining as before, and two
+DIFFERENT live checkouts racing a 400-row outbox landing every row in exactly one ledger.
 
 ## What does not ship yet, and why
 
@@ -224,15 +255,28 @@ reads it as an unread, over-counting field until a lane pins the attachment shap
 (baseline-plus-rule) ported the same way: `repo_key`/`path_key` hash with the plugin's existing
 crc32+adler32 state-directory key (`hooks/scripts/session-start-budget.py`, kept
 `H-DRAFT-a10fd3f7`) rather than the fixture's own sha256[:16] -- the lane's spec names "the shipped
-state key" and its `VERIFY.md` flagged the fixture's literal bytes as unpinned to it; the
-concurrent-drain case its `VERIFY.md` carried as untested (pre-mortem (ii)) is now a selftest case,
-with the outbox rename wrapped in a caught `OSError` so the losing side of a race fails closed
-instead of raising. One bug found while porting, fixed and not present in the lane's own looks (its
-fixture scratch root was always `/private/tmp`, never symlinked): `resolve_common_dir` now
-`realpath`s its result, because `git`'s own worktree admin file already stores a canonicalized
-absolute path and a checkout under a symlinked mount (macOS `/tmp`, `/var`) would otherwise resolve
-to a different string for its main checkout than for one of its own linked worktrees, quarantining
-a live worktree as `not-a-checkout`.
+state key" and its `VERIFY.md` flagged the fixture's literal bytes as unpinned to it. One bug found
+while porting, fixed and not present in the lane's own looks (its fixture scratch root was always
+`/private/tmp`, never symlinked): `resolve_common_dir` now `realpath`s its result, because `git`'s
+own worktree admin file already stores a canonicalized absolute path and a checkout under a
+symlinked mount (macOS `/tmp`, `/var`) would otherwise resolve to a different string for its main
+checkout than for one of its own linked worktrees, quarantining a live worktree as
+`not-a-checkout`.
+
+Ship fix round 1 (cold refuter, applied before release): the concurrent-drain case its `VERIFY.md`
+carried as untested (pre-mortem (ii)) is now a selftest case racing two DIFFERENT live checkouts
+against a 400-row outbox, not only a same-checkout pair -- it caught a real defect the lane's own
+looks never exercised (a rename-only claim, with no lock, let both racers carry the full outbox
+into two different ledgers), fixed by moving the whole claim+carry step under a per-`inbox_root`
+`flock`. Three more findings from that same round: `common_dir` on a pointer is now normalized
+(joined to `root`, then realpath'd) the same way `resolve_common_dir` normalizes git's own live
+output, so a pointer written per the documented contract for a main checkout, or reached through a
+symlinked mount, no longer false-quarantines; the default inbox location for any live git checkout
+changed in this release even for a pointer with neither `root` nor `common_dir` (documented above,
+not silently claimed "exactly as before"); and the outbox is now keyed by the POINTER's own
+recorded `common_dir` rather than by whichever repository happens to be draining. A malformed
+pointer (`root: null`) now quarantines instead of entering the outbox under a meaningless
+key.
 
 Undo: revert the release's merge commit. Rows already written are plain JSON lines in your ledger;
 the attribute row is plain text in your `.gitattributes`.
