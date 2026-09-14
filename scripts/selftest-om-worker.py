@@ -65,6 +65,13 @@ checkout and two linked worktrees, one removed after its pointer is written:
   malformed-root-quarantines-not-outbox     (ship fix round 1 A2) a pointer with `root: null` quarantines
                                              as a malformed pointer instead of entering the outbox path
                                              under a meaningless key
+  outbox-write-blocks-behind-concurrent-carry-no-row-lost  (ship fix round 2 B1) a write into the
+                                             outbox for a dead-worktree pointer, started while a
+                                             carry is confirmed mid-body (deterministic, via a
+                                             monkeypatched delay), must block on the same
+                                             `.outbox-carry.lock` the carrier holds rather than
+                                             race straight through -- proven on the wall clock --
+                                             and land safely once the carry finishes
 
 Usage: python3 scripts/selftest-om-worker.py        exit 0 = all PASS, 1 = any FAIL
 Standard library only, Python 3.9; pyyaml is needed by model-lint.py for the lint checks.
@@ -82,6 +89,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 import contextlib
 
 PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -995,6 +1003,87 @@ def _main():
           and not glob.glob(os.path.join(cc_state, "outbox.*.carrying.jsonl"))
           and len(glob.glob(os.path.join(cc_state, "outbox.*.carried.jsonl"))) == 1,
           (cc_rcs, len(cc_main_rows), len(cc_wtb_rows), [o[1].decode("utf-8", "replace")[-300:] for o in outs]))
+
+    # 28. B1 fix (ship fix round 2, cold refuter): the missing-root outbox write and
+    # `_carry_outbox`'s claim must be mutually exclusive on `.outbox-carry.lock` for `outbox_dir`.
+    # Deterministic reproduction, through the REAL `drain()` entrypoint (not a direct call to the
+    # locked helper, so this also proves the missing-root branch actually wires to it): a
+    # carrier's `read_rows` call is monkeypatched (restored after) to signal it has reached the
+    # claimed file and sleep 0.4s before actually reading -- a concurrently-started writer thread
+    # wakes on that signal (so it starts genuinely mid-carry, after the claim rename already
+    # happened) and calls `om.drain()` on a pending dead-root pointer, landing that row through
+    # `drain()`'s own missing-root branch. Before this fix that branch's write (bare
+    # `append_to_path`) never touched the carry lock and would proceed immediately; with the fix
+    # it must block on `.outbox-carry.lock` for the remainder of the carrier's critical section --
+    # provable on the wall clock, not by luck -- and land safely afterward, carried by the very
+    # next drain.
+    b1_root = os.path.join(TMP, "outbox-mutex", "main")
+    os.makedirs(b1_root)
+    git(b1_root, "init", "-q", "-b", "main")
+    write(os.path.join(b1_root, "f.txt"), "seed\n")
+    git(b1_root, "add", "-A")
+    git(b1_root, "commit", "-q", "-m", "seed")
+    b1_common_dir = git(b1_root, "rev-parse", "--git-common-dir").strip()
+    if not os.path.isabs(b1_common_dir):
+        b1_common_dir = os.path.abspath(os.path.join(b1_root, b1_common_dir))
+    b1_common_dir = os.path.realpath(b1_common_dir)
+    b1_dead_root = os.path.join(TMP, "outbox-mutex", "gone")
+    prior_hyp_state_dir = os.environ.get("HYP_STATE_DIR")
+    os.environ["HYP_STATE_DIR"] = os.path.join(TMP, "state")
+    real_read_rows = om.read_rows
+    writer_result = {}
+    wt = None
+    try:
+        b1_outbox_dir = om.state_root_for_repo(b1_common_dir)
+        b1_outbox_path = os.path.join(b1_outbox_dir, "outbox.jsonl")
+        existing_row = {"kind": "session-observed", "schema": om.SCHEMA, "session": "sess-b1-existing",
+                        "through": "2026-01-01T00:00:00Z", "landed_in": "outbox", "origin_root_key": "k"}
+        om.append_to_path(b1_outbox_path, existing_row)
+        b1_inbox = os.path.join(b1_outbox_dir, "inbox")
+        os.makedirs(b1_inbox, exist_ok=True)
+        write(os.path.join(b1_inbox, "pending.json"),
+              json.dumps({"session_id": "sess-b1-late", "transcript_path": transcripts[0]["path"],
+                         "root": b1_dead_root, "common_dir": b1_common_dir}))
+
+        carrier_reading = threading.Event()
+
+        def slow_read_rows(path):
+            carrier_reading.set()
+            time.sleep(0.4)
+            return real_read_rows(path)
+
+        om.read_rows = slow_read_rows
+
+        def writer_job():
+            if not carrier_reading.wait(2.0):
+                writer_result["timed_out"] = True
+                return
+            writer_result["drain"] = om.drain(b1_root, SCRIPTS, None, n_cap=20, t_cap=60.0)
+            writer_result["t"] = time.monotonic()
+
+        wt = threading.Thread(target=writer_job)
+        wt.start()
+        t_carrier_start = time.monotonic()
+        b1_carried = om._carry_outbox(b1_root, b1_outbox_dir, b1_common_dir)
+        t_carrier_end = time.monotonic()
+        wt.join(timeout=5.0)
+    finally:
+        om.read_rows = real_read_rows
+        if prior_hyp_state_dir is None:
+            os.environ.pop("HYP_STATE_DIR", None)
+        else:
+            os.environ["HYP_STATE_DIR"] = prior_hyp_state_dir
+    b1_writer_blocked = writer_result.get("t", 0.0) >= t_carrier_end - 0.05
+    rc_b1, out_b1, err_b1 = worker(b1_root, "drain")
+    res_b1 = json.loads(out_b1.split("rc 0 ", 1)[1]) if "rc 0 " in out_b1 else {}
+    b1_ledger_rows = rows_of(ledger(b1_root))
+    b1_sessions = {r.get("session") for r in b1_ledger_rows if r.get("kind") == "session-observed"}
+    check("outbox-write-blocks-behind-concurrent-carry-no-row-lost",
+          b1_carried == 1 and wt is not None and not wt.is_alive()
+          and writer_result.get("drain", {}).get("outbox") == 1 and b1_writer_blocked
+          and {"sess-b1-existing", "sess-b1-late"} <= b1_sessions,
+          (b1_carried, b1_writer_blocked, writer_result.get("drain"), t_carrier_end - t_carrier_start,
+           writer_result.get("t", 0.0) - t_carrier_end, sorted(b1_sessions), res_b1, err_b1[-300:]))
 
     # 28. zero model calls
     spawns = read_bytes(SHIM_LOG).decode("utf-8", "replace").splitlines()

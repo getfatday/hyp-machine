@@ -723,6 +723,35 @@ def _sweep_carrying(inbox_root):
     return leftover[0] if leftover else None
 
 
+def _append_to_outbox_locked(outbox_dir, outbox_path, row):
+    """Append one dead-worktree row to `outbox_path` while holding the SAME per-`outbox_dir`
+    lock `_carry_outbox` takes (`.outbox-carry.lock`) -- blocking, not the carrier's non-blocking
+    attempt, because a writer has a row it must land somewhere and cannot just back off.
+
+    B1 fix (ship fix round 2, cold refuter): without this lock, a writer's `append_to_path` could
+    open a descriptor on `outbox.jsonl` at the same instant a concurrent drain's `_carry_outbox`
+    renamed that same path away to `outbox.<epoch>.carrying.jsonl` -- `append_to_path`'s own
+    `flock` protects its own descriptor, not the PATH getting renamed out from under it between
+    open and append. The row then either lands inside a `.carrying.jsonl` the carrier already
+    read (snapshot taken before the late write, so the row is never carried) or, if the carrier's
+    rename lands first, into a freshly re-created `outbox.jsonl` that is fine -- but nothing
+    without this lock guarantees which happens. Reproduced deterministically: open the outbox,
+    run `_carry_outbox`, then write -- the next drain carried 0. Holding this lock around the
+    append means a carry in progress for `outbox_dir` finishes its claim-rename before this write
+    can start, so the row always lands in a fresh `outbox.jsonl` the next drain will find."""
+    lock_path = os.path.join(outbox_dir, ".outbox-carry.lock")
+    os.makedirs(outbox_dir, exist_ok=True)
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            append_to_path(outbox_path, row)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+
+
 def _carry_outbox(root, inbox_root, target_common_dir):
     """Carry every row waiting in `<inbox_root>`'s outbox into `root`'s own ledger, once each.
     No-ops when there is no outbox (and no leftover claim, see below), or when `root`'s own git
@@ -796,9 +825,15 @@ def _carry_outbox_locked(root, inbox_root):
             if result == "written":
                 carried += 1
             seen.add(key)
-    final_dest = claimed_path[:-len(".carrying.jsonl")] + ".carried.jsonl"
+    # A4 (ship fix round 2, advisory): bump the epoch on a collision, exactly as the claim step
+    # above does, rather than appending another ".carried.jsonl" suffix outside the documented
+    # `outbox.<epoch>.carried.jsonl` pattern.
+    final_dir = os.path.dirname(claimed_path)
+    final_epoch = int(time.time())
+    final_dest = os.path.join(final_dir, "outbox.%d.carried.jsonl" % final_epoch)
     while os.path.exists(final_dest):
-        final_dest += ".carried.jsonl"
+        final_epoch += 1
+        final_dest = os.path.join(final_dir, "outbox.%d.carried.jsonl" % final_epoch)
     try:
         os.rename(claimed_path, final_dest)
     except OSError:
@@ -879,7 +914,7 @@ def drain(root, plugin_scripts, inbox_override=None, n_cap=20, t_cap=60.0):
                 pointer_common_dir = _normalize_pointer_common_dir(pointer.get("common_dir"), root_p)
                 outbox_dir = inbox_root if (inbox_override or not pointer_common_dir) else state_root_for_repo(pointer_common_dir)
                 outbox_path = os.path.join(outbox_dir, "outbox.jsonl")
-                append_to_path(outbox_path, row)
+                _append_to_outbox_locked(outbox_dir, outbox_path, row)
                 written["landed"] += 1
                 # a distinct counter from "landed" (which also counts root landings) so a caller
                 # can tell an outbox landing apart from a root landing without re-reading rows.

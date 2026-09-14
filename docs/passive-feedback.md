@@ -154,17 +154,23 @@ that repository's outbox is carried into the checkout's own ledger: `landed_in: 
 `carried_from` (the origin key) replace `landed_in: outbox` and `origin_root_key`; every other field
 is byte-identical to the outbox copy. Carries dedupe by `(session, through)`, not by exact bytes
 (a carry's bytes differ from the outbox copy by construction). The whole claim step runs under an
-exclusive, non-blocking `flock` on a per-`inbox_root` lock file: only the drain that acquires it
-proceeds to claim the outbox (renamed from `outbox.jsonl` to `outbox.<epoch>.carrying.jsonl`),
-read it, and carry every row; a drain that cannot get the lock backs off immediately and carries
-nothing, rather than reading the outbox at all (`scripts/selftest-om-worker.py` proves this for
-two DIFFERENT live checkouts of one repository racing a 400-row outbox at once, not only a
-same-checkout pair). A rename claim alone, without that lock, still races: two drains starting
-close together can both pass a lockless existence check on `outbox.jsonl`, and the second one's
-crash-recovery sweep (below) then "resumes" the first one's still-in-flight claim in parallel,
-carrying the same rows a second time into a DIFFERENT ledger -- caught while porting this lane
-into the plugin, not present in the lane's own looks (its selftest never raced two DIFFERENT
-checkouts). Once every row is carried, the claimed file is renamed on to
+exclusive, non-blocking `flock` on `<inbox_root>/.outbox-carry.lock`, a file every consumer's
+state directory now gains beside `outbox.jsonl`: only the drain that acquires it proceeds to claim
+the outbox (renamed from `outbox.jsonl` to `outbox.<epoch>.carrying.jsonl`), read it, and carry
+every row; a drain that cannot get the lock backs off immediately and carries nothing, rather than
+reading the outbox at all (`scripts/selftest-om-worker.py` proves this for two DIFFERENT live
+checkouts of one repository racing a 400-row outbox at once, not only a same-checkout pair). A
+rename claim alone, without that lock, still races: two drains starting close together can both
+pass a lockless existence check on `outbox.jsonl`, and the second one's crash-recovery sweep
+(below) then "resumes" the first one's still-in-flight claim in parallel, carrying the same rows a
+second time into a DIFFERENT ledger -- caught while porting this lane into the plugin, not present
+in the lane's own looks (its selftest never raced two DIFFERENT checkouts). The missing-root
+write path (the row for a dead worktree landing into the outbox in the first place) takes the
+SAME lock, blocking, before its append: without that, a write already open on `outbox.jsonl` when
+a concurrent carry renames it away can land inside the very `.carrying.jsonl` the carrier is
+already reading, and be finalized to `.carried.jsonl` -- a file no later drain ever rereads --
+before the write completes, losing the row (ship fix round 2, `scripts/selftest-om-worker.py`
+races this deterministically). Once every row is carried, the claimed file is renamed on to
 `outbox.<epoch>.carried.jsonl` (never truncated), so a further drain finds no outbox file and
 carries nothing twice; a claim left behind by a drain that crashed mid-carry (and so never held
 the lock at the same time as anyone else) is resumed, not stranded, the next time the lock is
@@ -199,7 +205,7 @@ self-check must refuse; `blind`: the leak must reach the file); production never
 
 ## Regression test
 
-`python3 scripts/selftest-om-worker.py` -- 34 checks over throwaway consumers, the fixture grade
+`python3 scripts/selftest-om-worker.py` -- 35 checks over throwaway consumers, the fixture grade
 behaviours ported: parity with `observatory.tally_ratios` on planted transcripts (the
 Skill-in-catalogue branch included), lint equality with `model-lint.py`, staleness true then false,
 the six canary classes absent, every self-check net, the mutant pair, idempotence, the cursor and
