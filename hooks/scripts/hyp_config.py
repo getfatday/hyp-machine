@@ -258,6 +258,23 @@ def rel_to_root(fpath, root):
     return rel
 
 
+def safe_rel_path(value, default):
+    """A consumer-declared repository-relative file path, or `default` when the value is not a
+    non-empty string, is absolute, or leaves the repository through a `..` segment. THE one rule
+    for every reader of a `.claude/hyp.json` path override -- scripts/om-worker.py (its own inline
+    copy, stdlib-only bytes), init-scaffold.py's union row and merge-attrs-check.py's expected
+    rows -- so a value the worker refuses is never rendered into .gitattributes as if the worker
+    used it (om-worker ship fix round 1, refuter A1: "/abs/fb.jsonl" rendered `abs/fb.jsonl
+    merge=union` while the rows landed at the default path). Never raises."""
+    if not isinstance(value, str) or not value.strip():
+        return default
+    raw = value.strip()
+    rel = raw.strip("/").replace(os.sep, "/")
+    if not rel or os.path.isabs(raw) or ".." in rel.split("/"):
+        return default
+    return rel
+
+
 def in_dir(rel, directory):
     """True when repo-relative path `rel` sits at or under `directory`."""
     directory = directory.strip("/")

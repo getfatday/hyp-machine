@@ -10,12 +10,15 @@ process cwd's checkout, a linked worktree included, then CLAUDE_PROJECT_DIR):
   1. merge shape -- `git check-attr merge -- <path>` for every path the plugin's hooks and
      writers touch (templates/gitattributes; lab H-DRAFT-b9e771b2-hook-writes-worktree):
        union   the configured ledger_file (.claude/hyp.json, default ledger/ledger.jsonl),
-               .claude/leak-meter-fires.log  -> expected `merge: union`
+               .claude/leak-meter-fires.log  -> expected `merge: union`;
+               the configured om_feedback_file (default ledger/om-feedback.jsonl, the passive
+               feedback ledger scripts/om-worker.py writes) once that file exists
        derived DASHBOARD.md, decisions.html, ledger/north-stars/*.html (existing files only)
                -> expected `merge: binary`
      Semantic, not textual: a consumer who declares the shape through a glob or a different
      token order passes. Outside a git work tree the check is skipped (nothing to resolve).
-  2. row shape -- every non-empty line of the ledger parses as exactly one JSON object and the
+  2. row shape -- every non-empty line of the ledger (and of the feedback ledger when present)
+     parses as exactly one JSON object and the
      file ends with a newline: the contract under which a union merge of two branches' appends
      is a valid ledger (a multi-line object or a missing final newline would be spliced).
 
@@ -33,23 +36,35 @@ import sys
 
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PLUGIN_ROOT, "hooks", "scripts"))
+from hyp_config import safe_rel_path  # noqa: E402  (the one rule every override reader applies)
 
 DEFAULT_LEDGER = "ledger/ledger.jsonl"
+DEFAULT_OM_FEEDBACK = "ledger/om-feedback.jsonl"
 UNION_FIXED = [".claude/leak-meter-fires.log"]
 DERIVED = ["DASHBOARD.md", "decisions.html"]
 DERIVED_GLOB_DIR = "ledger/north-stars"
 
 
-def ledger_rel(root):
+def _config_rel(root, key, default):
+    """The configured path, through hyp_config.safe_rel_path -- the rule scripts/om-worker.py and
+    init-scaffold.py apply, so an absolute or `..` value is expected at the DEFAULT path here too
+    (the path the worker actually writes), never at a mangled spelling."""
     try:
         with open(os.path.join(root, ".claude", "hyp.json"), encoding="utf-8") as fh:
             data = json.load(fh)
-        v = data.get("ledger_file") if isinstance(data, dict) else None
-        if isinstance(v, str) and v.strip():
-            return v.strip().strip("/")
+        v = data.get(key) if isinstance(data, dict) else None
+        return safe_rel_path(v, default)
     except (OSError, ValueError):
         pass
-    return DEFAULT_LEDGER
+    return default
+
+
+def ledger_rel(root):
+    return _config_rel(root, "ledger_file", DEFAULT_LEDGER)
+
+
+def om_feedback_rel(root):
+    return _config_rel(root, "om_feedback_file", DEFAULT_OM_FEEDBACK)
 
 
 def check_attr(root, paths):
@@ -76,6 +91,10 @@ def check_attr(root, paths):
 
 def expected_rows(root):
     rows = [(ledger_rel(root), "union")] + [(p, "union") for p in UNION_FIXED]
+    # the passive feedback ledger is written by the worker on first use; its row is expected once
+    # the file exists (a consumer that never ran the worker is not nagged about it)
+    if os.path.isfile(os.path.join(root, om_feedback_rel(root))):
+        rows.append((om_feedback_rel(root), "union"))
     for p in DERIVED:
         if os.path.isfile(os.path.join(root, p)):
             rows.append((p, "binary"))
@@ -89,7 +108,13 @@ def expected_rows(root):
 
 def lint_rows(root):
     findings = []
-    path = os.path.join(root, ledger_rel(root))
+    for rel in (ledger_rel(root), om_feedback_rel(root)):
+        findings.extend(_lint_one(os.path.join(root, rel)))
+    return findings
+
+
+def _lint_one(path):
+    findings = []
     try:
         with open(path, "rb") as fh:
             data = fh.read()

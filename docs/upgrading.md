@@ -105,3 +105,15 @@ dirty ledger (`RESOLVE-BLOCKED` is retired) and refuses a non-addressee's closin
 Harnesses that spawn many headless children set `HYP_DECISIONS=off` to skip the announce's git calls. Undo: revert the
 release's merge commit; the rows already written carry only the admitted fields (`via`, `addressee_basis`, `override`,
 `settles`, `retest_when`), which the previous kit reads as ordinary resolution rows.
+
+From the release that carries the passive feedback worker (source lab H-DRAFT-35397146-om-worker-deterministic, kept
+2026-09-13), the plugin ships `scripts/om-worker.py`: a deterministic script that turns a finished session's transcript
+into one `session-observed` row and each operating-model tree into one `model-evaluated` row in
+`ledger/om-feedback.jsonl` (`.claude/hyp.json` `om_feedback_file` overrides the path), spending no tokens. Nothing runs
+it for you yet -- the startup wake, the pointer outbox and the commit path each ship with their own lane -- so after
+upgrading there is nothing to do; to try it, run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-worker.py" observe
+<transcript.jsonl> --root .` and `... evaluate --root .`, then `... status --root .`. Re-run `/hyp:init` once (or add
+`ledger/om-feedback.jsonl merge=union` to `.gitattributes` by hand) so two checkouts' appended rows merge without conflict
+markers -- the re-run keeps every key your `.claude/hyp.json` carries beyond the plugin defaults (`ledger_file`,
+`om_feedback_file`, `compile_command`, the decision settings), which earlier releases dropped on a re-init; `merge-attrs-check.py` names the row as missing only once the file exists. No existing file changes shape. Undo:
+revert the release's merge commit; rows already written are plain JSON lines. See `docs/passive-feedback.md`.
