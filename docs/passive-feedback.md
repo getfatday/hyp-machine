@@ -206,8 +206,9 @@ reads it as an unread, over-counting field until a lane pins the attachment shap
 
 The catalogue projection above ports the lane fixture's `render_catalog.py` prototype as
 `scripts/compile-catalog.py`, unchanged except its rendered header line (names the shipped script,
-not the fixture's) and an added `--model-dir` multi-context form the worker's `compile-check` uses
-so it can regenerate every context in one call; `scripts/init-scaffold.py` gains `ensure_gitignore`
+not the fixture's) and an added `--model-dir` multi-context form, available for regenerating
+every context in one call by hand -- the worker's `compile-check` instead calls the
+single-context form once per model tree it finds; `scripts/init-scaffold.py` gains `ensure_gitignore`
 (the `ensure_gitattributes` shape, for a plain ignore file) and `retire_tracked_model_md` (a
 one-time `git rm --cached`), wired immediately before the existing `model.md` stub write, ported
 from the lane's `impl/patch_on.py` byte-for-byte. `om-worker.py`'s `evaluate()` gained one step,

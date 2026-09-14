@@ -3,4 +3,4 @@
 # adding nodes to the same context on separate branches would otherwise both edit model.md
 # and conflict; regenerate with scripts/compile-catalog.py <context-dir> wherever the model
 # is read (H-DRAFT-4e06e157-om-rows-merge-shape).
-{{MODEL_DIR}}/*/model.md
+/{{MODEL_DIR}}/*/model.md
