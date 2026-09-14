@@ -26,9 +26,14 @@ bars, and the packaged method transplants to foreign repositories. Extraction fo
    (data consulted for decisions), events (durable facts, each with its physical file
    representation — an event that isn't reified as a file does not exist).
 4. **Write the scaffold**: `operating-model/<context>/` with one node per file per SCHEMA
-   frontmatter, plus `model.md` cataloging every node in one line each. State each node's
-   provenance (which transcript/file evidences it). Two frontmatter conventions agents most
-   often drop — treat them as mandatory checks before finishing:
+   frontmatter. `model.md` catalogs every node in one line each, but never write or edit it by
+   hand: regenerate it with `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/compile-catalog.py
+   operating-model/<context> --write` after writing or changing any node. It is a gitignored
+   projection (`/hyp:init` installs the ignore row and retires a previously tracked copy from
+   the index the first time it runs in a repository), so two adopters writing nodes into the
+   same context on separate branches never conflict on it. State each node's provenance (which
+   transcript/file evidences it). Two frontmatter conventions agents most often drop — treat
+   them as mandatory checks before finishing:
    - Every **command** carries `handler:` (`skill/<name>` | `script/<path>` | `manual`) —
      it names how the command executes and SCHEMA requires it alongside issued-by/executor/
      reads/emits.
@@ -66,7 +71,8 @@ bars, and the packaged method transplants to foreign repositories. Extraction fo
   observable enforcement in the repo — model them as policy nodes with `enforcement: hook`
   and the block mechanism above (omitting them understates the enforcement actually in
   force).
-- **Self-lint before ratifying**: run
+- **Self-lint before ratifying**: regenerate the catalogue first (`compile-catalog.py
+  operating-model/<context> --write`, above — never hand-edit `model.md`'s rows), then run
   `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/model-lint.py operating-model/<context>` and fix every
   ERROR before presenting the model — it checks mechanically what hand-checking has measurably
   dropped: frontmatter parses (quote any scalar containing `: `), per-type required keys,

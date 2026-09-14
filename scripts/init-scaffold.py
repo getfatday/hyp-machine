@@ -183,6 +183,78 @@ def ensure_gitattributes(root, canonical, label):
           % (relpath, label, len(missing), ", ".join(m.split()[0] for m in missing)))
 
 
+def _ignore_rows(text):
+    """The set of non-comment, non-blank lines of a .gitignore text, verbatim."""
+    return {ln.strip() for ln in (text or "").splitlines()
+            if ln.strip() and not ln.strip().startswith("#")}
+
+
+def ensure_gitignore(root, canonical, label):
+    """created / updated / unchanged: rows the plugin needs ignored (templates/gitignore).
+    A row is present when some existing non-comment line matches it verbatim, or matches its
+    un-anchored form (a consumer already carrying `operating-model/*/model.md` is not handed
+    `/operating-model/*/model.md` as a second row: the un-anchored pattern ignores a superset);
+    missing rows are APPENDED under a header comment; a consumer's own lines are never removed or rewritten;
+    re-running with the same inputs is a byte-level no-op. Mirrors ensure_gitattributes's
+    contract (H-DRAFT-b9e771b2), for a plain ignore file with no per-line attributes.
+    Lab H-DRAFT-4e06e157-om-rows-merge-shape: two adopters editing model.md by hand on separate
+    branches could not merge without a manual step until this row existed."""
+    relpath = ".gitignore"
+    path = os.path.join(root, relpath)
+    current = read(path)
+    if current is None:
+        write(path, canonical)
+        print("created   %s  (%s)" % (relpath, label))
+        return
+    have = _ignore_rows(current)
+    canon_rows = [ln.strip() for ln in canonical.splitlines()
+                  if ln.strip() and not ln.strip().startswith("#")]
+    missing = [ln for ln in canon_rows if ln not in have and ln.lstrip("/") not in have]
+    if not missing:
+        print("unchanged %s  (%s)" % (relpath, label))
+        return
+    block = "\n".join(missing) + "\n"
+    header = "# hyp: the operating-model catalogue is a regenerated projection"
+    if header not in current:
+        block = header + " (added by /hyp:init; see templates/gitignore for the why)\n" + block
+    sep = "" if current.endswith("\n") else "\n"
+    write(path, current + sep + block)
+    print("updated   %s  (%s -- %d row(s) appended: %s)"
+          % (relpath, label, len(missing), ", ".join(missing)))
+
+
+def retire_tracked_model_md(root, relpath, label):
+    """One-time retire: if git already tracks relpath (an upgrade from the old, hand-maintained
+    shape), `git rm --cached -q` it -- index only, the work-tree file is left in place -- and
+    print one `retired` line naming the retire -- only when git's exit status is 0. When git
+    declines (a staged model.md edit differing from both HEAD and the work tree makes
+    `git rm --cached` exit 1 and leave the path tracked) print one
+    `retire-refused <relpath>: <git's first stderr line>` line instead, never `retired`, so init
+    never reports a retire that did not happen (cold-refuter finding, ship round 4). A no-op
+    (silent) when the path is untracked already (a fresh scaffold, or a repository already
+    retired): re-running is idempotent. Requires no git repository; failures are swallowed
+    (fail-open, like every other init-scaffold step) because a consumer scaffolding outside a
+    repository has nothing to retire."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", root, "ls-files", "--", relpath],
+                              capture_output=True, text=True, timeout=30)
+    except OSError:
+        return
+    if out.returncode != 0 or not out.stdout.strip():
+        return
+    try:
+        rm = subprocess.run(["git", "-C", root, "rm", "--cached", "-q", "--", relpath],
+                            capture_output=True, text=True, timeout=30, check=False)
+    except OSError:
+        return
+    if rm.returncode != 0:
+        reason = (rm.stderr or rm.stdout or "").strip().splitlines()
+        print("retire-refused %s: %s" % (relpath, reason[0] if reason else "git rm --cached exit %d" % rm.returncode))
+        return
+    print("retired   %s  (%s -- git rm --cached; work-tree file kept)" % (relpath, label))
+
+
 def migrate_legacy_config(root, cfg):
     """Fold retired-plugin config values into cfg (files are left in place;
     removing them is the consumer's call). Returns the migrated key names."""
@@ -431,6 +503,15 @@ def main():
                 "behavioral invariants")
     install_script(root, os.path.join("scripts", "compile-journal.py"),
                    ("scripts", "compile-journal.py"), "journal compiler")
+    # Model-routing guard (H-DRAFT-314c8d17-routing-guard, VERDICT.json evidence-sufficient
+    # promote): every profile, since a Workflow-tool call can happen regardless of profile.
+    # ensure_file's default overwrite=False -- a consumer's edited table is never rewritten;
+    # the generic "kept ..." line ensure_file prints is the only report (hooks/scripts/
+    # drift-check.py compares the CLAUDE.md block and its template set and does not read
+    # .claude/routing.json), the same as the hypotheses template and GOVERNANCE.md.
+    ensure_file(root, os.path.join(".claude", "routing.json"), template("routing.json"),
+                "model-routing override table (advise until routing.enforce is set to deny "
+                "in .claude/hyp.json)")
 
     # 3. Experiments layer.
     if at_least("experiments"):
@@ -469,6 +550,14 @@ def main():
         if schema_src is not None:
             ensure_file(root, "%s/SCHEMA.md" % model_dir, schema_src,
                         "operating-model node grammar", overwrite=True)
+        # H-DRAFT-4e06e157-om-rows-merge-shape: the catalogue is an untracked projection,
+        # regenerated by scripts/compile-catalog.py wherever the model is read, never a
+        # hand-maintained file two adopters both edit. The ignore row and the one-time retire
+        # of any previously-tracked copy land before the working-tree file is (re)written.
+        ensure_gitignore(root, render(template("gitignore"), cfg),
+                         "model catalogue: untracked, regenerated projection")
+        retire_tracked_model_md(root, "%s/model.md" % ctx_dir,
+                                "model catalogue: retiring the tracked copy")
         ensure_file(root, "%s/model.md" % ctx_dir,
                     render(template("model.md"), cfg), "model catalog stub")
         ensure_file(root, "%s/GLOSSARY.md" % ctx_dir,
