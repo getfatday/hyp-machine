@@ -117,3 +117,18 @@ upgrading there is nothing to do; to try it, run `python3 "${CLAUDE_PLUGIN_ROOT}
 markers -- the re-run keeps every key your `.claude/hyp.json` carries beyond the plugin defaults (`ledger_file`,
 `om_feedback_file`, `compile_command`, the decision settings), which earlier releases dropped on a re-init; `merge-attrs-check.py` names the row as missing only once the file exists. No existing file changes shape. Undo:
 revert the release's merge commit; rows already written are plain JSON lines. See `docs/passive-feedback.md`.
+
+From the release that carries the model-routing guard (source lab H-DRAFT-314c8d17-routing-guard,
+VERDICT.json evidence-sufficient promote), every `agent()` call inside a Workflow script is checked
+against a committed role -> model/effort table (`rules/routing-default.json` merged with
+`.claude/routing.json`) by a new `PreToolUse` hook row on the `Workflow` and `Agent` tools. Nothing
+is denied yet: the row's default is `routing.enforce: advise` (one advisory line per finding,
+never blocking) until you set it to `deny` in `.claude/hyp.json`. After upgrading: (1) run
+`/hyp:init` once — it scaffolds `.claude/routing.json` from the plugin template (an empty
+override; never overwrites an existing one on a later re-run); (2) read `docs/model-routing.md`
+for the table, the finding classes, and the `// route-override: guard-false-positive <reason>`
+escape for a single false positive; (3) when you are ready to enforce it, set
+`{"routing": {"enforce": "deny"}}` in `.claude/hyp.json`. Existing workflow scripts that already
+name `model`/`effort` on every call are unaffected either way. Undo: revert the release's merge
+commit, or set `routing.enforce: off` (the hook still runs -- it writes its start/finish marks --
+but exits before it opens the script).

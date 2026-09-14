@@ -431,6 +431,15 @@ def main():
                 "behavioral invariants")
     install_script(root, os.path.join("scripts", "compile-journal.py"),
                    ("scripts", "compile-journal.py"), "journal compiler")
+    # Model-routing guard (H-DRAFT-314c8d17-routing-guard, VERDICT.json evidence-sufficient
+    # promote): every profile, since a Workflow-tool call can happen regardless of profile.
+    # ensure_file's default overwrite=False -- a consumer's edited table is never rewritten;
+    # the generic "kept ..." line ensure_file prints is the only report (hooks/scripts/
+    # drift-check.py compares the CLAUDE.md block and its template set and does not read
+    # .claude/routing.json), the same as the hypotheses template and GOVERNANCE.md.
+    ensure_file(root, os.path.join(".claude", "routing.json"), template("routing.json"),
+                "model-routing override table (advise until routing.enforce is set to deny "
+                "in .claude/hyp.json)")
 
     # 3. Experiments layer.
     if at_least("experiments"):
