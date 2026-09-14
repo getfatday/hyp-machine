@@ -11,7 +11,8 @@ orders and a fresh clone renders the union. What to do after upgrading: run `/hy
 adds the `.gitignore` row and, if your repository still tracks a `model.md` from the old shape,
 retires it from the index in your next commit (the work-tree file is untouched); regenerate any
 time with `scripts/compile-catalog.py operating-model/<context> --write`. `scripts/om-worker.py`'s
-`evaluate`/`compile-check` now regenerate a tree before linting or date-stamping it, failing closed
-if the renderer script is missing. How to undo: revert the merge commit that added the ignore row
+`evaluate`/`compile-check` now regenerate a tree before linting or date-stamping it, `compile-check`
+failing closed (rc 1) if the renderer script is missing; `evaluate` records `renderer_found: false`
+and exits 0. How to undo: revert the merge commit that added the ignore row
 (and, if a retire already landed, `git add -f operating-model/<context>/model.md` to re-track the
 current file).

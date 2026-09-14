@@ -133,25 +133,29 @@ union row, a configured path surviving a re-init with its row rendered, an absol
 back to the default in every reader, the two-worktree union merge, zero `claude` spawns, stdlib-only
 imports.
 
-`python3 scripts/selftest-compile-catalog.py` -- 14 checks over throwaway consumers and worktree
+`python3 scripts/selftest-compile-catalog.py` -- 17 checks over throwaway consumers and worktree
 pairs: the renderer byte-identical on re-run and sorted by type then id, a zero-node context
 rendering the template's stub sections, never touching a node file or reading the prior `model.md`,
 the scaffold's ignore row appended once and byte-stable on re-run without disturbing a consumer's
 own line, the retire step removing exactly one index entry while keeping the work-tree file and
 no-op-ing once untracked, two worktrees adding one node each to the same context merging with
 exit 0 in both orders and a fresh clone rendering the union, `compile-check`'s row recording the
-renderer's run and failing closed when the renderer script is missing, and the A2 grep proving no
-shipped template or skill tells a reader to `git add`/`git commit` `model.md`.
+renderer's run and failing closed when the renderer script is missing, Externals/Aggregates rows
+and headings rendered (and every read-model directory spelling read) only when such nodes exist
+with a core-only context gaining no extra heading, `model-lint.py` reporting 0 `E-CATALOG` over a
+regenerated extra-types context, and the A2 grep proving no shipped template or skill tells a
+reader to `git add`/`git commit` `model.md`.
 
 ## The catalogue projection
 
 `operating-model/<context>/model.md` is a regenerated projection, never hand-maintained and never
 tracked: `/hyp:init` installs a `.gitignore` row (`templates/gitignore`) naming it and, the first
 time it runs in a repository that still tracks a copy from the old hand-maintained shape, retires
-that copy from the index with one `git rm --cached` (the work-tree file is left in place). Every
-verb that reads a model tree regenerates it first with `scripts/compile-catalog.py` -- `evaluate`
-and `compile-check` alike -- so the lint and staleness reads that follow always see the current
-node set, never a copy two branches might otherwise have edited into conflict. `compile-catalog.py` never
+that copy from the index with one `git rm --cached` (the work-tree file is left in place).
+`evaluate` and `compile-check` regenerate it first with `scripts/compile-catalog.py`, so the lint
+and staleness reads that follow always see the current node set, never a copy two branches might
+otherwise have edited into conflict; `observe` reads the catalogue through the classifier as it
+stands (`observatory.Catalog`) and never regenerates it. `compile-catalog.py` never
 edits a node file and never reads the existing `model.md` before overwriting it; run it by hand
 (`compile-catalog.py operating-model/<context> --write`, or `--model-dir operating-model` to
 regenerate every context at once) any time you want a fresh catalogue without waiting for
