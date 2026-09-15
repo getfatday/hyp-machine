@@ -1,5 +1,5 @@
 {
-  "description": "hyp guards: write-once raw + journal fragments incl. a Bash mistake-net branch (PreToolUse), generic policy interpreter over operating-model policy nodes (PreToolUse), capture-intent context (UserPromptSubmit), harden-check advisory spine (cache-first, plugin-rooted) + standing rules + drift check + uncommitted-capture warning + stale-dashboard check + ledger resolver with open-decision surfacing (SessionStart), verdict-gated dispatch of the top open item + unjournaled-work backstop (Stop, dispatch at experiments profile), dashboard refresh (SessionStart + Stop), preflight gate on run-shaped commands + advisory commit backstop (PreToolUse, experiments profile), license-join advisory on rule-carrier writes — a rule write must cite a resolvable directive/incident license (PreToolUse, H-250 keep), the per-caller decision announce — one JSON object whose systemMessage is said to the person at every SessionStart source (startup|resume|clear|compact|fork), its own 10 s row, never budgeted or cached (decision-queue-projection lane, kept in the source lab) — and the ledger resolver wrapper's RESOLVER-FAILED line on an empty or non-zero reading (the same lane's disclosed amendment). Every row resolves the repository it reads and writes through hyp_config.resolve_root: the checkout the session works in (a linked worktree included), never the launch directory CLAUDE_PROJECT_DIR alone (hook-writes-worktree fix). Model-routing guard (PreToolUse, matcher Workflow per .claude/hyp.json routing.enforce -- default advise -- and matcher Agent, advise-only): denies or advises on a workflow script whose agent() calls omit or misroute model/effort against the committed routing table (rules/routing-default.json merged with .claude/routing.json) -- source lab H-DRAFT-314c8d17-routing-guard, VERDICT.json evidence-sufficient promote.",
+  "description": "hyp guards: write-once raw + journal fragments incl. a Bash mistake-net branch (PreToolUse), generic policy interpreter over operating-model policy nodes (PreToolUse), capture-intent context (UserPromptSubmit), harden-check advisory spine (cache-first, plugin-rooted) + standing rules + drift check + uncommitted-capture warning + stale-dashboard check + ledger resolver with open-decision surfacing (SessionStart), verdict-gated dispatch of the top open item + unjournaled-work backstop (Stop, dispatch at experiments profile), dashboard refresh (SessionStart + Stop), preflight gate on run-shaped commands + advisory commit backstop (PreToolUse, experiments profile), license-join advisory on rule-carrier writes — a rule write must cite a resolvable directive/incident license (PreToolUse, H-250 keep), the per-caller decision announce — one JSON object whose systemMessage is said to the person at every SessionStart source (startup|resume|clear|compact|fork), its own 10 s row, never budgeted or cached (decision-queue-projection lane, kept in the source lab) — and the ledger resolver wrapper's RESOLVER-FAILED line on an empty or non-zero reading (the same lane's disclosed amendment). Every row resolves the repository it reads and writes through hyp_config.resolve_root: the checkout the session works in (a linked worktree included), never the launch directory CLAUDE_PROJECT_DIR alone (hook-writes-worktree fix). Model-routing guard (PreToolUse, matcher Workflow per .claude/hyp.json routing.enforce -- default advise -- and matcher Agent, advise-only): denies or advises on a workflow script whose agent() calls omit or misroute model/effort against the committed routing table (rules/routing-default.json merged with .claude/routing.json) -- source lab H-DRAFT-314c8d17-routing-guard, VERDICT.json evidence-sufficient promote. Routing ledger (Stop, timeout 15 s; SubagentStop, timeout 10 s -- unmeasured on real workflow agents, disclosed no-op-safe): appends one agent-route/v1 row per finished workflow agent to the worktree's ledger/routing-ledger.jsonl -- source lab H-DRAFT-38f86fad-routing-ledger-row, VERDICT.json evidence-sufficient promote.",
   "hooks": {
     "PreToolUse": [
       {
@@ -166,6 +166,26 @@
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/compile-dashboard.py\" --quiet --hook",
             "timeout": 15,
             "async": true
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/routing-ledger.py\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/routing-ledger.py\"",
+            "timeout": 10
           }
         ]
       }
