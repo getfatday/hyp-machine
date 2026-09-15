@@ -184,9 +184,19 @@ the catalogue at any time with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-c
 operating-model/<context> --write`; the `adopt` skill's ratification step calls this before its
 self-lint, and `scripts/om-worker.py evaluate`/`compile-check` call it before reading the tree
 (`compile-check` failing closed with a nonzero exit if the renderer script is missing, rather
-than lint or date-stamp a stale catalogue). The startup wake will run this for you once its own lane ships; until then nothing
-schedules it beyond `evaluate`/`compile-check`, so a fresh clone with nobody having re-run either
-verb yet still shows whatever `model.md` copy was last committed (absent, once retired). Undo:
+than lint or date-stamp a stale catalogue). The startup wake (below) does not call this: it runs
+`drain`, never `evaluate`/`compile-check`, so a fresh clone with nobody having re-run either verb
+yet still shows whatever `model.md` copy was last committed (absent, once retired). Undo:
 revert the release's merge commit that added the ignore row; if a retire commit already landed,
 `git add -f operating-model/<context>/model.md` re-tracks the current work-tree file. See
 `docs/passive-feedback.md`, "The catalogue projection".
+
+From the release that carries the startup wake (source lab `H-DRAFT-10383178-om-startup-wake`,
+kept 2026-09-15), `hooks.json`'s existing `resolver` `SessionStart` row gains one `--also
+om-worker '...'` clause: every `startup` now runs `scripts/om-worker.py drain` in the background,
+landing the previous session's feedback row in your checkout's ledger with no command of yours
+and no added foreground interpreter start on the row you actually see. After upgrading: nothing
+-- it runs on the next `startup` with no configuration. The caveat: under heavy host load the row
+can arrive one session-start boundary late (see `docs/passive-feedback.md`, "The startup wake").
+Undo: revert the release's merge commit, or remove the `--also om-worker '...'` clause from the
+resolver row in your `hooks/hooks.json` if you have forked it.

@@ -118,6 +118,39 @@ Evidence: lab `H-DRAFT-fb9c08b9-om-ledger-commit-path`, kept 2026-09-14 — five
 every assertion passing in every one, the frozen SPRT walking to 2.9389 over the 2.8904 promote
 bound, cold-verified (`VERDICT.json`, `VERIFY.md`, journal fragment 0538).
 
+## The startup wake
+
+Every `startup` `SessionStart` fires `drain` for you now: `hooks/hooks.json`'s existing
+`resolver` row gains one `--also om-worker '...'` clause, so no per-prompt work and no extra
+foreground interpreter start is needed for a row to land. What happens, in order, inside
+`hooks/scripts/session-start-budget.py`'s `run` verb, right after it resolves the checkout root
+and before it waits on the resolver itself: it writes ONE pointer file for the session that
+started this checkout the time before (never this session's own -- its own transcript has not
+been written yet), one `os.write` on an `O_CREAT|O_EXCL` descriptor, idempotent; then it forks
+`om-worker.py drain --boundary startup --plugin-scripts ...` as a second, detached process at
+background priority (`os.nice(19)`) under its own lock, never waited on. The wake pays for
+none of this on the row you actually see: the primary `resolver` row's own foreground budget and
+output are unchanged, and the side-runner's cost lands entirely in the background.
+
+The pointer names `root` and `common_dir`, so it lands in the shared, per-repository inbox
+`drain` reads by default (see "Where rows land and how they merge") -- the same inbox for a main
+checkout and every one of its linked worktrees, each still landing its own row in its own
+`ledger/om-feedback.jsonl`, never in another worktree's.
+
+Caveat under load: the row for one session is written by the *next* session's startup, not its
+own -- by construction, a checkout is never mid-session when its own wake fires. Under heavy
+host load the lane measured this landing arriving late against the sealed clock tolerance in a
+minority of gated launches (1 of 6) and more often in concurrent (two-worktree) launches (2 of
+12), by well under five seconds every time. The practical read: the previous session's row is
+usually there by the time the next session starts, and can be one session boundary stale under
+load -- never lost, never duplicated (the pointer write is `O_CREAT|O_EXCL`-idempotent).
+
+Evidence: lab `H-DRAFT-10383178-om-startup-wake`, kept 2026-09-15 -- five counted looks, every
+assertion passing in every one, the frozen SPRT walking to 2.9389 over the 2.8904 promote bound,
+cold-verified (`VERDICT.json`, `VERIFY.md`, journal fragment 0547). The keep claims nothing about
+same-session freshness, the row's own content, how a reading is shown, or landing under load
+beyond the measured margins above.
+
 ## Running it by hand
 
 ```
@@ -265,11 +298,11 @@ dead-worktree rows into Y's ledger. A repository whose `common_dir` is itself go
 checkout to carry into; its rows stay in the outbox with `landed_in: outbox` -- the design's
 disclosed residual, not a failure.
 
-Nothing writes `root`/`common_dir` into a pointer yet: that is the startup wake lane's job
-(`H-DRAFT-10383178`, not yet kept). Until it keeps, every pointer lacks both fields and every row
-that IS found still lands `root`, per-pointer landing exactly as before this lane -- but which
-inbox directory it is found in follows the default-location change noted above, not "before this
-lane" (that change ships with this release regardless of the wake lane).
+The startup wake (`H-DRAFT-10383178`, kept 2026-09-15, shipped -- see "The startup wake" above)
+is what writes `root`/`common_dir` into a pointer. A pointer with neither field (written by hand,
+or by a pre-wake consumer) still lands `root`, per-pointer landing unchanged -- but which inbox
+directory it is found in follows the default-location change noted above regardless of whether
+the wake wrote it.
 
 ## What never enters a row
 
@@ -381,23 +414,20 @@ row above (a different keep, H-DRAFT-b9e771b2's extension).
 
 The design (lab `experiments/runs/DESIGN-passive-om-feedback/DESIGN.md`, section 6, changeset A)
 names three more pieces beyond the catalogue projection above: the wake, the outbox carry-forward,
-and the commit path (see "The commit path" above). The outbox carry-forward and the commit path
-have shipped since this worker did; each shipped only after its own lane kept -- plugin bytes
-change only after the keep that licenses them. Not yet shipped:
+and the commit path (see "The commit path" above). The wake, the outbox carry-forward and the
+commit path have all shipped since this worker did; each shipped only after its own lane kept --
+plugin bytes change only after the keep that licenses them. See "The startup wake" above for what
+the wake does now that it has shipped. Not yet shipped:
 
-- **the wake** (lane 8, `H-DRAFT-10383178`): the `SessionStart` row that runs `drain` at startup
-  and writes `root`/`common_dir` into every pointer it produces. Until it keeps, nothing runs the
-  worker for you, and every pointer lacks both fields (its row always lands `root`, per "The
-  outbox and carry-forward" above) -- you name transcripts by hand (`observe`) or write pointers
-  yourself.
 - **the `om_feedback_file` key in `hooks/scripts/hyp_config.py` `DEFAULTS`** (named by the design and
   by the lane's on-keep row; deferred, recorded here and in the lane's `SHIP.md`): every reader of the
   override today (the worker, `/hyp:init`'s union row, `merge-attrs-check.py`, and now the
   commit path's clause) reads `.claude/hyp.json` directly through the one shared validator, so
   the key has no hook-side reader through `load_config`/`DEFAULTS` yet. Putting it in
   `DEFAULTS` would rewrite every consumer's `.claude/hyp.json` on the next `/hyp:init` and widen
-  `load_config` for all hooks before the wake lane (lane 8) -- the first hook that will read it -- has
-  kept. It ships with the wake. The two event-node templates the same row names do ship (above).
+  `load_config` for all hooks before a reader through that path exists. The wake (lane 8, now
+  shipped -- see "The startup wake" above) never needed it: it only writes pointer files, and
+  reads no ledger path at all. The two event-node templates the same row names do ship (above).
 
 Also not here: the judgment tier (a model reading these rows for deviations and node prose), which
 registers as its own spec citing this row schema.
@@ -512,6 +542,24 @@ otherwise, still fail-open (cold-refuter finding, ship round 4). `om-worker.py`'
 `catalog_regen`, run before the lint and staleness reads it now precedes; fail-closed is new here
 (every other subprocess call in this file is fail-open) because a compile-check that reported rc 0
 over a catalogue it never actually regenerated would be worse than one that visibly failed.
+
+`H-DRAFT-10383178-om-startup-wake`'s kept bytes are the lane fixture's `impl/session-start-budget.py`
+patch onto `hooks/scripts/session-start-budget.py` (byte-identical between the lane's pinned 0.28.0
+baseline and this release, so the patch applied with no wrapper-side merge). One drift resolved at
+ship: the lane's own pointer write targeted `om-worker.py`'s single-path `state_root()` (sha256 of
+the root, matching the worker bytes the lane's fixture pinned -- `H-DRAFT-35397146`, which shipped
+before the outbox carry-forward lane existed). This plugin ships `H-DRAFT-a4a14ff4-om-outbox-carry-forward`
+already, whose default (`--inbox`-less) `drain` reads the shared, `common_dir`-keyed inbox instead
+(see "The outbox and carry-forward" above) -- so writing to the old key would have landed every
+pointer somewhere a default drain never looks. The wrapper's `om_inbox_root` now computes the same
+`common_dir`-keyed path the worker's own `_resolve_inbox_root` does (pure Python, the wrapper's
+existing `git_common_dir`, no subprocess), falling back to the old single-path key only when
+`common_dir` cannot be resolved -- proven equal to the installed worker's own resolution, not
+assumed, by `scripts/selftest-session-start-budget.py`. Checked and NOT present in the shipped
+worker (carried finding, `VERIFY.md` section 10): `free_bytes` crashing `statvfs` on a brand-new
+consumer whose `ledger/` does not exist yet -- the shipped version already walks up to the nearest
+existing ancestor directory (landed by the outbox carry-forward lane's own fix rounds, unrelated to
+this one); no fix was needed here.
 
 Undo: revert the release's merge commit. Rows already written are plain JSON lines in your ledger;
 the attribute row is plain text in your `.gitattributes`; a staged-but-uncommitted ledger unstages
