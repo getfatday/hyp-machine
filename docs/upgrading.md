@@ -110,7 +110,8 @@ From the release that carries the passive feedback worker (source lab H-DRAFT-35
 2026-09-13), the plugin ships `scripts/om-worker.py`: a deterministic script that turns a finished session's transcript
 into one `session-observed` row and each operating-model tree into one `model-evaluated` row in
 `ledger/om-feedback.jsonl` (`.claude/hyp.json` `om_feedback_file` overrides the path), spending no tokens. Nothing runs
-it for you yet -- the startup wake, the pointer outbox and the commit path each ship with their own lane -- so after
+it for you yet -- the startup wake ships with its own lane (the outbox and the commit path have
+since shipped, below) -- so after
 upgrading there is nothing to do; to try it, run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-worker.py" observe
 <transcript.jsonl> --root .` and `... evaluate --root .`, then `... status --root .`. Re-run `/hyp:init` once (or add
 `ledger/om-feedback.jsonl merge=union` to `.gitattributes` by hand) so two checkouts' appended rows merge without conflict
@@ -131,6 +132,20 @@ path without going through `--inbox`, move them under the new path or pass `--in
 explicitly -- everything scripted through `om-worker.py drain --root .` with no pointers of your own is unaffected.
 See `docs/passive-feedback.md`, "The outbox and carry-forward" and "Running it by hand". Undo: revert the release's
 merge commit; rows already written are plain JSON lines, distinguishable only by their `landed_in` value.
+
+From the release that carries the commit path (source lab H-DRAFT-fb9c08b9-om-ledger-commit-path,
+kept 2026-09-14), `hooks/scripts/commit-backstop.py`'s `git commit` PreToolUse row also stages a
+dirty feedback ledger for you: `OM-FEEDBACK-STAGED <n> rows` when it stages it, or
+`OM-FEEDBACK-HELD forbidden key <key>` when a row on disk must never be written and nothing is
+staged. It runs before, and independently of, the pre-existing advisory backstop above (the
+feedback ledger is a capture-profile feature), so nothing here is gated on `profile:
+"experiments"`. After upgrading there is nothing to do: the clause fires only when the ledger
+(`om_feedback_file`, default `ledger/om-feedback.jsonl`) is already dirty. One limitation to
+know: the clause fires only on a command that itself begins with `git commit` -- `timeout 45 git
+commit ...`, `cd <dir> && git commit ...` and `git -c ... commit ...` are silent, so run `git
+commit` directly (or stage the ledger yourself first) when you rely on it. Undo, one command:
+`git restore --staged -- ledger/om-feedback.jsonl` before you commit; the release's merge commit
+can also be reverted outright. See `docs/passive-feedback.md`, "The commit path".
 
 From the release that carries the model-routing guard (source lab H-DRAFT-314c8d17-routing-guard,
 VERDICT.json evidence-sufficient promote), every `agent()` call inside a Workflow script is checked
