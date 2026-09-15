@@ -328,7 +328,13 @@ def cli_delegates_stage(tmp):
     with io.open(os.path.join(PLUGIN_ROOT, "hooks", "hooks.json"), encoding="utf-8") as fh:
         every = [h for g in json.load(fh)["hooks"].values() for grp in g for h in grp.get("hooks", [])]
     wrapper = next(h["command"] for h in every if "session_resolver.py" in h.get("command", ""))
-    inner = wrapper[wrapper.index("'") + 1:wrapper.rindex("'")]
+    # the resolver row's own inner command is the FIRST single-quoted argument to `run` --
+    # a later `--also <name> '<command>'` clause (the startup-wake lane, H-DRAFT-10383178)
+    # adds a SECOND quoted argument to this same row, so the closing quote is no longer the
+    # last one in the string; take the first matching pair, never `rindex`.
+    _q0 = wrapper.index("'")
+    _q1 = wrapper.index("'", _q0 + 1)
+    inner = wrapper[_q0 + 1:_q1]
     renv = clean_env({"CLAUDE_PLUGIN_ROOT": PLUGIN_ROOT, "CLAUDE_PROJECT_DIR": root})
     r1 = subprocess.run(["sh", "-c", inner], input=json.dumps({"source": "startup", "cwd": root}), capture_output=True, text=True,
                         env=renv, timeout=120)

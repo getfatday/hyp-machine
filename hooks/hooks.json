@@ -122,7 +122,7 @@
           },
           {
             "type": "command",
-            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run resolver 'out=$(python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session_resolver.py\" 2>&1); rc=$?; if [ \"$rc\" -ne 0 ] || [ -z \"$out\" ]; then echo \"RESOLVER-FAILED rc=$rc $([ -z \"$out\" ] && echo empty-reading || echo see-output) -- the ledger resolver printed nothing usable (expected only for a ledger with nothing to surface); rerun from the checkout: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session_resolver.py\"; fi; [ -n \"$out\" ] && printf \"%s\\n\" \"$out\" | head -40; exit 0'",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" run resolver 'out=$(python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session_resolver.py\" 2>&1); rc=$?; if [ \"$rc\" -ne 0 ] || [ -z \"$out\" ]; then echo \"RESOLVER-FAILED rc=$rc $([ -z \"$out\" ] && echo empty-reading || echo see-output) -- the ledger resolver printed nothing usable (expected only for a ledger with nothing to surface); rerun from the checkout: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session_resolver.py\"; fi; [ -n \"$out\" ] && printf \"%s\\n\" \"$out\" | head -40; exit 0' --also om-worker 'python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/om-worker.py\" drain --boundary startup --plugin-scripts \"${CLAUDE_PLUGIN_ROOT}/scripts\"'",
             "timeout": 60
           },
           {
