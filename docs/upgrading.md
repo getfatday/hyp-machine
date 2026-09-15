@@ -198,7 +198,9 @@ staleness on every push and pull request touching `operating-model/**`. Nothing 
 own: after upgrading, run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-ci.py" emit ci-tier0`
 once in the repository and commit `.github/workflows/om-check.yml` plus the vendored
 `.github/om-scripts/` it names (the workflow calls those vendored scripts, never the plugin
-install — a GitHub-hosted runner has neither). Re-running `emit ci-tier0` is idempotent and
+install — a GitHub-hosted runner has neither). Both jobs check out full history
+(`fetch-depth: 0`): the staleness check dates paths by their last commit, and the checkout
+action's default depth-1 clone would read every stale tree as clean. Re-running `emit ci-tier0` is idempotent and
 byte-stable, and a file you have hand-edited is kept, not overwritten, unless you pass
 `--force`. Verify locally without pushing anything with
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-ci.py" self-test ci-tier0` (also

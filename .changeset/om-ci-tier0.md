@@ -8,7 +8,9 @@ checks whether its compiled catalogue is caught up on every push and pull reques
 red on a broken model, green otherwise, and it regenerates the catalogue and commits the
 result at most once per push (never in a loop, never on the bot's own commit; the push of that
 commit skips only on a detached pull_request checkout, and a push the hosting service rejects
-fails the job rather than reading green). No secret beyond
+fails the job rather than reading green; both jobs check out full history with `fetch-depth: 0`,
+because the staleness check dates the model tree and the compiled artifact by each path's last
+commit and the action's default depth-1 checkout would read every stale tree as clean). No secret beyond
 the checkout's own `GITHUB_TOKEN`, no model session, no network beyond the checkout. Why: the
 lab keep `H-DRAFT-a28b91c9-om-ci-tier0` (getfatday/cause-n-effect, VERDICT.json — five counted
 looks, A1-A5 pass in every one, SPRT llr 2.9389 over the 2.8904 promote bound) proved the

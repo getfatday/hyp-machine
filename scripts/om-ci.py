@@ -17,8 +17,10 @@ throwaway git consumer under a temp directory, runs the same JOBS table's steps 
 the CI-runner constraint the lab keep measured (empty `HOME`, a minimal `PATH`, HTTPS/HTTP
 proxies pointed at a local sink that only counts connections, a `claude` shim that fails loudly
 if spawned), seeds the same defects the lab lane graded (one broken link, one stale compiled
-artifact, one compiled-only touch), and prints one PASS/FAIL line per case. Exit 0 iff every
-case passed.
+artifact, one compiled-only touch), re-measures on fresh `file://` clones why the checkout must
+fetch full history (a depth-1 clone of a stale ref reads clean; the same ref with history reads
+stale and regenerates once -- ship fix round 4, B1), and prints one PASS/FAIL line per case.
+Exit 0 iff every case passed.
 
 This is the repository tier from `experiments/runs/DESIGN-passive-om-feedback/DESIGN.md`
 section 6, row C, in getfatday/cause-n-effect: `scripts/om-integrate.py` (the general
@@ -43,6 +45,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -72,6 +75,15 @@ SH_DEFAULT_TIMEOUT_S = 120
 # of the COMMITTED workflow text (never re-derived from the JOBS table's own, unevaluated `if`
 # marker) so a mutant that flips the rendered operator is judged by what actually ships.
 IF_LINE_RE = re.compile(r"^\s*if:\s*\$\{\{\s*github\.actor\s*(!=|==)\s*'([^']*)'\s*\}\}\s*$")
+
+# B1 (ship fix round 4): the ONE checkout step shape the template is supposed to carry, as
+# literal text; `_assert_a1_guardrails` counts it once per job. `fetch-depth: 0` is load-bearing.
+CHECKOUT_BLOCK_LINES = (
+    "      - uses: actions/checkout@v4",
+    "        with:",
+    "          token: ${{ secrets.GITHUB_TOKEN }}",
+    "          fetch-depth: 0",
+)
 
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "om-ci-selftest", "GIT_AUTHOR_EMAIL": "om-ci-selftest@example.invalid",
@@ -463,6 +475,16 @@ def _assert_a1_guardrails(committed_yaml, model_dir):
     if secrets_used != {"GITHUB_TOKEN"}:
         problems.append("secrets referenced = %r (want {'GITHUB_TOKEN'})" % secrets_used)
 
+    # B1 (ship fix round 4): every checkout step is the literal four-line block below, with
+    # `fetch-depth: 0` -- the action's default depth-1 checkout makes om-worker.py's per-path
+    # `git log -1` dating read a stale tree as clean (see the depth-1 scenario in
+    # self_test_ci_tier0). Counted literally, once per job, never re-derived from render_yaml.
+    checkout_block = "\n".join(CHECKOUT_BLOCK_LINES)
+    n_checkout = committed_yaml.count(checkout_block)
+    if n_checkout != len(J.JOBS):
+        problems.append("checkout block with fetch-depth: 0 appears %d times (want %d, one per job)"
+                        % (n_checkout, len(J.JOBS)))
+
     return (not problems), "; ".join(problems)
 
 
@@ -479,7 +501,9 @@ def _run_jobs(work, ref, actor, scratch_root, model_dir, pred_map):
     "clean checkout" the self-test claims is a clean `git checkout` of the ref, not a clean
     clone -- untracked leftovers (the ignored ledger row file, `__pycache__`-free by -B) ride
     across scenarios. A cold refuter re-drove every scenario on fresh clones and every kept
-    behaviour held; the gap is disclosed here rather than closed."""
+    behaviour held; the gap is disclosed here rather than closed. The depth-1 / full-history
+    pair (ship fix round 4, B1) is the exception: `work` there is a fresh `file://` clone of
+    the bare origin per arm, because clone depth is the variable under test."""
     _git(work, "checkout", "-q", ref)
     proxy_port, proxy_log, stop = _start_proxy_sink(scratch_root)
     try:
@@ -608,6 +632,20 @@ def self_test_ci_tier0(keep_scratch=False):
             lint_mlint = _job_result(results, "lint")
             check("lint job red on the E-LINK mutant",
                  lint_mlint["rc"] != 0 and "E-LINK" in lint_mlint["output"])
+            # A4 (ship fix round 4): the E-LINK mutant's model tree moved after the compiled
+            # commit, so compile-check correctly reads stale -- and regenerating produces no
+            # byte change (the broken link renders the same SOP), so nothing is committed.
+            # Pinned so the "no commit" leg is graded, not merely observed.
+            cc_mlint = _job_result(results, "compile-check")
+            mlint_tip = _git(work, "rev-parse", "mutant/m-lint")[1].strip()
+            check("compile-check on the E-LINK mutant reads STALE: True and regeneration produces "
+                 "no byte change (no commit)",
+                 cc_mlint["rc"] == 0 and _stale_value(cc_mlint["step_outputs"]) is True
+                 and "COMMIT: no (regeneration produced no byte change)"
+                 in cc_mlint["step_outputs"].get("regenerate and commit if stale", "")
+                 and _git(work, "log", "-1", "--format=%an", mlint_tip)[1].strip() != BOT_IDENTITY,
+                 "rc=%s stale=%s regen=%r" % (cc_mlint["rc"], _stale_value(cc_mlint["step_outputs"]),
+                                              cc_mlint["step_outputs"].get("regenerate and commit if stale", "").strip()))
             _require_budget(run_started, "after m-lint run")
 
             _seed(work, "mutant/m-stale", "%s/ops/actors/builder.md" % model_dir,
@@ -730,6 +768,64 @@ def self_test_ci_tier0(keep_scratch=False):
                  "rc=%s failing_step=%s" % (cc_nopush["rc"], cc_nopush["failing_step"]))
             _require_budget(run_started, "after attached-head failed-push run")
 
+            # B1 (ship fix round 4): WHY the rendered checkout carries `fetch-depth: 0`.
+            # actions/checkout@v4 defaults to depth 1; om-worker.py's `_compiled_staleness`
+            # dates the model tree and the newest compiled artifact by `git log -1 --format=%ct
+            # -- <path>`, and on a depth-1 clone every path's last commit is the one grafted
+            # tip, so a stale tree reads `STALE: False` and nothing regenerates. Re-measured
+            # here on two fresh `file://` clones of the SAME pre-regen stale ref (a plain local
+            # path clone ignores --depth, so the URL form is required): the depth-1 arm shows
+            # the read the default depth would give hosted; the full-history arm shows the read
+            # the rendered `fetch-depth: 0` gives. Both arms run the whole JOBS table.
+            _git(work, "push", "-q", "origin", "%s:refs/heads/mutant/m-stale-shallow" % head_before)
+            clone_url = "file://" + origin
+            shallow = os.path.join(scratch_root, "clone-depth1")
+            _git(scratch_root, "clone", "-q", "--depth", "1", "--branch", "mutant/m-stale-shallow",
+                 clone_url, shallow)
+            shallow_reach = int(_git(shallow, "rev-list", "--count", "HEAD")[1].strip())
+            shallow_before = _git(shallow, "rev-parse", "HEAD")[1].strip()
+            results, shim_hits, proxy_hits = _run_jobs(shallow, "mutant/m-stale-shallow", NORMAL_ACTOR,
+                                                        os.path.join(scratch_root, "run-depth1"),
+                                                        model_dir, pred_map)
+            shim_total += shim_hits
+            proxy_total += proxy_hits
+            cc_shallow = _job_result(results, "compile-check")
+            shallow_after = _git(shallow, "rev-parse", "HEAD")[1].strip()
+            check("a depth-1 clone of the stale ref reads STALE: False and commits nothing "
+                 "(the checkout action's default depth -- why fetch-depth: 0 is rendered)",
+                 shallow_reach == 1 and cc_shallow["rc"] == 0
+                 and _stale_value(cc_shallow["step_outputs"]) is False
+                 and shallow_before == shallow_after,
+                 "reachable=%d rc=%s stale=%s moved=%s" % (
+                     shallow_reach, cc_shallow["rc"], _stale_value(cc_shallow["step_outputs"]),
+                     shallow_before != shallow_after))
+            _require_budget(run_started, "after depth-1 clone run")
+
+            full = os.path.join(scratch_root, "clone-full")
+            _git(scratch_root, "clone", "-q", "--branch", "mutant/m-stale-shallow", clone_url, full)
+            full_reach = int(_git(full, "rev-list", "--count", "HEAD")[1].strip())
+            full_before = _git(full, "rev-parse", "HEAD")[1].strip()
+            results, shim_hits, proxy_hits = _run_jobs(full, "mutant/m-stale-shallow", NORMAL_ACTOR,
+                                                        os.path.join(scratch_root, "run-fullhist"),
+                                                        model_dir, pred_map)
+            shim_total += shim_hits
+            proxy_total += proxy_hits
+            cc_full = _job_result(results, "compile-check")
+            full_after = _git(full, "rev-parse", "HEAD")[1].strip()
+            full_count = int(_git(full, "rev-list", "--count",
+                                  "%s..%s" % (full_before, full_after))[1].strip()) \
+                if full_before != full_after else 0
+            full_author = _git(full, "log", "-1", "--format=%an", full_after)[1].strip()
+            check("a full-history clone of the same stale ref reads STALE: True and regenerates "
+                 "exactly one bot commit (the read fetch-depth: 0 gives)",
+                 full_reach > 1 and cc_full["rc"] == 0
+                 and _stale_value(cc_full["step_outputs"]) is True
+                 and full_count == 1 and full_author == BOT_IDENTITY,
+                 "reachable=%d rc=%s stale=%s commits=%d author=%s" % (
+                     full_reach, cc_full["rc"], _stale_value(cc_full["step_outputs"]),
+                     full_count, full_author))
+            _require_budget(run_started, "after full-history clone run")
+
             check("no claude shim spawn across every scenario", shim_total == 0, shim_total)
             check("zero proxy hits across every scenario", proxy_total == 0, proxy_total)
 
@@ -742,6 +838,13 @@ def self_test_ci_tier0(keep_scratch=False):
             check("vendored PyYAML imports under an empty HOME", rc == 0)
         except _BudgetExceeded as exc:
             check("whole self-test run finishes inside the %ds cap" % WHOLE_RUN_CAP_S, False, exc)
+        except Exception as exc:  # noqa: BLE001 -- A1 (ship fix round 4): self-describing record
+            # A harness crash (a mutant that leaves the shared work tree unable to `checkout
+            # -b`, a scratch git failure) used to end the run with a traceback and no RESULT
+            # line; the wrapper read the rc as FAIL, but the record did not say why. Print the
+            # traceback, then one FAIL line and the RESULT line like every other outcome.
+            traceback.print_exc(file=sys.stdout)
+            check("harness crash", False, "%s: %s" % (type(exc).__name__, exc))
     finally:
         if not keep_scratch:
             shutil.rmtree(scratch_root, ignore_errors=True)

@@ -9,7 +9,9 @@ Two layers:
   emit (fast, no git)    a scratch consumer directory (no git repo): emit ci-tier0 is
                         idempotent and byte-stable on re-run, the rendered workflow matches
                         the committed `templates/offload/om-check.yml` for the default
-                        `model_dir`, and a hand-edited vendored file is kept, not clobbered,
+                        `model_dir`, the committed template carries the literal checkout
+                        block with `fetch-depth: 0` once per job (never re-derived from the
+                        renderer), and a hand-edited vendored file is kept, not clobbered,
                         without `--force`
   self-test (thorough)   drives `python3 scripts/om-ci.py self-test ci-tier0` as a subprocess
                         (its own scratch git consumer, under the CI-runner constraint) and
@@ -24,9 +26,15 @@ Two layers:
                         the skip happens only on a detached HEAD), the compile-check job
                         FAILING with the push step as the failing step when an attached
                         head's push is rejected (unreachable origin -- a failed push on an
-                        attached head fails the job, never a false skip), the paths-only
-                        mutant never firing a job, zero `claude` shim spawns, zero proxy
-                        hits, and PyYAML importing under an empty HOME
+                        attached head fails the job, never a false skip), compile-check on
+                        the E-LINK mutant reading stale with a no-byte-change regeneration
+                        and no commit, a depth-1 `file://` clone of a stale ref reading
+                        STALE: False with nothing committed (the checkout action's default
+                        depth -- why the template renders `fetch-depth: 0`) while a
+                        full-history clone of the same ref reads STALE: True and regenerates
+                        exactly one bot commit, the paths-only mutant never firing a job,
+                        zero `claude` shim spawns, zero proxy hits, and PyYAML importing
+                        under an empty HOME
 
 Usage: python3 scripts/selftest-om-ci.py        exit 0 = PASS, 1 = FAIL
 Stdlib only, Python 3.9.
@@ -82,6 +90,18 @@ def main():
              "default model_dir", emitted == committed_template)
         check("templates/offload/om-check.yml equals a fresh render (never hand-edited out of sync)",
              committed_template == J.render_yaml())
+        # B1 (ship fix round 4): the checkout depth is pinned as LITERAL text against the
+        # committed template, independent of render_yaml -- a renderer that drops
+        # `fetch-depth: 0` re-renders a template that still equals itself, so the equality
+        # checks above cannot catch it. Default depth-1 makes om-worker.py's per-path
+        # `git log -1` dating read a stale tree as clean (om-ci.py's depth-1 scenario).
+        checkout_block = ("      - uses: actions/checkout@v4\n"
+                          "        with:\n"
+                          "          token: ${{ secrets.GITHUB_TOKEN }}\n"
+                          "          fetch-depth: 0\n")
+        n_checkout = committed_template.count(checkout_block)
+        check("committed template carries the literal checkout block with fetch-depth: 0 once "
+             "per job", n_checkout == len(J.JOBS), "found %d, want %d" % (n_checkout, len(J.JOBS)))
 
         # a hand-edited vendored file is kept, not clobbered, without --force
         edited_path = os.path.join(tmp, ".github", "om-scripts", "om-worker.py")
@@ -109,6 +129,8 @@ def main():
         "rendered YAML equals the committed workflow",
         "lint job green on the clean tree",
         "lint job red on the E-LINK mutant",
+        "compile-check on the E-LINK mutant reads STALE: True and regeneration produces no byte "
+        "change (no commit)",
         "compile-check job regenerates exactly one bot commit on the stale mutant",
         "the regenerate commit is authored as the bot identity",
         "the regenerate commit landed on origin (attached head, reachable origin)",
@@ -119,6 +141,9 @@ def main():
         "the push step skips with a notice on a detached checkout",
         "compile-check job FAILS on an attached head whose push is rejected (unreachable origin), "
         "naming the push step",
+        "a depth-1 clone of the stale ref reads STALE: False and commits nothing",
+        "a full-history clone of the same stale ref reads STALE: True and regenerates exactly one "
+        "bot commit",
         "no claude shim spawn across every scenario",
         "zero proxy hits across every scenario",
         "vendored PyYAML imports under an empty HOME",

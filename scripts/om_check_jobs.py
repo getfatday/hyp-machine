@@ -40,6 +40,14 @@ bytes, disclosed here rather than hidden in a diff:
    remains the disclosed, not-yet-run hosted acceptance check (VERIFY.md section 10, finding 3;
    docs/ci-scaffold.md, "What is still owed") -- this addition does not close that; it is what
    the acceptance check will exercise.
+3. **The checkout fetches full history (`fetch-depth: 0`)** (ship fix round 4, B1). The lane's
+   fixture cloned with full history and its BUILD-RECORD reasoned a depth-1 checkout "would work
+   identically" because the harness diff needs only the tip's parent -- reasoning that never
+   covered om-worker.py's per-path `git log -1` dating, which is what a depth-1 checkout breaks:
+   both the model tree and the compiled artifact date to the one grafted commit and a stale tree
+   reads clean. The action's default IS depth 1, so without this key the hosted compile-check job
+   could never regenerate anything. Cost: one full-history fetch per job; the 5-minute cap
+   bounds it (see render_yaml for the measurement).
 
 Trigger block (kept as graded, AMENDMENTS.md #1): the hosting service's workflow syntax forbids
 `paths` and `paths-ignore` under the same event ("You cannot use both the `paths` and
@@ -228,6 +236,17 @@ def render_yaml(model_dir=DEFAULT_MODEL_DIR):
         lines.append("      - uses: actions/checkout@v4")
         lines.append("        with:")
         lines.append("          token: ${{ secrets.GITHUB_TOKEN }}")
+        # B1 (ship fix round 4): full history, never the action's default depth-1 checkout.
+        # om-worker.py's `_compiled_staleness` dates the model tree and the newest compiled
+        # artifact by `git log -1 --format=%ct -- <path>`; on a depth-1 clone every path's last
+        # commit IS the one grafted tip, so both dates collapse to the same epoch and a stale
+        # tree reads `STALE: False` / `COMMIT: no (nothing stale)` -- the compile-check half of
+        # the claim would be vacuous hosted (measured: `git clone --depth 1 file://...` of the
+        # stale mutant -> both dates equal, no regeneration; a full clone of the same ref ->
+        # `STALE: True`, one bot commit). `fetch-depth: 0` is rendered under BOTH jobs' checkout
+        # so the table stays one shape; the self-test pins it literally (_assert_a1_guardrails)
+        # and re-measures the depth-1 read on a fresh clone so the reason stays on record.
+        lines.append("          fetch-depth: 0")
         lines.append("      - uses: actions/setup-python@v5")
         lines.append("        with:")
         lines.append("          python-version: '3.9'")

@@ -134,10 +134,35 @@ is idempotent and byte-stable, and never overwrites a file a consumer hand-edite
 `om_check_regen_commit.py` itself, which reads `GITHUB_ACTOR` and no-ops if it is somehow still
 the bot identity (it parses nothing; it is a belt-and-suspenders re-read of the same env var the
 step-level `if` already gates on), so a future template edit that drops the step-level `if`
-cannot reopen the loop silently.
+cannot reopen the loop silently. Hosted, this guard is expected to be belt-and-suspenders only
+(ship fix round 4, A3): the hosting service documents that pushes made with the workflow's own
+`GITHUB_TOKEN` do not create new workflow runs, and if one did, its `github.actor` would read
+`github-actions[bot]`, not `om-check[bot]`, so the rendered `if:` predicate is expected never to
+evaluate false hosted -- the loop is closed by the token's own semantics first and by this
+predicate second. That expectation is stated here up front and recorded, not asserted, by the
+hosted acceptance check below.
+
+**Full-history checkout (`fetch-depth: 0`).** Both jobs' `actions/checkout@v4` steps render
+`fetch-depth: 0`, never the action's default depth-1 checkout (ship fix round 4, B1).
+`om-worker.py`'s staleness read dates the model tree and the newest compiled artifact by
+`git log -1 --format=%ct -- <path>`; on a depth-1 clone every path's last commit is the one
+grafted tip, so both dates collapse to the same epoch and a stale tree reads `STALE: False` /
+`COMMIT: no (nothing stale)` -- the compile-check half of the check would be vacuous hosted,
+green on every push, regenerating nothing. Measured in the self-test on two fresh `file://`
+clones of the same pre-regeneration stale ref: the depth-1 arm reads clean and commits nothing;
+the full-history arm reads stale and regenerates exactly one bot commit. The lane's
+`BUILD-RECORD.json` (`open_questions[3]`) reasoned that a depth-1 checkout "would work
+identically" because the harness diff needs only the tip's parent; that reasoning covered the
+trigger diff, not the per-path dating, and this document supersedes it (A2). The self-test pins
+the four-line checkout block as literal text once per job (`_assert_a1_guardrails`, and
+`scripts/selftest-om-ci.py` against the committed template) because the local executor never
+runs the YAML's checkout step itself -- a renderer that dropped the key would still equal its
+own re-render. Cost: one full-history fetch per job, bounded by `timeout-minutes: 5`; a
+consumer whose history is too large for that cap should say so in an issue rather than lower
+the depth.
 
 **What is still owed.** Everything above is proven against a scratch git consumer under a
-simulated CI-runner constraint (`scripts/om-ci.py self-test ci-tier0`, 25 checks; 27-check
+simulated CI-runner constraint (`scripts/om-ci.py self-test ci-tier0`, 28 checks; 31-check
 `scripts/selftest-om-ci.py`), never against the real hosting service. The push step's own `run:`
 skips only on a detached HEAD; a failed push on an attached head fails the job. The detached
 case (ship fix round 2, B1): `actions/checkout@v4`'s default ref state for a `pull_request`
@@ -156,4 +181,6 @@ actually accepts one `paths:` list with a `!` exclusion exactly as rendered; and
 `github.actor` reads as hosted for a `GITHUB_TOKEN` push on a normal branch push (never a
 pull_request, which always skips), whether that push re-triggers the workflow at all, and --
 after round 3 -- that a push the hosting service rejects (branch protection, a read-only token)
-goes red rather than green. `SHIP.md` records the result once that check runs.
+goes red rather than green; and -- after round 4 -- that the hosted `fetch-depth: 0` checkout
+lets the compile-check job read a seeded stale tree as stale and regenerate it once. `SHIP.md`
+records the result once that check runs.
