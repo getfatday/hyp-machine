@@ -30,6 +30,67 @@ non-blocking findings resolved: the self-check now runs the fixture grader's A3 
 path, relative escape, well-known-root spelling, identity) instead of the two markers alone; a
 drain sweeps `processing/` back into the inbox first so a SIGKILL mid-drain strands nothing;
 compile staleness reads the NEWEST compiled artifact by commit date.
+
+The outbox carry-forward: lab H-DRAFT-a4a14ff4-om-outbox-carry-forward, kept 2026-09-14 (five
+counted looks, A1-A5 pass in every one; VERDICT.json beside the lane, journal fragment 0537). A
+pointer now MAY carry `root` (the checkout it was written for) and `common_dir` (that
+repository's `git -C root rev-parse --git-common-dir` at pointer-write time) -- fields the
+startup wake lane (H-DRAFT-10383178, not yet kept) will start writing; a pointer with neither
+field drains exactly as H-DRAFT-35397146 always did ONCE FOUND (this file's per-pointer landing
+behaviour, unchanged) -- but see the NOTE below: which inbox directory it is found IN is not
+unchanged for every caller. When both `root`/`common_dir` fields are present: a live root lands
+its row into that root's own ledger with `landed_in: root`; a root that no longer exists lands
+the row into the outbox (`landed_in: outbox`, `origin_root_key`, keyed by the POINTER's own
+recorded `common_dir` rather than whichever repository happens to be draining) instead of being
+lost; a root that exists but is no longer a git checkout of the recorded `common_dir` -- or
+whose `root` field is null/empty/non-string, a malformed pointer -- is quarantined
+unconditionally (not "the rule"); every `drain` for a live checkout whose `common_dir` matches
+carries any pending outbox rows into that checkout's own ledger with `landed_in: carried` and
+`carried_from`, deduped by `(session, through)` rather than exact bytes. The whole claim+carry
+step runs under an exclusive, non-blocking `flock` per `inbox_root` (`_carry_outbox`'s single-
+flight mechanism): only one drain at a time claims the outbox (renaming it to
+`outbox.<epoch>.carrying.jsonl`) and carries it, then renames it on to `.carried.jsonl`; a drain
+that cannot get the lock backs off and carries nothing. A rename-only claim without that lock
+still races (proven empirically while porting: two drains starting close together both pass the
+lockless existence check, and the second's crash-recovery sweep then "resumes" the first's
+still-in-flight claim in parallel, carrying the same rows into a DIFFERENT ledger) -- the lock is
+what makes a leftover `.carrying.jsonl` found at the next drain provably from a crashed drain,
+never one racing this one right now. `repo_key`
+and `path_key` hash with the same crc32+adler32 recipe as the plugin's other state-directory key
+(`hooks/scripts/session-start-budget.py` `state_dir`, H-DRAFT-a10fd3f7) -- deliberately not the
+sha256 `state_root()` already uses below for the single-path fallback, which stays byte-for-byte
+what it always was (pre-existing, unrelated to this lane).
+
+Ship fix round 4 (cold refuter, B1+B2): `resolve_common_dir` now answers THREE ways, not two --
+a path (git answered: this is a checkout of that common dir), `None` (git answered: not a
+checkout), or the `UNKNOWN` sentinel (git could NOT answer: `TimeoutExpired` at `GIT_TIMEOUT_S`,
+or `OSError` because git itself could not be run). Before round 4 the third case was folded into
+the second, so on a loaded host a LIVE worktree's pointer was quarantined `NotAGitCheckout` (never
+landed) and a default-location drain fell back silently to the sha256 single-path inbox and found
+nothing there. Now a pointer whose root answers `UNKNOWN` is DEFERRED: moved back into `inbox/`
+untouched for the next wake, no quarantine row, counted in the drain result's `deferred`; and a
+drain whose own `--root` answers `UNKNOWN` refuses the whole drain with one stderr line and moves
+nothing, rather than guess which inbox directory is its own. Separately, because every checkout of
+one repository now shares one inbox, `drain` takes an exclusive, non-blocking `flock` on
+`<inbox_root>/.drain.lock` around the crash-recovery sweep of `processing/`, the rotation, the
+carry and the pointer loop: a second wake (main and a linked worktree waking together) that
+cannot get it backs off with one stderr line and moves nothing. Without that lock the second
+drain's sweep moved the first's IN-FLIGHT pointer back into `inbox/` and it was processed twice,
+the first drain also writing a false `FileNotFoundError` quarantine row for it. The sweep's
+assumption -- a pointer found in `processing/` is from a drain that is no longer running -- is
+only true under the lock, exactly as `_sweep_carrying`'s is under `.outbox-carry.lock`.
+
+NOTE on the default inbox location (ship fix round 1, cold refuter finding B2): for any `root`
+that IS a live git checkout -- true whether or not any pointer in its inbox carries `root`/
+`common_dir` yet -- `drain` with no `--inbox` override now reads from `<state>/om/<repo-key>/
+inbox/` (`repo-key` derived from `common_dir`), NOT from the pre-outbox-lane
+`<state>/om/<sha256(realpath root)[:16]>/inbox/` (`state_root()` below) that v0.29.0 documented
+and used unconditionally. This is NOT "exactly as before this release" for a consumer who
+hand-writes pointer files straight into that v0.29.0 path without going through `--inbox`: such a
+pointer is no longer found by a default-location drain and must be moved to the new location (or
+supplied via an explicit `--inbox` naming the old directory). The single-path fallback
+(`state_root()`) still exists and is still used verbatim, but only when `root` is not (or is no
+longer) a git checkout at all.
 """
 import errno
 import fcntl
@@ -44,6 +105,7 @@ import socket
 import subprocess
 import sys
 import time
+import zlib
 
 SCHEMA = 1
 CANARY_KEYS_FORBIDDEN = ("tool_input", "prompt", "last_assistant_message")
@@ -80,6 +142,150 @@ def state_root(root):
     base = override if override else os.path.join(os.path.expanduser("~"), ".hyp-state")
     key = hashlib.sha256(os.path.realpath(root).encode("utf-8")).hexdigest()[:16]
     return os.path.join(base, "om", key)
+
+
+# --------------------------------------------------------------------------- repo-key / liveness
+# H-DRAFT-a4a14ff4-om-outbox-carry-forward addition: a pointer may carry `root` (the checkout it
+# was written for) and `common_dir` (that repository's `git rev-parse --git-common-dir` at
+# pointer-write time). The shared per-repository inbox and outbox live under this key, not under
+# a hash of any one checkout's literal path, so every linked worktree of one repository drains
+# the same spool. `repo_key`/`path_key` use the same crc32+adler32 recipe as the plugin's other
+# state-directory key (`hooks/scripts/session-start-budget.py` `state_dir`, kept
+# H-DRAFT-a10fd3f7) -- a different scheme from `state_root()` above on purpose: that sha256[:16]
+# key is the pre-existing single-path fallback (a pointer with no `root`/`common_dir`) and stays
+# exactly what it always was. `GIT_TIMEOUT_S` bounds every `git` subprocess this file runs: a
+# hang here must not hang the drain.
+GIT_TIMEOUT_S = 5.0
+
+
+class _CommonDirUnknown(object):
+    """`resolve_common_dir`'s answer when git could NOT answer: `TimeoutExpired` at
+    `GIT_TIMEOUT_S`, or `OSError` (git not runnable). Distinct from `None`, which means git DID
+    answer "not a checkout". Compared by identity (`is UNKNOWN`), never a path, never truthy-tested
+    on its own -- every caller checks `is UNKNOWN` before any `if not common_dir` test (B1, ship
+    fix round 4: folding this case into `None` quarantined live worktrees on a loaded host)."""
+    __slots__ = ()
+
+    def __repr__(self):
+        return "UNKNOWN"
+
+    def __bool__(self):
+        # deliberately truthy so a caller that forgets the `is UNKNOWN` test cannot silently read
+        # it as "not a checkout"; and it never equals any string, so it never matches a pointer's
+        # recorded `common_dir` either.
+        return True
+
+
+UNKNOWN = _CommonDirUnknown()
+
+
+def _crc_adler_key(raw):
+    b = str(raw).encode("utf-8", "replace")
+    return "%08x%08x" % (zlib.crc32(b) & 0xFFFFFFFF, zlib.adler32(b) & 0xFFFFFFFF)
+
+
+def repo_key(common_dir):
+    """The shared state key for one repository, from its `common_dir` string. Not a realpath: a
+    `common_dir` that is itself gone (pre-mortem risk (i), the whole repository deleted) still
+    keys deterministically, it just never matches a live `git rev-parse` again."""
+    return _crc_adler_key(common_dir)
+
+
+def path_key(path):
+    """The stable per-root key `carried_from`/`origin_root_key` cite -- independent of
+    `common_dir` so two roots of the same repository never collide."""
+    return _crc_adler_key(path)
+
+
+def resolve_common_dir(root, timeout=GIT_TIMEOUT_S):
+    """`git -C root rev-parse --git-common-dir`, absolute and realpath'd, when git ANSWERED that
+    `root` is a checkout; `None` when git answered that it is not (or `root` is not a directory
+    at all); `UNKNOWN` when git could not answer -- `TimeoutExpired` after `timeout` seconds or
+    `OSError` (git not runnable). Never raises. B1 (ship fix round 4): the third answer used to be
+    folded into `None`, so under host load a live worktree read as "not a checkout" (its pointer
+    quarantined, never landed) and a default-location drain fell back silently to the single-path
+    inbox; callers now treat `UNKNOWN` as "decide nothing this wake" instead."""
+    if not root or not os.path.isdir(root):
+        return None
+    try:
+        proc = subprocess.run(["git", "-C", root, "rev-parse", "--git-common-dir"],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return UNKNOWN
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.decode("utf-8", "replace").strip()
+    if not out:
+        return None
+    # `git -C root rev-parse --git-common-dir` prints a RELATIVE path (".git") when `root` is
+    # itself the main checkout, and an absolute path when `root` is a linked worktree -- resolve
+    # relative to `root`, never to this process's own cwd (the kept fix: two linked worktrees of
+    # one repo must not hash to two different repo-keys). Then realpath it: git's own worktree
+    # admin file (`.git/worktrees/<name>/gitdir`) stores an already-canonicalized absolute path,
+    # so a `root` reached through a symlinked mount (macOS `/tmp` and `/var`, both symlinks to
+    # `/private/...`; common under `tempfile.mkdtemp()`) would otherwise resolve to a DIFFERENT
+    # string here (unresolved) than git reports for a linked worktree of the same repository
+    # (already resolved) -- a false `not-a-checkout` on every live linked worktree of a repo that
+    # merely happens to sit under a symlinked path. Bug found while adding this lane's own
+    # selftest cases (they run under the default `tempfile.mkdtemp()`, `/var/folders/...`).
+    resolved = out if os.path.isabs(out) else os.path.abspath(os.path.join(root, out))
+    return os.path.realpath(resolved)
+
+
+def state_root_for_repo(common_dir):
+    override = os.environ.get("HYP_STATE_DIR")
+    base = override if override else os.path.join(os.path.expanduser("~"), ".hyp-state")
+    return os.path.join(base, "om", repo_key(common_dir))
+
+
+def _normalize_pointer_common_dir(common_dir_p, root_p):
+    """Normalize a pointer's `common_dir` exactly as `resolve_common_dir` normalizes git's own
+    output: join to `root_p` when relative, then realpath. The documented pointer contract
+    (docs/passive-feedback.md) names `common_dir` as `git rev-parse --git-common-dir` AT
+    POINTER-WRITE TIME -- for a main checkout that command prints the relative string `.git`, and
+    for a root reached through a symlinked mount (macOS `/tmp`, `/var`) an absolute-but-unresolved
+    path -- so comparing the raw field byte-for-byte against `resolve_common_dir`'s already-joined,
+    realpath'd result false-quarantined both shapes (B3). Returns None for a non-string/empty
+    value."""
+    if not common_dir_p or not isinstance(common_dir_p, str):
+        return None
+    resolved = common_dir_p if os.path.isabs(common_dir_p) else os.path.abspath(os.path.join(root_p, common_dir_p))
+    return os.path.realpath(resolved)
+
+
+def resolve_pointer_root(pointer):
+    """(root_p, status) for one pointer, status in `root` (live checkout matching its recorded
+    `common_dir`), `missing` (root no longer exists AND the pointer names the repository it
+    belonged to), `not-a-checkout` (root exists but is not a git checkout, its live common-dir
+    does not match the recorded one, or the pointer is malformed -- a null/empty/non-string
+    `root`, A2, or no usable `common_dir` at all, B1 of ship fix round 3 -- which must quarantine
+    rather than enter the outbox carry path under a meaningless or borrowed key), or `unknown`
+    (root exists and the pointer is well-formed, but git could not answer for it within
+    `GIT_TIMEOUT_S` -- B1 of ship fix round 4: not a verdict on the pointer at all, so `drain`
+    defers it to the next wake rather than quarantine it).
+
+    The `common_dir` test runs BEFORE the `isdir` test on purpose: a pointer that cannot prove
+    which repository it belongs to quarantines whether or not its `root` still exists. Before
+    round 3 a pointer with a dead `root` and no `common_dir` reached `missing`, and the
+    missing-root branch then fell back to the DRAINING repository's own outbox -- so the row was
+    carried into a repository the pointer never named, exactly the reading the keep rules out
+    (and the opposite of what docs/passive-feedback.md already promised for that shape)."""
+    root_p = pointer.get("root")
+    common_dir_p = pointer.get("common_dir")
+    if not root_p or not isinstance(root_p, str):
+        return root_p, "not-a-checkout"
+    norm_common_dir_p = _normalize_pointer_common_dir(common_dir_p, root_p)
+    if not norm_common_dir_p:
+        return root_p, "not-a-checkout"
+    if not os.path.isdir(root_p):
+        return root_p, "missing"
+    live_common_dir = resolve_common_dir(root_p)
+    if live_common_dir is UNKNOWN:
+        return root_p, "unknown"
+    if not live_common_dir or live_common_dir != norm_common_dir_p:
+        return root_p, "not-a-checkout"
+    return root_p, "root"
 
 
 def _consumer_config(root):
@@ -258,15 +464,20 @@ def _debug_preview(transcript_path):
 
 
 def append_row(root, row, allow_below_floor=False):
-    """Append one canonical row under an flock'd O_APPEND descriptor, deduped by exact bytes,
-    refusing when the self-check fires or free space is below the floor. Returns 'written' |
-    'duplicate' | 'refused-redaction' | 'refused-floor'. A refusal prints exactly one stderr line."""
+    """Append one canonical row to `root`'s own ledger. See `append_to_path`."""
+    return append_to_path(ledger_path(root), row, allow_below_floor=allow_below_floor)
+
+
+def append_to_path(path, row, allow_below_floor=False):
+    """Append one canonical row to an explicit path (a checkout's ledger or the shared outbox)
+    under an flock'd O_APPEND descriptor, deduped by exact bytes, refusing when the self-check
+    fires or free space is below the floor. Returns 'written' | 'duplicate' | 'refused-redaction'
+    | 'refused-floor'. A refusal prints exactly one stderr line."""
     selfcheck_enabled = mutant_mode() != "blind"
     bad = _forbidden_hit(row) if selfcheck_enabled else None
     if bad:
         sys.stderr.write("om-worker: refuse to write row: %s present\n" % bad)
         return "refused-redaction"
-    path = ledger_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if not allow_below_floor and free_bytes(path) < free_floor_bytes():
         sys.stderr.write("om-worker: refusing append, free space below floor\n")
@@ -535,7 +746,11 @@ def _inbox_dirs(inbox_root):
 
 def _recover_processing(inbox_root):
     """Move every pointer a killed drain left in processing/ back into inbox/ so it is drained
-    again (dedupe by canonical bytes makes the re-run harmless). Returns the count moved."""
+    again (dedupe by canonical bytes makes the re-run harmless). Returns the count moved. Only
+    ever called while `drain`'s `.drain.lock` is held (B2, ship fix round 4): a pointer found here
+    is then provably from a drain that is no longer running -- without the lock a second wake on
+    the now-shared per-repository inbox swept the first wake's IN-FLIGHT pointer back into inbox/
+    and processed it a second time."""
     moved = 0
     processing = os.path.join(inbox_root, "processing")
     inbox = os.path.join(inbox_root, "inbox")
@@ -572,22 +787,370 @@ def _rotate_if_needed(inbox_root, cap_bytes=1 << 20):
     return moved
 
 
+def _resolve_inbox_root(root, inbox_override):
+    """The shared, `common_dir`-keyed inbox root for the repository `root` checks out, or the
+    single-path fallback when `root` is not (or is no longer) a git checkout -- back-compat: a
+    pointer set with no `root`/`common_dir` fields still drains the old way. `--inbox` overrides
+    WHERE pointers are read from, never whether the carry step runs: a caller who names an
+    explicit inbox directory still gets outbox rows carried into `root`'s own ledger when
+    `root`'s live `common_dir` matches one waiting there. Returns (inbox_root,
+    target_common_dir-or-None), or (inbox_override-or-None, UNKNOWN) when git could not answer for
+    `root` at all (B1, ship fix round 4) -- the caller refuses the whole drain then, rather than
+    guess between the repo-keyed inbox and the single-path fallback (the silent wrong guess that
+    found nothing on a loaded host)."""
+    if inbox_override:
+        return inbox_override, resolve_common_dir(root)
+    common_dir = resolve_common_dir(root)
+    if common_dir is UNKNOWN:
+        return None, UNKNOWN
+    if common_dir:
+        return state_root_for_repo(common_dir), common_dir
+    return state_root(root), None
+
+
+def _sweep_carrying(inbox_root):
+    """Every `outbox.<epoch>.carrying.jsonl` left behind by an earlier drain of this inbox -- one
+    that claimed the outbox (renamed it away from `outbox.jsonl`) and did not finalize it (crashed
+    mid-carry, or halted on the free-space floor, see `_carry_claim`) -- oldest first, so those
+    rows are not stranded. Only ever called while `_carry_outbox`'s own lock is held (see below),
+    so a leftover found here is guaranteed to be from a drain that is no longer running, never one
+    racing this call right now. B2 fix (ship fix round 5, cold refuter): this used to return only
+    the OLDEST leftover, and `_carry_outbox_locked` returned without ever reaching `outbox.jsonl`
+    while one existed -- so a claim that could never finalize (round 3 left a claim in place on ANY
+    refused row, and a row the redaction self-check refuses is refused on every attempt) held the
+    live outbox unclaimed on every later drain of that repository, stranding every later
+    dead-worktree row behind it (probe: three consecutive drains of a live checkout, carried 0 each,
+    `outbox.jsonl` still present beside the stuck claim). Every leftover is now resumed, then the
+    live outbox is claimed in the same drain."""
+    return sorted(glob.glob(os.path.join(inbox_root, "outbox.*.carrying.jsonl")))
+
+
+def _append_to_outbox_locked(outbox_dir, outbox_path, row):
+    """Append one dead-worktree row to `outbox_path` while holding the SAME per-`outbox_dir`
+    lock `_carry_outbox` takes (`.outbox-carry.lock`) -- blocking, not the carrier's non-blocking
+    attempt, because a writer has a row it must land somewhere and cannot just back off.
+
+    B1 fix (ship fix round 2, cold refuter): without this lock, a writer's `append_to_path` could
+    open a descriptor on `outbox.jsonl` at the same instant a concurrent drain's `_carry_outbox`
+    renamed that same path away to `outbox.<epoch>.carrying.jsonl` -- `append_to_path`'s own
+    `flock` protects its own descriptor, not the PATH getting renamed out from under it between
+    open and append. The row then either lands inside a `.carrying.jsonl` the carrier already
+    read (snapshot taken before the late write, so the row is never carried) or, if the carrier's
+    rename lands first, into a freshly re-created `outbox.jsonl` that is fine -- but nothing
+    without this lock guarantees which happens. Reproduced deterministically: open the outbox,
+    run `_carry_outbox`, then write -- the next drain carried 0. Holding this lock around the
+    append means a carry in progress for `outbox_dir` finishes its claim-rename before this write
+    can start, so the row always lands in a fresh `outbox.jsonl` the next drain will find."""
+    lock_path = os.path.join(outbox_dir, ".outbox-carry.lock")
+    os.makedirs(outbox_dir, exist_ok=True)
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            append_to_path(outbox_path, row)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+
+
+def _carry_outbox(root, inbox_root, target_common_dir, result=None):
+    """Carry every row waiting in `<inbox_root>`'s outbox into `root`'s own ledger, once each;
+    returns the rows carried. `result`, when given, is the drain's result dict: quarantine rows the
+    carry itself writes (a refused row filed away, B2 fix round 5) are counted into its
+    `quarantined` so the result never says 0 beside a quarantine row the same wake wrote.
+    No-ops when there is no outbox (and no leftover claim, see below), or when `root`'s own git
+    common-dir could not be resolved (it is not itself a live checkout right now).
+
+    B1 fix (pre-mortem risk (ii), carried verifier finding): the whole claim+carry+finalize
+    sequence runs under an exclusive, non-blocking `flock` on `<inbox_root>/.outbox-carry.lock` --
+    a drain that cannot acquire it immediately backs off and returns 0 rather than touch the
+    outbox at all, so at most one drain per `inbox_root` is ever inside this function's body at
+    once. A rename-only claim (`outbox.jsonl` -> `outbox.<epoch>.carrying.jsonl`) without that
+    lock still leaves a race: two drains starting at nearly the same instant can both pass the
+    lockless `os.path.isfile` check, and the SECOND one's `_sweep_carrying` then finds the
+    FIRST one's in-flight (not crashed) claim file and "resumes" it in parallel, carrying the same
+    rows a second time into a DIFFERENT checkout's ledger (observed empirically: a 400-row outbox
+    landed all 400 rows in BOTH ledgers rather than exactly one). The lock removes that window:
+    only the drain holding it can create, sweep, or finalize a `.carrying.jsonl` file, so a
+    leftover one found under the lock is guaranteed to be from a drain that is no longer running
+    (crashed mid-carry), never one racing this call right now."""
+    if not target_common_dir or target_common_dir is UNKNOWN:
+        return 0
+    os.makedirs(inbox_root, exist_ok=True)
+    lock_path = os.path.join(inbox_root, ".outbox-carry.lock")
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # another drain already holds the lock and is claiming/carrying this repository's
+            # outbox right now -- back off rather than race it; it will finish the job.
+            return 0
+        try:
+            carried, quarantined = _carry_outbox_locked(root, inbox_root)
+            if result is not None:
+                result["quarantined"] += quarantined
+            return carried
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+
+
+def _claim_roots_path(claimed_path):
+    """The sidecar beside one `outbox.<epoch>.carrying.jsonl` claim: one realpath per line, every
+    checkout that has carried from that claim so far. A1 (ship fix round 4, advisory): a claim a
+    DIFFERENT checkout resumes (after the claimer crashed, or left it behind because the target
+    ledger refused a row) used to dedupe only against the resumer's own ledger, so rows the
+    claimer had already landed were carried a second time into the resumer's ledger; the resumer
+    now dedupes against every root named here that still exists, then adds itself."""
+    return claimed_path[:-len(".jsonl")] + ".roots"
+
+
+def _claim_roots(claimed_path):
+    try:
+        with open(_claim_roots_path(claimed_path), "r", encoding="utf-8") as fh:
+            return [l.strip() for l in fh if l.strip()]
+    except OSError:
+        return []
+
+
+def _note_claim_root(claimed_path, root):
+    real = os.path.realpath(root)
+    roots = _claim_roots(claimed_path)
+    if real in roots:
+        return
+    try:
+        with open(_claim_roots_path(claimed_path), "a", encoding="utf-8") as fh:
+            fh.write(real + "\n")
+    except OSError:
+        pass
+
+
+def _refused_path(claimed_path):
+    """`outbox.<epoch>.refused.jsonl` beside one claim: the rows of that claim the target ledger's
+    redaction self-check refused, verbatim as they waited in the outbox."""
+    return claimed_path[:-len(".carrying.jsonl")] + ".refused.jsonl"
+
+
+def _file_refused_rows(path, rows):
+    """Append refused outbox rows (their canonical bytes exactly as they waited, `landed_in: outbox`
+    and `origin_root_key` intact) under an flock'd O_APPEND descriptor, deduped by exact bytes --
+    `append_to_path`'s transport without its two refusals: these bytes already sit on this disk in
+    the claim, and the self-check is precisely what refused them. Raises OSError on a write failure
+    so the caller can leave the claim in place rather than finalize an unfiled row away."""
+    lines = [canonical_bytes(r) for r in rows]
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_APPEND, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            size = os.fstat(fd).st_size
+            existing = set(os.read(fd, size).splitlines(True)) if size else set()
+            os.lseek(fd, 0, os.SEEK_END)
+            for line in lines:
+                if line not in existing:
+                    os.write(fd, line)
+                    existing.add(line)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _finalize_claim(claimed_path):
+    """Rename one claim on to `outbox.<epoch>.carried.jsonl` -- bumping the epoch on a collision,
+    exactly as the claim step does, rather than appending another suffix outside the documented
+    pattern (A4, ship fix round 2) -- and drop its `.roots` sidecar."""
+    final_dir = os.path.dirname(claimed_path)
+    final_epoch = int(time.time())
+    final_dest = os.path.join(final_dir, "outbox.%d.carried.jsonl" % final_epoch)
+    while os.path.exists(final_dest):
+        final_epoch += 1
+        final_dest = os.path.join(final_dir, "outbox.%d.carried.jsonl" % final_epoch)
+    try:
+        os.rename(claimed_path, final_dest)
+    except OSError:
+        # the claim itself is exclusive to this drain (we are the one that renamed it away from
+        # outbox.jsonl, or resumed a leftover no one else can also be resuming), so a failure here
+        # is a filesystem error, not a race to fail closed on -- nothing to undo either way.
+        pass
+    try:
+        os.remove(_claim_roots_path(claimed_path))
+    except OSError:
+        pass
+
+
+def _carry_claim(root, claimed_path):
+    """Carry one claimed outbox file into `root`'s own ledger and finalize it. Returns
+    `(carried, quarantined, halted)`: rows landed, quarantine rows written, and whether the carry
+    stopped on the free-space floor with the claim left in place for the next drain.
+
+    Two refusals, two fates (B2 fix, ship fix round 5, cold refuter). A row the redaction
+    self-check refuses is refused for what it CONTAINS, so every later attempt refuses it again:
+    it is filed verbatim into `outbox.<epoch>.refused.jsonl` beside the claim (the claim's own
+    epoch), one `quarantine` row naming that file with reason `CarryRefused-redaction` lands in
+    the target ledger, and the claim finalizes -- round 3 left the claim in place on any refusal
+    "for the next drain", which, with only the oldest leftover resumed per drain and the live
+    outbox never reached behind it, starved the repository indefinitely. A row refused on the
+    free-space FLOOR is refused for the host's state, not its content, and the drain's own
+    start-of-drain floor check makes this a race window only: the carry halts, the claim stays
+    (every row still in it, nothing filed, nothing finalized), and the next drain that passes the
+    floor check resumes it and goes on to the live outbox in the same wake. Rows already landed
+    before either refusal are skipped on the resume by the `(session, through)` dedupe, against
+    every checkout named in the claim's `.roots` sidecar (A1, round 4)."""
+    prior_roots = [p for p in _claim_roots(claimed_path)
+                   if p != os.path.realpath(root) and os.path.isdir(p)]
+    _note_claim_root(claimed_path, root)
+    rows, _ = read_rows(claimed_path)
+    carried = 0
+    refused_rows = []
+    if rows:
+        target_ledger_rows, _ = read_rows(ledger_path(root))
+        seen = set((r.get("session"), r.get("through")) for r in target_ledger_rows
+                   if r.get("kind") == "session-observed")
+        for prior in prior_roots:
+            # A1: rows an earlier carrier of this same claim already landed in ITS ledger
+            prior_rows, _ = read_rows(ledger_path(prior))
+            seen.update((r.get("session"), r.get("through")) for r in prior_rows
+                        if r.get("kind") == "session-observed")
+        for row in rows:
+            key = (row.get("session"), row.get("through"))
+            if key in seen:
+                continue
+            out_row = dict(row)
+            origin_key = out_row.pop("origin_root_key", None)
+            out_row["landed_in"] = "carried"
+            out_row["carried_from"] = origin_key
+            result = append_row(root, out_row)
+            if result == "written":
+                carried += 1
+            elif result == "refused-floor":
+                sys.stderr.write("om-worker drain: free space fell below the floor mid-carry; "
+                                 "claim %s left for the next drain\n" % os.path.basename(claimed_path))
+                return carried, 0, True
+            elif result == "refused-redaction":
+                refused_rows.append(row)
+            seen.add(key)
+    quarantined = 0
+    if refused_rows:
+        refused_path = _refused_path(claimed_path)
+        try:
+            _file_refused_rows(refused_path, refused_rows)
+        except OSError as exc:
+            sys.stderr.write("om-worker drain: could not file %d refused outbox row(s) (%s); "
+                             "claim %s left for the next drain\n"
+                             % (len(refused_rows), type(exc).__name__, os.path.basename(claimed_path)))
+            return carried, 0, True
+        q_row = {"kind": "quarantine", "schema": SCHEMA, "landed_in": "root",
+                 "file": os.path.basename(refused_path), "reason": "CarryRefused-redaction",
+                 "date": None}
+        if append_row(root, q_row) == "written":
+            quarantined += 1
+        sys.stderr.write("om-worker drain: %d outbox row(s) refused by the target ledger's "
+                         "redaction self-check, filed in %s; claim finalized\n"
+                         % (len(refused_rows), os.path.basename(refused_path)))
+    _finalize_claim(claimed_path)
+    return carried, quarantined, False
+
+
+def _carry_outbox_locked(root, inbox_root):
+    """The claim+carry+finalize body of `_carry_outbox`, run only while its lock is held: every
+    leftover claim first (oldest first), then the live `outbox.jsonl`, so no leftover can hold the
+    live outbox unclaimed (B2, ship fix round 5). A floor halt ends the wake's carry at that claim:
+    nothing later would land either. Returns `(carried, quarantined)`."""
+    carried = quarantined = 0
+    for claimed_path in _sweep_carrying(inbox_root):
+        n, q, halted = _carry_claim(root, claimed_path)
+        carried += n
+        quarantined += q
+        if halted:
+            return carried, quarantined
+    outbox_path = os.path.join(inbox_root, "outbox.jsonl")
+    if not os.path.isfile(outbox_path):
+        return carried, quarantined
+    epoch = int(time.time())
+    claim_dest = os.path.join(inbox_root, "outbox.%d.carrying.jsonl" % epoch)
+    while os.path.exists(claim_dest) or os.path.exists(_refused_path(claim_dest)):
+        epoch += 1
+        claim_dest = os.path.join(inbox_root, "outbox.%d.carrying.jsonl" % epoch)
+    # under the lock, no other drain for this inbox_root can be touching outbox.jsonl, so this
+    # rename cannot lose a race -- it can still fail on a genuine filesystem error, which is not a
+    # case to carry on from.
+    os.rename(outbox_path, claim_dest)
+    n, q, _ = _carry_claim(root, claim_dest)
+    return carried + n, quarantined + q
+
+
+def _defer_pointer(inbox_root, processing_path, base):
+    """Put a pointer this drain already moved into processing/ back into inbox/ untouched, for the
+    next wake (B1, ship fix round 4: git could not answer for its root in time -- not a verdict on
+    the pointer, so neither landed nor quarantined)."""
+    dest = os.path.join(inbox_root, "inbox", base)
+    try:
+        if os.path.exists(dest):
+            os.remove(processing_path)   # the inbox already holds a pointer of that name
+        else:
+            shutil.move(processing_path, dest)
+    except OSError:
+        pass
+
+
 def drain(root, plugin_scripts, inbox_override=None, n_cap=20, t_cap=60.0):
     """Process at most n_cap pointer files within t_cap seconds (monotonic clock, checked between
     files): rename-before-parse into processing/, observe, append, then processed/ -- or
-    quarantine/ with one `quarantine` row naming the file's basename and the exception class."""
-    inbox_root = inbox_override or state_root(root)
+    quarantine/ with one `quarantine` row naming the file's basename and the exception class.
+    Before any pointer is read, carries forward any outbox rows waiting for this checkout
+    (`_carry_outbox`). The result dict always has the same keys (A4, ship fix round 4), on every
+    exit: `rows`, `quarantined`, `rotated`, `landed`, `recovered`, `outbox`, `carried`, `deferred`.
+
+    Refuses the whole drain -- one stderr line, nothing moved, all-zero result -- when git could
+    not answer for `root` itself within `GIT_TIMEOUT_S` (B1: neither inbox location can be chosen
+    honestly then), when free space is below the floor, or when another drain of the same
+    `inbox_root` holds `<inbox_root>/.drain.lock` (B2: every checkout of one repository shares
+    that inbox now, and the crash-recovery sweep of `processing/` is only sound one drain at a
+    time). A pointer whose OWN root git could not answer for in time is deferred back into
+    `inbox/` for the next wake (`deferred`), never quarantined."""
+    written = {"rows": 0, "quarantined": 0, "rotated": False, "landed": 0, "recovered": 0,
+               "outbox": 0, "carried": 0, "deferred": 0}
+    inbox_root, target_common_dir = _resolve_inbox_root(root, inbox_override)
+    if target_common_dir is UNKNOWN:
+        sys.stderr.write("om-worker drain: refusing, git could not resolve the --root checkout "
+                         "within %gs (timeout, or git not runnable); nothing moved, next wake "
+                         "retries\n" % GIT_TIMEOUT_S)
+        return written
     inbox = _inbox_dirs(inbox_root)
-    written = {"rows": 0, "quarantined": 0, "rotated": False, "landed": 0, "recovered": 0}
     if free_bytes(ledger_path(root)) < free_floor_bytes():
         sys.stderr.write("om-worker drain: refusing, free space below floor\n")
         return written
+    lock_fd = os.open(os.path.join(inbox_root, ".drain.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            sys.stderr.write("om-worker drain: another drain of this inbox holds .drain.lock; "
+                             "backing off, nothing moved\n")
+            return written
+        try:
+            return _drain_locked(root, plugin_scripts, inbox_root, inbox, target_common_dir,
+                                 inbox_override, n_cap, t_cap, written)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+
+
+def _drain_locked(root, plugin_scripts, inbox_root, inbox, target_common_dir, inbox_override,
+                  n_cap, t_cap, written):
+    """The body of `drain`, run only while its `.drain.lock` is held."""
     written["recovered"] = _recover_processing(inbox_root)
     rotated = _rotate_if_needed(inbox_root)
     if rotated:
         append_row(root, {"kind": "spool-overflow", "schema": SCHEMA, "landed_in": "root",
                           "moved": rotated, "date": None})
         written["rotated"] = True
+    written["carried"] = _carry_outbox(root, inbox_root, target_common_dir, result=written)
     start = time.monotonic()
     files = sorted(glob.glob(os.path.join(inbox, "*.json")))
     n_done = 0
@@ -608,9 +1171,67 @@ def drain(root, plugin_scripts, inbox_override=None, n_cap=20, t_cap=60.0):
             session_id = pointer.get("session_id") or os.path.splitext(base)[0]
             if not os.path.isfile(transcript_path):
                 raise ValueError("transcript missing")
-            row = observe(transcript_path, root, plugin_scripts)
+            if "root" not in pointer:
+                # back-compat: the pre-outbox pointer shape, no per-pointer root -- land into the
+                # drain target exactly as this worker always did.
+                row = observe(transcript_path, root, plugin_scripts)
+                row["session"] = session_id
+                result = append_row(root, row)
+                if result == "written":
+                    written["rows"] += 1
+                written["landed"] += 1
+                shutil.move(processing_path, os.path.join(inbox_root, "processed", base))
+                continue
+            root_p, status = resolve_pointer_root(pointer)
+            if status == "unknown":
+                # B1 (ship fix round 4): the root exists and the pointer is well-formed, but git
+                # could not answer for it in time -- a fact about this wake's host, not about the
+                # pointer. Leave it for the next wake rather than write a false quarantine.
+                _defer_pointer(inbox_root, processing_path, base)
+                written["deferred"] += 1
+                continue
+            if status == "missing":
+                # the outbox rule: the checkout the session worked in is gone. The transcript
+                # itself lives outside any checkout (the real product's convention,
+                # ~/.claude/projects/<encoded-cwd>/<sid>.jsonl), so it is still readable even
+                # though `root_p` is gone -- the row is computed exactly as it would have been
+                # landed, then held under the shared outbox instead of lost.
+                row = observe(transcript_path, root_p, plugin_scripts)
+                row["session"] = session_id
+                row["landed_in"] = "outbox"
+                row["origin_root_key"] = path_key(root_p)
+                # A1: key the outbox by the POINTER's own recorded `common_dir` (its origin
+                # repository), not by whichever repository happens to be draining -- a pointer
+                # for repository X sitting (misplaced, or by a shared/misconfigured inbox) in
+                # repository Y's inbox must wait for X's own next live drain, not Y's. `--inbox`
+                # still wins when a caller names an explicit directory: it overrides where the
+                # outbox itself lives too, same as it overrides where pointers are read from.
+                # `resolve_pointer_root` only returns `missing` when the pointer's `common_dir`
+                # normalizes to a real string (ship fix round 3, B1), so there is no "no key"
+                # fallback here any more: a pointer without one quarantined above, never borrowing
+                # the draining repository's outbox.
+                pointer_common_dir = _normalize_pointer_common_dir(pointer.get("common_dir"), root_p)
+                outbox_dir = inbox_root if inbox_override else state_root_for_repo(pointer_common_dir)
+                outbox_path = os.path.join(outbox_dir, "outbox.jsonl")
+                _append_to_outbox_locked(outbox_dir, outbox_path, row)
+                written["landed"] += 1
+                # a distinct counter from "landed" (which also counts root landings) so a caller
+                # can tell an outbox landing apart from a root landing without re-reading rows.
+                written["outbox"] += 1
+                shutil.move(processing_path, os.path.join(inbox_root, "processed", base))
+                continue
+            if status == "not-a-checkout":
+                # not "the rule": a pointer whose root exists but was never a git checkout of the
+                # recorded `common_dir` is malformed, quarantined unconditionally either way.
+                append_row(root, {"kind": "quarantine", "schema": SCHEMA, "landed_in": "root",
+                                  "file": base, "reason": "NotAGitCheckout", "date": None})
+                shutil.move(processing_path, os.path.join(inbox_root, "quarantine", base))
+                written["quarantined"] += 1
+                continue
+            row = observe(transcript_path, root_p, plugin_scripts)
             row["session"] = session_id
-            result = append_row(root, row)
+            row["landed_in"] = "root"
+            result = append_row(root_p, row)
             if result == "written":
                 written["rows"] += 1
             written["landed"] += 1
@@ -625,6 +1246,9 @@ def drain(root, plugin_scripts, inbox_override=None, n_cap=20, t_cap=60.0):
             except OSError:
                 pass
             written["quarantined"] += 1
+    if written["deferred"]:
+        sys.stderr.write("om-worker drain: %d pointer(s) deferred to the next wake, git could not "
+                         "resolve their root within %gs\n" % (written["deferred"], GIT_TIMEOUT_S))
     return written
 
 
