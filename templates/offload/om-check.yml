@@ -56,4 +56,4 @@ jobs:
         run: python3 .github/om-scripts/om_check_regen_commit.py
       - name: push regenerated commit if any
         if: ${{ github.actor != 'om-check[bot]' }}
-        run: git push origin HEAD
+        run: git symbolic-ref -q HEAD >/dev/null && git push origin HEAD || echo "PUSH skipped -- detached HEAD (pull_request checkout)"

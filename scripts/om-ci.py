@@ -649,6 +649,31 @@ def self_test_ci_tier0(keep_scratch=False):
                  head_before3 == head_after3)
             _require_budget(run_started, "after bot-actor run")
 
+            # B1 (ship fix round 2): actions/checkout@v4 leaves EVERY pull_request checkout
+            # detached at the merge ref. Seed a fresh stale mutant and check out its bare SHA
+            # (never a branch name) so `_git(work, "checkout", ...)` lands on a detached HEAD,
+            # exactly like a pull_request-triggered run -- and require the compile-check job to
+            # still exit 0, with the push step's own guard (not a crash) explaining why nothing
+            # was pushed.
+            _seed(work, "mutant/m-stale-detached", "%s/ops/actors/builder.md" % model_dir,
+                 "---\nid: actor/builder\ntype: actor\ncontext: ops\nsummary: the builder "
+                 "(edited again)\nstatus: current\n---\nEdited again (seeds a detached-HEAD "
+                 "stale check).\n",
+                 "seed M-stale (detached-checkout scenario)")
+            detached_sha = _git(work, "rev-parse", "mutant/m-stale-detached")[1].strip()
+            results, shim_hits, proxy_hits = _run_jobs(work, detached_sha, NORMAL_ACTOR,
+                                                        os.path.join(scratch_root, "run-detached"),
+                                                        model_dir, pred_map)
+            shim_total += shim_hits
+            proxy_total += proxy_hits
+            cc_detached = _job_result(results, "compile-check")
+            push_out_detached = cc_detached["step_outputs"].get("push regenerated commit if any", "")
+            check("compile-check job exits 0 on a detached checkout of a stale mutant "
+                 "(pull_request-style merge-ref checkout)", cc_detached["rc"] == 0, cc_detached)
+            check("the push step skips with a notice (never fails) on a detached checkout",
+                 "PUSH skipped" in push_out_detached, push_out_detached)
+            _require_budget(run_started, "after detached-checkout run")
+
             check("no claude shim spawn across every scenario", shim_total == 0, shim_total)
             check("zero proxy hits across every scenario", proxy_total == 0, proxy_total)
 

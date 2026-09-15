@@ -137,11 +137,15 @@ step-level `if` already gates on), so a future template edit that drops the step
 cannot reopen the loop silently.
 
 **What is still owed.** Everything above is proven against a scratch git consumer under a
-simulated CI-runner constraint (`scripts/om-ci.py self-test ci-tier0`; 23-check
-`scripts/selftest-om-ci.py`), never against the real hosting service. Three things the lab keep
-disclosed as ship-time acceptance checks, not yet run: whether the hosting service actually
-accepts one `paths:` list with a `!` exclusion exactly as rendered; what `github.actor` reads as
-hosted for a `GITHUB_TOKEN` push, and whether that push re-triggers the workflow at all; and
-whether `actions/checkout@v4`'s default ref state for a `pull_request` event (a detached merge
-ref, unlike this check's own local-branch self-test) makes `git push origin HEAD` land where
-intended. `SHIP.md` records the result once that check runs.
+simulated CI-runner constraint (`scripts/om-ci.py self-test ci-tier0`; 25-check
+`scripts/selftest-om-ci.py`), never against the real hosting service. The push step's own `run:`
+now guards against a detached HEAD (ship fix round 2, B1) -- `actions/checkout@v4`'s default ref
+state for a `pull_request` event is a detached merge ref, unlike this check's own local-branch
+self-test, and a naive `git push origin HEAD` there failed the whole job regardless of whether
+anything was actually stale; the self-test now checks out a detached SHA of a stale mutant and
+requires the job to still exit 0 with the push step printing a skip notice. Two things the lab
+keep disclosed as ship-time acceptance checks remain not yet run: whether the hosting service
+actually accepts one `paths:` list with a `!` exclusion exactly as rendered; and what
+`github.actor` reads as hosted for a `GITHUB_TOKEN` push on a normal branch push (never a
+pull_request, which this fix now always skips), and whether that push re-triggers the workflow
+at all. `SHIP.md` records the result once that check runs.

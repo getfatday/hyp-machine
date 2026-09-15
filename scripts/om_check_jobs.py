@@ -31,9 +31,13 @@ bytes, disclosed here rather than hidden in a diff:
    locally and explicitly never pushes ("out of scope for a local run" -- graded only against a
    local bare origin the harness controls). A hosted job's regenerate commit is inert without a
    push; `compile-check`'s `permissions: contents: write` only has a reason to exist if this job
-   pushes with the checkout-persisted `GITHUB_TOKEN`. Whether the push itself re-triggers this
-   workflow, and under which `github.actor`, is the disclosed, not-yet-run hosted acceptance
-   check (VERIFY.md section 10, finding 3) -- this addition does not close that; it is what
+   pushes with the checkout-persisted `GITHUB_TOKEN`. The push step's own `run:` guards against a
+   detached HEAD (ship fix round 2, B1 below) rather than failing the job when there is nothing
+   attached to push -- `actions/checkout@v4` leaves every `pull_request` checkout detached at
+   the merge ref, so a naive `git push origin HEAD` there fails the job whether or not anything
+   was stale. Whether the push itself re-triggers this workflow, and under which `github.actor`,
+   remains the disclosed, not-yet-run hosted acceptance check (VERIFY.md section 10, finding 3;
+   docs/ci-scaffold.md, "What is still owed") -- this addition does not close that; it is what
    the acceptance check will exercise.
 
 Trigger block (kept as graded, AMENDMENTS.md #1): the hosting service's workflow syntax forbids
@@ -132,10 +136,18 @@ JOBS = [
                 # upstream-tracking branch (a plain `git push` refuses with "no upstream branch"
                 # on a checkout that never set one) and pushes to a destination of the same
                 # name, matching how `actions/checkout@v4` leaves a push-event ref checked out
-                # locally. The pull_request case -- a detached checkout of a merge ref -- is
-                # part of the disclosed, not-yet-run hosted acceptance check (see this module's
-                # docstring, drift 2).
-                "run": "git push origin HEAD",
+                # locally. B1 (ship fix round 2): `actions/checkout@v4` leaves EVERY
+                # `pull_request` checkout detached at the merge ref, and `git push origin HEAD`
+                # exits 1 on a detached HEAD ("unable to push to unqualified destination: HEAD")
+                # -- so this job would go red on every pull_request the template triggers on,
+                # whether or not anything was actually stale or broken. `git symbolic-ref -q
+                # HEAD` reports whether HEAD is attached to a branch; push only when it is, and
+                # print a one-line skip notice (never fail) otherwise. The disclosed, not-yet-run
+                # hosted acceptance check (this module's docstring, drift 2) is now narrower: not
+                # "does the push land", but "is `github.actor` ever a branch push where this
+                # guard should NOT have skipped".
+                "run": 'git symbolic-ref -q HEAD >/dev/null && git push origin HEAD || '
+                       'echo "PUSH skipped -- detached HEAD (pull_request checkout)"',
                 "if": True,  # presence-only marker; see comment above JOBS
             },
         ],
