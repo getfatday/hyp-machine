@@ -266,6 +266,18 @@ variable bytes unchanged passed the assertion, and the instrument had no verb to
    `max-looks` or `spend-exhausted` (closed without a verdict on the recorded evidence). Journal the
    close; the spec's Status follows the instruction.
 
+**Script-only lanes and the containment clause.** A lane with no path-level write audit (a pure
+script-only fixture, with no `open_w`/`note_dir` instrumentation) cannot satisfy
+`lane_containment.py`'s own class law over the `write_scope`/`declared` clauses -- wiring the
+shared instrument unchanged reads `not-evaluable` -> `void: ambiguous` on every look, voiding on
+a missing precondition rather than on an actual write. Such a lane may instead ground A5's
+containment clause in a disclosed substitute reading: a per-row snapshot pair showing the main
+branch's own diff empty around each run, the branch diff against the merge-base touching only the
+lane directory (plus any declared spec lines outside the frozen span), and a scratch root that
+ends empty. `lane_containment.py` stays pinned by sha and is never invoked under this reading --
+the substitute is disclosed as an amendment, never a silent stand-in for the shared instrument.
+Precedent: `H-DRAFT-38f86fad-routing-ledger-row` Amendment 10 (`VERIFY.md` section 5, finding 1).
+
 ## What "no launch count" means
 
 There is no number anywhere in this rule that says how many times a lineage may launch. The lineage ends

@@ -53,6 +53,10 @@ LEDGER_RELPATH = os.path.join("ledger", "ledger.jsonl")
 # session-observed / model-evaluated row into (.claude/hyp.json om_feedback_file overrides it;
 # lab H-DRAFT-35397146-om-worker-deterministic). Created by the worker on first write, not here.
 OM_FEEDBACK_RELPATH = os.path.join("ledger", "om-feedback.jsonl")
+# The routing ledger: one agent-route/v1 row per finished workflow agent, written by
+# hooks/scripts/routing-ledger.py (.claude/hyp.json `routing_ledger_file` overrides it;
+# lab H-DRAFT-38f86fad-routing-ledger-row). Created by the writer on first write, not here.
+ROUTING_LEDGER_RELPATH = os.path.join("ledger", "routing-ledger.jsonl")
 
 # LEGACY-MIGRATION-BEGIN (data: the retired predecessor plugins' artifact names;
 # these literals exist only so init can adopt repositories they initialized)
@@ -495,8 +499,11 @@ def main():
     ledger_rel = safe_rel_path(carried.get("ledger_file"), LEDGER_RELPATH.replace(os.sep, "/"))
     om_feedback_rel = safe_rel_path(carried.get("om_feedback_file"),
                                     OM_FEEDBACK_RELPATH.replace(os.sep, "/"))
+    routing_ledger_rel = safe_rel_path(carried.get("routing_ledger_file"),
+                                       ROUTING_LEDGER_RELPATH.replace(os.sep, "/"))
     ensure_gitattributes(root, render(template("gitattributes"),
-                                      dict(cfg, ledger_file=ledger_rel, om_feedback_file=om_feedback_rel)),
+                                      dict(cfg, ledger_file=ledger_rel, om_feedback_file=om_feedback_rel,
+                                           routing_ledger_file=routing_ledger_rel)),
                          "merge shapes: ledger rows merge by union, projections regenerate")
     ensure_file(root, cfg["index_file"], template("index.md"), "wiki index seed")
     ensure_file(root, "GOVERNANCE.md", template("GOVERNANCE.md"),
