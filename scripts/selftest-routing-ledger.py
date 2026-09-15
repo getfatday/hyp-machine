@@ -16,7 +16,11 @@
                  mismatch typing (`void: annulled`)
                - cost arithmetic: the row's `cost_usd` matches `routing_lib.cost_usd` computed
                  independently against the plugin's own shipped `rules/model-prices.json`
-               - dedup: running the hook twice over the same run directory appends no second row
+               - dedup: running the hook twice over the same run directory appends no second row,
+                 and dedup identity ignores `host_load_1m` -- two sweeps of one agent taken under
+                 DIFFERENT host loads still dedup as a duplicate, never refuse as a conflict (B1)
+               - override_sha is never null: an absent `.claude/routing.json` still hashes as the
+                 empty-override bytes, matching `table_sha`'s own convention (B2)
                - redaction: a planted prompt string in the transcript's user turn never appears
                  anywhere in the ledger file
                - fail-open: a malformed (truncated/non-JSON) journal.jsonl yields exit 0, no
@@ -104,14 +108,18 @@ def build_wf(root, wf, secret=None):
     return run_dir, tokens
 
 
-def run_writer(project_root, hook_name="Stop", timeout=30):
+def run_writer(project_root, hook_name="Stop", timeout=30, load_override=None):
     """Invoke the installed hooks/scripts/routing-ledger.py exactly the way hooks.json wires
-    it, over `project_root`'s own session (proj/sess1). Returns (proc, elapsed_s)."""
+    it, over `project_root`'s own session (proj/sess1). `load_override`, when given, pins
+    `HYP_ROUTING_LEDGER_LOAD_OVERRIDE` for this invocation only (a live-resampled load average
+    otherwise differs call to call -- see B1). Returns (proc, elapsed_s)."""
     payload = {"transcript_path": os.path.join(project_root, "proj", "sess1.jsonl"),
                "session_id": "sess1", "cwd": project_root, "hook_event_name": hook_name}
     env = dict(GIT_ENV)
     env.update({"CLAUDE_PLUGIN_ROOT": PLUGIN, "CLAUDE_PROJECT_DIR": project_root,
                 "PYTHONDONTWRITEBYTECODE": "1"})
+    if load_override is not None:
+        env["HYP_ROUTING_LEDGER_LOAD_OVERRIDE"] = str(load_override)
     t0 = time.time()
     proc = subprocess.run([sys.executable, "-B", os.path.join(PLUGIN, "hooks", "scripts", "routing-ledger.py")],
                           input=json.dumps(payload), capture_output=True, text=True,
@@ -216,6 +224,17 @@ def test_library():
     to_write3, dup3, conf3 = R.classify_new_rows([row], {R.row_key(row): row})
     check("classify-against-existing-duplicate", len(to_write3) == 0 and len(dup3) == 1)
 
+    # B1: host_load_1m is a live-resampled covariate, never load-bearing identity -- two
+    # otherwise-identical rows that differ only in host_load_1m must dedup as a duplicate,
+    # never refuse as a conflict.
+    row_load_a = dict(row, host_load_1m=1.0)
+    row_load_b = dict(row, host_load_1m=2.0)
+    to_write4, dup4, conf4 = R.classify_new_rows([row_load_b], {R.row_key(row_load_a): row_load_a})
+    check("classify-differing-load-is-duplicate-not-conflict", len(to_write4) == 0 and len(dup4) == 1 and len(conf4) == 0)
+    row_load_c = dict(row, host_load_1m=1.0, wall_s=99.0)
+    to_write5, dup5, conf5 = R.classify_new_rows([row_load_c], {R.row_key(row_load_a): row_load_a})
+    check("classify-real-difference-still-a-conflict", len(to_write5) == 0 and len(conf5) == 1)
+
     known = {"assertions": {"A1": {"pass": True}, "A2": {"pass": True}, "A3": {"pass": False}}}
     check("join-outcome-known-answer", R.join_outcome(known) == round(2 / 3, 4))
     check("join-outcome-none-on-bad-shape", R.join_outcome({"nope": 1}) is None)
@@ -265,6 +284,9 @@ def test_writer():
                                   "claude-sonnet-5", prices)
         check("writer-cost-arithmetic", row.get("cost_usd") == expect_cost and expect_cost > 0)
         check("writer-table-sha-present", bool(row.get("table_sha")) and bool(row.get("default_sha")))
+        # B2: override_sha is never null, even with no .claude/routing.json on disk (the
+        # empty-override bytes still hash to something, matching table_sha's own convention).
+        check("writer-override-sha-never-null", isinstance(row.get("override_sha"), str) and len(row["override_sha"]) == 64)
 
         with open(os.path.join(consumer, "ledger", "routing-ledger.jsonl"), "r", encoding="utf-8") as f:
             raw = f.read()
@@ -283,6 +305,20 @@ def test_writer():
         lines3 = ledger_lines(consumer)
         check("writer-appends-new-workflow-row", len(lines3) == 2)
 
+        # B1: two sweeps of one already-written agent under two DIFFERENT host loads must
+        # dedup as duplicates, never refuse as conflicts (live repro in the finding: same
+        # rows written at load 5.17, refused 12 s later at load 4.92).
+        build_wf(consumer, "wf_test3")
+        proc4a, _ = run_writer(consumer, load_override=1.0)
+        check("writer-load-a-run-exit-0", proc4a.returncode == 0)
+        lines4a = ledger_lines(consumer)
+        check("writer-load-a-wrote-one-row", len(lines4a) == 3)
+        proc4b, _ = run_writer(consumer, load_override=2.0)
+        check("writer-load-b-run-exit-0", proc4b.returncode == 0)
+        check("writer-load-b-no-refused-conflict", "REFUSED" not in proc4b.stderr)
+        lines4b = ledger_lines(consumer)
+        check("writer-load-b-no-duplicate-row-written", len(lines4b) == 3)
+
         # Fail-open on a malformed journal: garbage bytes, not one valid JSON line.
         bad_run = os.path.join(consumer, "proj", "sess1", "subagents", "workflows", "wf_bad")
         os.makedirs(bad_run, exist_ok=True)
@@ -291,7 +327,7 @@ def test_writer():
         proc4, elapsed4 = run_writer(consumer)
         check("writer-malformed-journal-exit-0", proc4.returncode == 0)
         check("writer-malformed-journal-no-traceback", "Traceback" not in proc4.stderr)
-        check("writer-malformed-journal-no-new-rows", len(ledger_lines(consumer)) == 2)
+        check("writer-malformed-journal-no-new-rows", len(ledger_lines(consumer)) == 3)
         check("writer-malformed-journal-wall-under-budget", elapsed4 < 10.0)
     finally:
         import shutil

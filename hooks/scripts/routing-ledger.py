@@ -83,7 +83,12 @@ def _table_context(root, plugin_root):
     `.claude/routing.json` -- the SAME file and SAME merge (`routing_lib.merge_table`) the
     model-routing guard already uses, so `table_sha`/`default_sha` on a ledger row and on a
     `routing.py table` printout always agree; this writer never forks a second notion of the
-    effective table. None-safe, never resolves a role."""
+    effective table. `override_sha` is always a hash, never null: an absent or malformed
+    override file reads as `{}` (the same empty-override bytes `merge_table` already folds
+    into `table_sha`), and its sha is taken over that -- `override_sha` names which override
+    bytes (possibly the empty one) a row was computed against, the same way `table_sha`
+    always names an effective table even with no override present. None-safe, never resolves
+    a role."""
     prices_path = os.path.join(plugin_root or "", "rules", "model-prices.json")
     default_path = os.path.join(plugin_root or "", "rules", "routing-default.json")
     override_path = os.path.join(root, ".claude", "routing.json")
@@ -94,7 +99,7 @@ def _table_context(root, plugin_root):
     if not isinstance(override_obj, dict):
         override_obj = {}
     table = R.merge_table(default_obj, override_obj)
-    override_sha = R.sha256_bytes(R.canonical_json_bytes(override_obj)) if os.path.isfile(override_path) else None
+    override_sha = R.sha256_bytes(R.canonical_json_bytes(override_obj))
     return prices_table, prices_sha, table.get("table_sha"), table.get("default_sha"), override_sha
 
 

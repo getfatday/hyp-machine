@@ -149,6 +149,13 @@ workflow's agents finish; the writer copies the three fields onto every row of t
 workflow verbatim and never resolves `outcome_ref` itself — resolving it (`RUN-RECORD.json`'s
 own `assertions` pass share) is a job for whoever reads the ledger.
 
+**The optional `RUN-RECORD.json` routing block.** A lane driver that wants its own run record to
+carry a summary of the ledger rows its workflow produced may add a `routing: {table_sha, rows}`
+block to `RUN-RECORD.json` — `table_sha` the effective-table sha its rows carry (the same
+`table_sha` value written onto those rows, and the one `routing.py table` prints), `rows` the
+count of `agent-route/v1` rows its workflow produced. This block is written by the driver, never
+by the writer: `hooks/scripts/routing-ledger.py` never opens or edits a `RUN-RECORD.json`.
+
 **The `SubagentStop` caveat.** Whether this row ever fires for a real workflow subagent was
 never measured against a live session in the source lane's build (only the `Stop` row is
 evidenced); it is wired the same way as the `Stop` row and is safe to run either way (fail-
@@ -166,6 +173,13 @@ loaded host can still push a *different* row in the same `Stop` batch past its o
 metadata fields listed above (`journal.jsonl` types/labels, `meta.json` model/effort/agentType,
 transcript `message.model`/`message.usage`/`timestamp`). `scripts/selftest-routing-ledger.py`
 plants a prompt string in a synthetic transcript and asserts it never reaches the ledger.
+
+**A malformed run.** A `journal.jsonl` that cannot be read as one JSON object per line
+(truncated, non-JSON bytes) is fail-open, never a crash: the writer emits zero stderr
+lines for it and names the workflow under `skipped` in the hook's own stdout summary
+(`{"reason": "no readable journal.jsonl"}`); an unreadable `agent-<id>.meta.json` or
+`agent-<id>.jsonl` skips that one agent the same way. Nothing about a malformed run is
+guessed or imputed.
 
 **Config.** `.claude/hyp.json` `routing_ledger_file` overrides the default
 `ledger/routing-ledger.jsonl` path for the `/hyp:init`-scaffolded `.gitattributes` union row;

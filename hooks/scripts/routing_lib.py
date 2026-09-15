@@ -989,13 +989,25 @@ def append_rows(ledger_path, rows):
             fh.write("\n")
 
 
+def _identity_bytes(row):
+    """Canonical bytes of a row with `host_load_1m` removed -- the live 1-minute load average
+    resamples on every sweep, so two otherwise-identical observations of the same agent taken
+    seconds apart (or by two worktrees of one session) would disagree on that one field and be
+    typed a `conflict` rather than a `duplicate`. `host_load_1m` is a covariate, never load-
+    bearing identity (ship amendment to H-DRAFT-38f86fad-routing-ledger-row's byte-identity law;
+    matches the lane's own `grade_a5` determinism compare, which drops the same field first)."""
+    trimmed = dict(row)
+    trimmed.pop("host_load_1m", None)
+    return canonical_bytes(trimmed)
+
+
 def classify_new_rows(candidates, existing):
     """(to_write, duplicates, conflicts) -- `to_write` are keys not seen yet; a candidate whose
     key was already seen (on disk from a prior sweep, OR earlier in this same batch) and whose
-    canonical bytes match is a `duplicate` (collapsed silently, never a finding); one whose
-    bytes differ is a `conflict` (refused, one error-log line, never written). Sequential: a
-    batch's own first occurrence of a key becomes the referent its second occurrence is
-    checked against."""
+    identity bytes (canonical bytes with `host_load_1m` removed -- see `_identity_bytes`) match
+    is a `duplicate` (collapsed silently, never a finding); one whose identity bytes differ is a
+    `conflict` (refused, one error-log line, never written). Sequential: a batch's own first
+    occurrence of a key becomes the referent its second occurrence is checked against."""
     seen = dict(existing)
     to_write, duplicates, conflicts = [], [], []
     for row in candidates:
@@ -1004,7 +1016,7 @@ def classify_new_rows(candidates, existing):
         if prior is None:
             to_write.append(row)
             seen[key] = row
-        elif canonical_bytes(prior) == canonical_bytes(row):
+        elif _identity_bytes(prior) == _identity_bytes(row):
             duplicates.append(row)
         else:
             conflicts.append(row)
