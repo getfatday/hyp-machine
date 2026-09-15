@@ -31,11 +31,12 @@ bytes, disclosed here rather than hidden in a diff:
    locally and explicitly never pushes ("out of scope for a local run" -- graded only against a
    local bare origin the harness controls). A hosted job's regenerate commit is inert without a
    push; `compile-check`'s `permissions: contents: write` only has a reason to exist if this job
-   pushes with the checkout-persisted `GITHUB_TOKEN`. The push step's own `run:` guards against a
-   detached HEAD (ship fix round 2, B1 below) rather than failing the job when there is nothing
-   attached to push -- `actions/checkout@v4` leaves every `pull_request` checkout detached at
-   the merge ref, so a naive `git push origin HEAD` there fails the job whether or not anything
-   was stale. Whether the push itself re-triggers this workflow, and under which `github.actor`,
+   pushes with the checkout-persisted `GITHUB_TOKEN`. The push step's own `run:` skips only on a
+   detached HEAD (ship fix round 2, B1 below) -- `actions/checkout@v4` leaves every
+   `pull_request` checkout detached at the merge ref, so a naive `git push origin HEAD` there
+   fails the job whether or not anything was stale -- and a failed push on an attached head
+   fails the job (ship fix round 3, B1: the round-2 `&& ... ||` chain swallowed that failure).
+   Whether the push itself re-triggers this workflow, and under which `github.actor`,
    remains the disclosed, not-yet-run hosted acceptance check (VERIFY.md section 10, finding 3;
    docs/ci-scaffold.md, "What is still owed") -- this addition does not close that; it is what
    the acceptance check will exercise.
@@ -142,12 +143,20 @@ JOBS = [
                 # -- so this job would go red on every pull_request the template triggers on,
                 # whether or not anything was actually stale or broken. `git symbolic-ref -q
                 # HEAD` reports whether HEAD is attached to a branch; push only when it is, and
-                # print a one-line skip notice (never fail) otherwise. The disclosed, not-yet-run
-                # hosted acceptance check (this module's docstring, drift 2) is now narrower: not
-                # "does the push land", but "is `github.actor` ever a branch push where this
-                # guard should NOT have skipped".
-                "run": 'git symbolic-ref -q HEAD >/dev/null && git push origin HEAD || '
-                       'echo "PUSH skipped -- detached HEAD (pull_request checkout)"',
+                # print a one-line skip notice otherwise. B1 (ship fix round 3): the guard is an
+                # `if ...; then push; else echo; fi` -- NOT the round-2 `A && push || echo`
+                # chain, which routed a FAILED push on an ATTACHED head into the echo branch
+                # (measured: attached HEAD, unreachable origin -> git's `fatal:` lines, then the
+                # false "detached" notice, job rc 0), so a stale catalogue whose regenerate
+                # commit never landed read green on the exact push-event shape this step exists
+                # for. Now the skip happens only on a detached HEAD; a failed push on an attached
+                # head fails the job with this step as the failing step. The disclosed,
+                # not-yet-run hosted acceptance check (this module's docstring, drift 2) is:
+                # "is `github.actor` ever a branch push where this guard should NOT have
+                # skipped", and "does a push the hosting service rejects (branch protection, a
+                # read-only token) now go red as intended".
+                "run": 'if git symbolic-ref -q HEAD >/dev/null; then git push origin HEAD; '
+                       'else echo "PUSH skipped -- detached HEAD (pull_request checkout)"; fi',
                 "if": True,  # presence-only marker; see comment above JOBS
             },
         ],

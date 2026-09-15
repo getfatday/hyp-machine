@@ -63,6 +63,10 @@ NORMAL_ACTOR = "consumer-contributor"
 # B4 (ship fix round 1): a hung step must read as a recorded FAIL, never hang the run.
 STEP_TIMEOUT_S = 60
 WHOLE_RUN_CAP_S = 300
+# A4 (ship fix round 3): every other `_sh` call (scratch-consumer git, the independent render,
+# the PyYAML probe) is bounded too, so a hung git can never sit past the whole-run cap; the
+# raise propagates as a crash of the self-test, which is the recorded outcome it should be.
+SH_DEFAULT_TIMEOUT_S = 120
 
 # B3: the ONE predicate shape render_yaml ever emits for a step's `if:` line -- parsed back out
 # of the COMMITTED workflow text (never re-derived from the JOBS table's own, unevaluated `if`
@@ -194,12 +198,13 @@ def _write_text(path, content):
 
 
 def _sh(cmd, cwd=None, env=None, check=True, timeout=None):
-    """B4 (ship fix round 1): `timeout`, when given, is seconds; a hang raises
-    `subprocess.TimeoutExpired` (the caller decides whether that is a FAIL line or a crash --
-    `_run_jobs`'s per-step loop catches it, everything else lets it propagate)."""
+    """B4 (ship fix round 1): `timeout` is seconds; a hang raises `subprocess.TimeoutExpired`
+    (the caller decides whether that is a FAIL line or a crash -- `_run_jobs`'s per-step loop
+    catches it, everything else lets it propagate). A4 (round 3): `None` means
+    SH_DEFAULT_TIMEOUT_S, never unbounded."""
     argv = ["/bin/sh", "-c", cmd] if isinstance(cmd, str) else list(cmd)
     proc = subprocess.run(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          timeout=timeout)
+                          timeout=SH_DEFAULT_TIMEOUT_S if timeout is None else timeout)
     out = proc.stdout.decode("utf-8", "replace")
     if check and proc.returncode != 0:
         raise RuntimeError("command failed (%r) rc=%s:\n%s" % (cmd, proc.returncode, out))
@@ -255,7 +260,11 @@ def _start_proxy_sink(scratch_root):
     return port, log_path, _stop
 
 
-def _ci_runner_env(scratch_root, actor, proxy_port, pythonpath_extra=None):
+def _ci_runner_env(scratch_root, actor, proxy_port, pythonpath_extra=None,
+                   event_name="push", ref="refs/heads/main"):
+    """The literal CI-runner constraint the lane keep measured. A1 (ship fix round 3):
+    GITHUB_EVENT_NAME / GITHUB_REF are set as the lane fixture set them (lane_common.py), so a
+    future step keyed on the event name is exercised here rather than silently untested."""
     home = os.path.join(scratch_root, "empty-home")
     os.makedirs(home, exist_ok=True)
     shim_dir = os.path.join(scratch_root, "shim")
@@ -269,7 +278,8 @@ def _ci_runner_env(scratch_root, actor, proxy_port, pythonpath_extra=None):
     env = {
         "HOME": home, "PATH": "%s:/usr/bin:/bin" % shim_dir,
         "PYTHONDONTWRITEBYTECODE": "1",
-        "GITHUB_ACTIONS": "true", "GITHUB_ACTOR": actor,
+        "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": event_name, "GITHUB_ACTOR": actor,
+        "GITHUB_REF": ref,
         "GITHUB_TOKEN": "FIXTURE-NOT-A-CREDENTIAL-0000000000000000000000",
         "HTTPS_PROXY": proxy_url, "HTTP_PROXY": proxy_url,
         "https_proxy": proxy_url, "http_proxy": proxy_url,
@@ -462,7 +472,14 @@ def _run_jobs(work, ref, actor, scratch_root, model_dir, pred_map):
     `pred_map` -- B3). Captures every step's own stdout in `step_outputs` (B1: the earlier
     shape kept only a failing step's output, so nothing could ever read a passing step's
     `STALE:` line). A step that runs past STEP_TIMEOUT_S reads as a FAIL naming that step
-    rather than hanging the run (B4). Returns (per-job results, shim_hits, proxy_hits)."""
+    rather than hanging the run (B4). Returns (per-job results, shim_hits, proxy_hits).
+
+    Known gap (A2, ship fix rounds 1-3, carried): every scenario is checked out in the ONE
+    shared `work` tree rather than a fresh clone of the bare origin per scenario, so the
+    "clean checkout" the self-test claims is a clean `git checkout` of the ref, not a clean
+    clone -- untracked leftovers (the ignored ledger row file, `__pycache__`-free by -B) ride
+    across scenarios. A cold refuter re-drove every scenario on fresh clones and every kept
+    behaviour held; the gap is disclosed here rather than closed."""
     _git(work, "checkout", "-q", ref)
     proxy_port, proxy_log, stop = _start_proxy_sink(scratch_root)
     try:
@@ -617,6 +634,14 @@ def self_test_ci_tier0(keep_scratch=False):
                 if rev_count else None
             check("the regenerate commit is authored as the bot identity",
                  rev_count == 0 or author == BOT_IDENTITY, author)
+            # B1 (ship fix round 3), the positive leg: on an attached head with a reachable
+            # origin the push step must actually land the bot commit on origin -- the local
+            # branch moving proves the commit, not the push.
+            origin_head = _git(origin, "rev-parse", "--verify", "-q", "refs/heads/mutant/m-stale",
+                               check=False)[1].strip()
+            check("the regenerate commit landed on origin (attached head, reachable origin)",
+                 rev_count == 1 and origin_head == head_after,
+                 "origin=%s local=%s" % (origin_head[:12], head_after[:12]))
 
             independent_sha = _independent_compiled_sha(
                 work, head_before, model_dir, os.path.join(scratch_root, "run-mstale-1"))
@@ -670,9 +695,40 @@ def self_test_ci_tier0(keep_scratch=False):
             push_out_detached = cc_detached["step_outputs"].get("push regenerated commit if any", "")
             check("compile-check job exits 0 on a detached checkout of a stale mutant "
                  "(pull_request-style merge-ref checkout)", cc_detached["rc"] == 0, cc_detached)
-            check("the push step skips with a notice (never fails) on a detached checkout",
+            check("the push step skips with a notice on a detached checkout",
                  "PUSH skipped" in push_out_detached, push_out_detached)
             _require_budget(run_started, "after detached-checkout run")
+
+            # B1 (ship fix round 3): the round-2 guard `A && push || echo` routed a FAILED push
+            # on an ATTACHED head into the echo branch (git's `fatal:` lines, then the false
+            # "detached" notice, job rc 0) -- a stale catalogue whose regenerate commit never
+            # landed read green on the exact push-event shape the step exists for. Seed a fresh
+            # stale mutant on an attached branch, point origin at a path that does not exist,
+            # and require the compile-check job to FAIL with the push step as the failing step
+            # and no skip notice in its output. The origin URL is restored afterwards.
+            _seed(work, "mutant/m-stale-nopush", "%s/ops/actors/builder.md" % model_dir,
+                 "---\nid: actor/builder\ntype: actor\ncontext: ops\nsummary: the builder "
+                 "(edited a third time)\nstatus: current\n---\nEdited a third time (seeds an "
+                 "attached-HEAD failed-push check).\n",
+                 "seed M-stale (attached head, unreachable origin scenario)")
+            bad_origin = os.path.join(scratch_root, "does-not-exist.git")
+            _git(work, "remote", "set-url", "origin", bad_origin)
+            try:
+                results, shim_hits, proxy_hits = _run_jobs(work, "mutant/m-stale-nopush", NORMAL_ACTOR,
+                                                            os.path.join(scratch_root, "run-nopush"),
+                                                            model_dir, pred_map)
+            finally:
+                _git(work, "remote", "set-url", "origin", origin)
+            shim_total += shim_hits
+            proxy_total += proxy_hits
+            cc_nopush = _job_result(results, "compile-check")
+            push_out_nopush = cc_nopush["step_outputs"].get("push regenerated commit if any", "")
+            check("compile-check job FAILS on an attached head whose push is rejected "
+                 "(unreachable origin), naming the push step",
+                 cc_nopush["rc"] != 0 and cc_nopush["failing_step"] == "push regenerated commit if any"
+                 and "PUSH skipped" not in push_out_nopush,
+                 "rc=%s failing_step=%s" % (cc_nopush["rc"], cc_nopush["failing_step"]))
+            _require_budget(run_started, "after attached-head failed-push run")
 
             check("no claude shim spawn across every scenario", shim_total == 0, shim_total)
             check("zero proxy hits across every scenario", proxy_total == 0, proxy_total)

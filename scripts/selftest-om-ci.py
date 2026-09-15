@@ -17,12 +17,16 @@ Two layers:
                         YAML's run: blocks equal the JOBS table, the lint job red on a seeded
                         E-LINK defect and green on the clean tree, compile-check reporting
                         stale and regenerating exactly one bot-authored commit, a second run
-                        adding zero commits, the bot actor's own push never re-triggering the
-                        regenerate step, the compile-check job exiting 0 with the push step
-                        skipping (never failing) on a detached checkout of a stale mutant
-                        (the pull_request-style merge-ref shape), the paths-only mutant never
-                        firing a job, zero `claude` shim spawns, zero proxy hits, and PyYAML
-                        importing under an empty HOME
+                        adding zero commits, the regenerate commit landing on origin, the bot
+                        actor's own push never re-triggering the regenerate step, the
+                        compile-check job exiting 0 with the push step skipping on a detached
+                        checkout of a stale mutant (the pull_request-style merge-ref shape;
+                        the skip happens only on a detached HEAD), the compile-check job
+                        FAILING with the push step as the failing step when an attached
+                        head's push is rejected (unreachable origin -- a failed push on an
+                        attached head fails the job, never a false skip), the paths-only
+                        mutant never firing a job, zero `claude` shim spawns, zero proxy
+                        hits, and PyYAML importing under an empty HOME
 
 Usage: python3 scripts/selftest-om-ci.py        exit 0 = PASS, 1 = FAIL
 Stdlib only, Python 3.9.
@@ -107,11 +111,14 @@ def main():
         "lint job red on the E-LINK mutant",
         "compile-check job regenerates exactly one bot commit on the stale mutant",
         "the regenerate commit is authored as the bot identity",
+        "the regenerate commit landed on origin (attached head, reachable origin)",
         "a second run adds zero commits",
         "compile-check job still exits 0 on the second run",
         "the bot actor's own push never re-triggers the regenerate step",
         "compile-check job exits 0 on a detached checkout of a stale mutant",
-        "the push step skips with a notice (never fails) on a detached checkout",
+        "the push step skips with a notice on a detached checkout",
+        "compile-check job FAILS on an attached head whose push is rejected (unreachable origin), "
+        "naming the push step",
         "no claude shim spawn across every scenario",
         "zero proxy hits across every scenario",
         "vendored PyYAML imports under an empty HOME",

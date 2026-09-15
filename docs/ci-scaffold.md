@@ -137,15 +137,23 @@ step-level `if` already gates on), so a future template edit that drops the step
 cannot reopen the loop silently.
 
 **What is still owed.** Everything above is proven against a scratch git consumer under a
-simulated CI-runner constraint (`scripts/om-ci.py self-test ci-tier0`; 25-check
+simulated CI-runner constraint (`scripts/om-ci.py self-test ci-tier0`, 25 checks; 27-check
 `scripts/selftest-om-ci.py`), never against the real hosting service. The push step's own `run:`
-now guards against a detached HEAD (ship fix round 2, B1) -- `actions/checkout@v4`'s default ref
-state for a `pull_request` event is a detached merge ref, unlike this check's own local-branch
-self-test, and a naive `git push origin HEAD` there failed the whole job regardless of whether
-anything was actually stale; the self-test now checks out a detached SHA of a stale mutant and
-requires the job to still exit 0 with the push step printing a skip notice. Two things the lab
-keep disclosed as ship-time acceptance checks remain not yet run: whether the hosting service
+skips only on a detached HEAD; a failed push on an attached head fails the job. The detached
+case (ship fix round 2, B1): `actions/checkout@v4`'s default ref state for a `pull_request`
+event is a detached merge ref, unlike this check's own local-branch self-test, and a naive
+`git push origin HEAD` there failed the whole job regardless of whether anything was actually
+stale; the self-test checks out a detached SHA of a stale mutant and requires the job to still
+exit 0 with the push step printing a skip notice. The attached case (ship fix round 3, B1): the
+round-2 guard was an `A && push || echo` chain, which routed a FAILED push on an attached head
+into the skip notice -- a stale catalogue whose regenerate commit never landed read green on
+the exact push-event shape the step exists for -- so the guard is now an `if/then/else`, and
+the self-test points `origin` at a path that does not exist on an attached stale branch and
+requires the compile-check job to fail with the push step as the failing step (and, on the
+reachable-origin run, that the bot commit actually landed on origin). Two things the lab keep
+disclosed as ship-time acceptance checks remain not yet run: whether the hosting service
 actually accepts one `paths:` list with a `!` exclusion exactly as rendered; and what
 `github.actor` reads as hosted for a `GITHUB_TOKEN` push on a normal branch push (never a
-pull_request, which this fix now always skips), and whether that push re-triggers the workflow
-at all. `SHIP.md` records the result once that check runs.
+pull_request, which always skips), whether that push re-triggers the workflow at all, and --
+after round 3 -- that a push the hosting service rejects (branch protection, a read-only token)
+goes red rather than green. `SHIP.md` records the result once that check runs.
