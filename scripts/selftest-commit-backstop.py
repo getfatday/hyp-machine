@@ -39,10 +39,14 @@ it (stdin payload, no argv):
   om-clean-case-hook-wall-under-row-timeout   the hook wall on the fully-silent (om clause +
                                      backstop) case stays well under the hook row's own 10 s
                                      timeout (hooks/hooks.json)
+  om-forbidden-keys-mirrors-worker-canary    the hook's mirrored OM_FORBIDDEN_KEYS constant
+                                     equals scripts/om-worker.py's CANARY_KEYS_FORBIDDEN,
+                                     parsed with `ast` from both files (no import at runtime)
 
 Usage: python3 scripts/selftest-commit-backstop.py        exit 0 = all PASS, 1 = any FAIL
 Standard library only, Python 3.9.
 """
+import ast
 import json
 import os
 import shutil
@@ -66,6 +70,23 @@ RESULTS = []
 def check(name, cond, detail):
     RESULTS.append(cond)
     print(("PASS " if cond else "FAIL ") + name + ": " + detail)
+
+
+def module_level_tuple_constant(path, name):
+    """The literal string tuple a module-level `<name> = (...)` assignment holds, parsed with
+    `ast` (never imported, so this selftest never executes either hook module to compare them).
+    None if the file has no such top-level assignment."""
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        if node.targets[0].id != name:
+            continue
+        return ast.literal_eval(node.value)
+    return None
 
 
 def git(cwd, *args):
@@ -114,6 +135,15 @@ def status_line(root, rel):
 
 
 def main():
+    # ---- om-forbidden-keys-mirrors-worker-canary (no tmp dir needed) ------------------
+    worker = os.path.join(PLUGIN, "scripts", "om-worker.py")
+    hook_keys = module_level_tuple_constant(HOOK, "OM_FORBIDDEN_KEYS")
+    worker_keys = module_level_tuple_constant(worker, "CANARY_KEYS_FORBIDDEN")
+    check("om-forbidden-keys-mirrors-worker-canary",
+          hook_keys is not None and hook_keys == worker_keys,
+          "commit-backstop.OM_FORBIDDEN_KEYS=%r om-worker.CANARY_KEYS_FORBIDDEN=%r"
+          % (hook_keys, worker_keys))
+
     tmp = tempfile.mkdtemp(prefix="hyp-selftest-commit-backstop-")
     try:
         # ---- om-untracked-ledger-staged ------------------------------------------------
