@@ -35,6 +35,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -58,6 +59,15 @@ PYYAML_LICENSE_SRC = os.path.join(HERE, "vendor", "pyyaml", "LICENSE")
 WORKFLOW_REL = os.path.join(".github", "workflows", "om-check.yml")
 BOT_IDENTITY = J.BOT_IDENTITY
 NORMAL_ACTOR = "consumer-contributor"
+
+# B4 (ship fix round 1): a hung step must read as a recorded FAIL, never hang the run.
+STEP_TIMEOUT_S = 60
+WHOLE_RUN_CAP_S = 300
+
+# B3: the ONE predicate shape render_yaml ever emits for a step's `if:` line -- parsed back out
+# of the COMMITTED workflow text (never re-derived from the JOBS table's own, unevaluated `if`
+# marker) so a mutant that flips the rendered operator is judged by what actually ships.
+IF_LINE_RE = re.compile(r"^\s*if:\s*\$\{\{\s*github\.actor\s*(!=|==)\s*'([^']*)'\s*\}\}\s*$")
 
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "om-ci-selftest", "GIT_AUTHOR_EMAIL": "om-ci-selftest@example.invalid",
@@ -183,9 +193,13 @@ def _write_text(path, content):
         fh.write(content)
 
 
-def _sh(cmd, cwd=None, env=None, check=True):
+def _sh(cmd, cwd=None, env=None, check=True, timeout=None):
+    """B4 (ship fix round 1): `timeout`, when given, is seconds; a hang raises
+    `subprocess.TimeoutExpired` (the caller decides whether that is a FAIL line or a crash --
+    `_run_jobs`'s per-step loop catches it, everything else lets it propagate)."""
     argv = ["/bin/sh", "-c", cmd] if isinstance(cmd, str) else list(cmd)
-    proc = subprocess.run(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    proc = subprocess.run(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          timeout=timeout)
     out = proc.stdout.decode("utf-8", "replace")
     if check and proc.returncode != 0:
         raise RuntimeError("command failed (%r) rc=%s:\n%s" % (cmd, proc.returncode, out))
@@ -312,15 +326,143 @@ def _seed(work, branch, rel, content, message):
     _git(work, "checkout", "-q", "main")
 
 
-def _predicate_holds(step, actor):
+def parse_step_predicates(yaml_text):
+    """B3 (ship fix round 1): every `if:` line in the COMMITTED workflow text, in document
+    order -- the ONE predicate shape `render_yaml` ever emits. Read back out of the rendered
+    text itself, never re-derived from the JOBS table's own `if` marker (which the table now
+    documents as presence-only, never evaluated -- see the comment above `JOBS`), so a mutant
+    that flips the rendered operator (`!=` -> `==`) is judged by what actually ships."""
+    preds = []
+    for line in yaml_text.splitlines():
+        m = IF_LINE_RE.match(line)
+        if m:
+            preds.append((m.group(1), m.group(2)))
+    return preds
+
+
+def evaluate_predicate(op, value, actor):
+    if op == "!=":
+        return actor != value
+    if op == "==":
+        return actor == value
+    raise ValueError("unknown predicate operator %r" % op)
+
+
+def build_predicate_map(committed_yaml):
+    """Zips the committed workflow's parsed `if:` lines onto the JOBS table's own steps that
+    declare an `if` marker, in table order -- the earlier 'rendered YAML run: blocks equal the
+    JOBS table' check already proves render order matches table order, so this zip is safe.
+    Raises loudly on a count mismatch rather than silently zipping past the end (a dropped or
+    added guard must fail the self-test, not desync it)."""
+    preds = parse_step_predicates(committed_yaml)
+    mapping = {}
+    i = 0
+    for job, step in J.iter_steps():
+        if "if" in step:
+            if i >= len(preds):
+                raise AssertionError(
+                    "committed workflow has fewer if-lines than the JOBS table declares")
+            mapping[(job["name"], step["name"])] = preds[i]
+            i += 1
+    if i != len(preds):
+        raise AssertionError(
+            "committed workflow has %d if-lines, JOBS table declares %d" % (len(preds), i))
+    return mapping
+
+
+def _predicate_holds(job, step, actor, pred_map):
     if "if" not in step:
         return True
-    return actor != BOT_IDENTITY  # the one predicate this template ever declares
+    op, value = pred_map[(job["name"], step["name"])]
+    return evaluate_predicate(op, value, actor)
 
 
-def _run_jobs(work, ref, actor, scratch_root, model_dir):
+def _stale_value(step_outputs):
+    """B1 (ship fix round 1): parses the `report staleness` step's own `STALE: <bool> <tree>`
+    line(s) -- True if any model tree read stale, False if the step ran and every tree read
+    clean, None if the step's output was never captured (predicate skipped, or the job failed
+    before reaching it). Previously nothing ever read this step's output at all."""
+    out = step_outputs.get("report staleness")
+    if out is None:
+        return None
+    stale_lines = [l for l in out.splitlines() if l.startswith("STALE:")]
+    if not stale_lines:
+        return None
+    return any(l.startswith("STALE: True") for l in stale_lines)
+
+
+def _independent_compiled_sha(work, ref, model_dir, scratch_parent):
+    """B2 (ship fix round 1): proves the workflow's regenerated `compiled/SOP.md` carries
+    CORRECT bytes, not merely present ones. Checks `ref` (the PRE-regen commit) out into its
+    own detached worktree and independently replays the consumer's own regen path from
+    scratch -- `compile-catalog.py --model-dir`, then the consumer's OWN declared
+    `compile_command` read from `.claude/hyp.json` -- rather than trusting the workflow's own
+    regenerate step to have run correctly."""
+    wt = os.path.join(scratch_parent, "indep-render")
+    _git(work, "worktree", "add", "-q", "--detach", wt, ref)
+    try:
+        _sh([sys.executable, "-B", os.path.join(HERE, "compile-catalog.py"),
+            "--model-dir", os.path.join(wt, model_dir), "--write"])
+        with open(os.path.join(wt, ".claude", "hyp.json"), encoding="utf-8") as fh:
+            cmd = json.load(fh)["compile_command"]
+        _sh(cmd, cwd=wt)
+        with open(os.path.join(wt, "compiled", "SOP.md"), "rb") as fh:
+            return sha256_bytes(fh.read())
+    finally:
+        _git(work, "worktree", "remove", "-q", "--force", wt, check=False)
+
+
+def _assert_a1_guardrails(committed_yaml, model_dir):
+    """A1 (ship fix round 1): a semantic guard the earlier self-test lacked -- checked against
+    LITERAL expected values, never re-derived from the (possibly mutated) render/table
+    functions the rest of this self-test already leans on elsewhere. Catches T2 (lint
+    permissions widened to write), T5/T6/T7 (`paths-ignore` rendered beside `paths`, an extra
+    secret, `timeout-minutes: 0`) -- none of which the byte-for-byte 'rendered equals
+    committed' check can catch, since that check only proves the renderer is SELF-consistent,
+    not that its output matches what the template is supposed to say. Returns (ok, detail)."""
+    problems = []
+    lines = committed_yaml.splitlines()
+
+    def _block_after(marker, n):
+        try:
+            i = lines.index(marker)
+        except ValueError:
+            return None
+        return lines[i + 1: i + 1 + n]
+
+    expect_paths = ["    paths:", "      - %r" % ("%s/**" % model_dir), "      - %r" % "!compiled/**"]
+    for event in ("push", "pull_request"):
+        block = _block_after("  %s:" % event, len(expect_paths))
+        if block != expect_paths:
+            problems.append("%s: paths block = %r (want %r)" % (event, block, expect_paths))
+    if "paths-ignore" in committed_yaml:
+        problems.append("paths-ignore rendered somewhere in the committed workflow")
+
+    expect_job_blocks = {
+        "lint": ["    runs-on: ubuntu-latest", "    timeout-minutes: 5", "    permissions:",
+                "      contents: read"],
+        "compile-check": ["    runs-on: ubuntu-latest", "    timeout-minutes: 5",
+                          "    permissions:", "      contents: write"],
+    }
+    for job_name, expect_block in expect_job_blocks.items():
+        block = _block_after("  %s:" % job_name, len(expect_block))
+        if block != expect_block:
+            problems.append("%s: job block = %r (want %r)" % (job_name, block, expect_block))
+
+    secrets_used = set(re.findall(r"secrets\.([A-Za-z0-9_]+)", committed_yaml))
+    if secrets_used != {"GITHUB_TOKEN"}:
+        problems.append("secrets referenced = %r (want {'GITHUB_TOKEN'})" % secrets_used)
+
+    return (not problems), "; ".join(problems)
+
+
+def _run_jobs(work, ref, actor, scratch_root, model_dir, pred_map):
     """Checks out `ref` and runs every job's steps in table order under the CI-runner
-    constraint, honouring each step's `if`. Returns (per-job results, shim_hits, proxy_hits)."""
+    constraint, honouring each step's `if` (evaluated from the COMMITTED workflow text via
+    `pred_map` -- B3). Captures every step's own stdout in `step_outputs` (B1: the earlier
+    shape kept only a failing step's output, so nothing could ever read a passing step's
+    `STALE:` line). A step that runs past STEP_TIMEOUT_S reads as a FAIL naming that step
+    rather than hanging the run (B4). Returns (per-job results, shim_hits, proxy_hits)."""
     _git(work, "checkout", "-q", ref)
     proxy_port, proxy_log, stop = _start_proxy_sink(scratch_root)
     try:
@@ -330,18 +472,26 @@ def _run_jobs(work, ref, actor, scratch_root, model_dir):
             job_rc = 0
             failing_step = None
             output = ""
+            step_outputs = {}
             for step in job["steps"]:
-                if not _predicate_holds(step, actor):
+                if not _predicate_holds(job, step, actor, pred_map):
                     continue
                 cmd = J.render_step_command(step, model_dir)
                 step_env = dict(env_base)
                 step_env.update(J.step_env(job, step, model_dir))
-                rc, out = _sh(cmd, cwd=work, env=step_env, check=False)
+                try:
+                    rc, out = _sh(cmd, cwd=work, env=step_env, check=False, timeout=STEP_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    job_rc, failing_step = 124, step["name"]
+                    output = "TIMEOUT after %ds" % STEP_TIMEOUT_S
+                    print("FAIL step timed out: %s (job=%s)" % (step["name"], job["name"]))
+                    break
+                step_outputs[step["name"]] = out
                 if rc != 0:
                     job_rc, failing_step, output = rc, step["name"], out
                     break
             results.append({"job": job["name"], "rc": job_rc, "failing_step": failing_step,
-                            "output": output})
+                            "output": output, "step_outputs": step_outputs})
         shim_hits = sum(1 for l in open(shim_log, encoding="utf-8") if l.strip()) \
             if os.path.isfile(shim_log) else 0
         proxy_hits = sum(1 for l in open(proxy_log, encoding="utf-8") if l.strip()) \
@@ -358,8 +508,21 @@ def _job_result(results, name):
     return None
 
 
+class _BudgetExceeded(Exception):
+    pass
+
+
+def _require_budget(start, where):
+    """B4: the 300s whole-run cap. Raised, never silently tolerated, so a scenario that runs
+    long reads as a recorded FAIL rather than eating the rest of the caller's timeout budget."""
+    elapsed = time.time() - start
+    if elapsed > WHOLE_RUN_CAP_S:
+        raise _BudgetExceeded("%s (elapsed=%.1fs > cap=%ds)" % (where, elapsed, WHOLE_RUN_CAP_S))
+
+
 def self_test_ci_tier0(keep_scratch=False):
     checks = []
+    run_started = time.time()
 
     def check(name, cond, detail=""):
         checks.append(bool(cond))
@@ -386,88 +549,129 @@ def self_test_ci_tier0(keep_scratch=False):
     work = os.path.join(scratch_root, "work")
     origin = os.path.join(scratch_root, "origin.git")
     try:
-        _build_scratch_consumer(work, origin, model_dir)
+        try:
+            _build_scratch_consumer(work, origin, model_dir)
+            _require_budget(run_started, "after build_scratch_consumer")
 
-        with open(os.path.join(work, WORKFLOW_REL), "r", encoding="utf-8") as fh:
-            committed_yaml = fh.read()
-        check("rendered YAML equals the committed workflow",
-             J.render_yaml(model_dir) == committed_yaml)
+            with open(os.path.join(work, WORKFLOW_REL), "r", encoding="utf-8") as fh:
+                committed_yaml = fh.read()
+            check("rendered YAML equals the committed workflow",
+                 J.render_yaml(model_dir) == committed_yaml)
 
-        shim_total = proxy_total = 0
+            pred_map = build_predicate_map(committed_yaml)
+            if_preds = parse_step_predicates(committed_yaml)
+            check("committed workflow declares exactly the two expected if-lines",
+                 if_preds == [("!=", BOT_IDENTITY), ("!=", BOT_IDENTITY)], if_preds)
 
-        results, shim_hits, proxy_hits = _run_jobs(work, "on-base", NORMAL_ACTOR,
-                                                    os.path.join(scratch_root, "run-clean"), model_dir)
-        shim_total += shim_hits
-        proxy_total += proxy_hits
-        check("lint job green on the clean tree", _job_result(results, "lint")["rc"] == 0)
+            a1_ok, a1_detail = _assert_a1_guardrails(committed_yaml, model_dir)
+            check("A1 trigger/permissions/timeout/secrets guardrails hold against literal "
+                 "expectations", a1_ok, a1_detail)
 
-        _seed(work, "mutant/m-lint", "%s/ops/policies/gate-clean.md" % model_dir,
-             "---\nid: policy/gate-clean\ntype: policy\ncontext: ops\nsummary: clean gate\n"
-             "status: current\nthen: [command/does-not-exist]\n---\nBroken (seeded E-LINK).\n",
-             "seed E-LINK")
-        results, shim_hits, proxy_hits = _run_jobs(work, "mutant/m-lint", NORMAL_ACTOR,
-                                                    os.path.join(scratch_root, "run-mlint"), model_dir)
-        shim_total += shim_hits
-        proxy_total += proxy_hits
-        lint_mlint = _job_result(results, "lint")
-        check("lint job red on the E-LINK mutant",
-             lint_mlint["rc"] != 0 and "E-LINK" in lint_mlint["output"])
+            shim_total = proxy_total = 0
 
-        _seed(work, "mutant/m-stale", "%s/ops/actors/builder.md" % model_dir,
-             "---\nid: actor/builder\ntype: actor\ncontext: ops\nsummary: the builder (edited)\n"
-             "status: current\n---\nEdited after the compiled artifact (seeds M-stale).\n",
-             "seed M-stale")
-        head_before = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
-        results, shim_hits, proxy_hits = _run_jobs(work, "mutant/m-stale", NORMAL_ACTOR,
-                                                    os.path.join(scratch_root, "run-mstale-1"), model_dir)
-        shim_total += shim_hits
-        proxy_total += proxy_hits
-        head_after = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
-        rev_count = int(_git(work, "rev-list", "--count", "%s..%s" % (head_before, head_after))[1].strip()) \
-            if head_before != head_after else 0
-        cc = _job_result(results, "compile-check")
-        check("compile-check job regenerates exactly one bot commit on the stale mutant",
-             cc["rc"] == 0 and rev_count == 1,
-             "rc=%s commits=%d failing_step=%s" % (cc["rc"], rev_count, cc["failing_step"]))
-        author = _git(work, "log", "-1", "--format=%an", "mutant/m-stale")[1].strip() if rev_count else None
-        check("the regenerate commit is authored as the bot identity",
-             rev_count == 0 or author == BOT_IDENTITY, author)
+            results, shim_hits, proxy_hits = _run_jobs(work, "on-base", NORMAL_ACTOR,
+                                                        os.path.join(scratch_root, "run-clean"),
+                                                        model_dir, pred_map)
+            shim_total += shim_hits
+            proxy_total += proxy_hits
+            check("lint job green on the clean tree", _job_result(results, "lint")["rc"] == 0)
+            check("report-staleness step reads STALE: False on the clean tree",
+                 _stale_value(_job_result(results, "compile-check")["step_outputs"]) is False)
+            _require_budget(run_started, "after clean-tree run")
 
-        head_before2 = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
-        results, shim_hits, proxy_hits = _run_jobs(work, "mutant/m-stale", NORMAL_ACTOR,
-                                                    os.path.join(scratch_root, "run-mstale-2"), model_dir)
-        shim_total += shim_hits
-        proxy_total += proxy_hits
-        head_after2 = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
-        check("a second run adds zero commits", head_before2 == head_after2)
-        check("compile-check job still exits 0 on the second run",
-             _job_result(results, "compile-check")["rc"] == 0)
+            _seed(work, "mutant/m-lint", "%s/ops/policies/gate-clean.md" % model_dir,
+                 "---\nid: policy/gate-clean\ntype: policy\ncontext: ops\nsummary: clean gate\n"
+                 "status: current\nthen: [command/does-not-exist]\n---\nBroken (seeded E-LINK).\n",
+                 "seed E-LINK")
+            results, shim_hits, proxy_hits = _run_jobs(work, "mutant/m-lint", NORMAL_ACTOR,
+                                                        os.path.join(scratch_root, "run-mlint"),
+                                                        model_dir, pred_map)
+            shim_total += shim_hits
+            proxy_total += proxy_hits
+            lint_mlint = _job_result(results, "lint")
+            check("lint job red on the E-LINK mutant",
+                 lint_mlint["rc"] != 0 and "E-LINK" in lint_mlint["output"])
+            _require_budget(run_started, "after m-lint run")
 
-        head_before3 = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
-        _run_jobs(work, "mutant/m-stale", BOT_IDENTITY,
-                 os.path.join(scratch_root, "run-mstale-bot"), model_dir)
-        head_after3 = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
-        check("the bot actor's own push never re-triggers the regenerate step",
-             head_before3 == head_after3)
+            _seed(work, "mutant/m-stale", "%s/ops/actors/builder.md" % model_dir,
+                 "---\nid: actor/builder\ntype: actor\ncontext: ops\nsummary: the builder (edited)\n"
+                 "status: current\n---\nEdited after the compiled artifact (seeds M-stale).\n",
+                 "seed M-stale")
+            head_before = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
+            results, shim_hits, proxy_hits = _run_jobs(work, "mutant/m-stale", NORMAL_ACTOR,
+                                                        os.path.join(scratch_root, "run-mstale-1"),
+                                                        model_dir, pred_map)
+            shim_total += shim_hits
+            proxy_total += proxy_hits
+            head_after = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
+            rev_count = int(_git(work, "rev-list", "--count",
+                                 "%s..%s" % (head_before, head_after))[1].strip()) \
+                if head_before != head_after else 0
+            cc = _job_result(results, "compile-check")
+            check("compile-check job regenerates exactly one bot commit on the stale mutant",
+                 cc["rc"] == 0 and rev_count == 1,
+                 "rc=%s commits=%d failing_step=%s" % (cc["rc"], rev_count, cc["failing_step"]))
+            check("report-staleness step reads STALE: True on the first m-stale run",
+                 _stale_value(cc["step_outputs"]) is True)
+            author = _git(work, "log", "-1", "--format=%an", "mutant/m-stale")[1].strip() \
+                if rev_count else None
+            check("the regenerate commit is authored as the bot identity",
+                 rev_count == 0 or author == BOT_IDENTITY, author)
 
-        check("no claude shim spawn across every scenario", shim_total == 0, shim_total)
-        check("zero proxy hits across every scenario", proxy_total == 0, proxy_total)
+            independent_sha = _independent_compiled_sha(
+                work, head_before, model_dir, os.path.join(scratch_root, "run-mstale-1"))
+            with open(os.path.join(work, "compiled", "SOP.md"), "rb") as fh:
+                regenerated_sha = sha256_bytes(fh.read())
+            check("regenerated compiled/SOP.md matches an independent fresh render",
+                 rev_count != 1 or regenerated_sha == independent_sha,
+                 "regenerated=%s independent=%s" % (regenerated_sha, independent_sha))
+            _require_budget(run_started, "after m-stale run 1 + independent render")
 
-        pyyaml_env = dict(os.environ)
-        pyyaml_env["HOME"] = os.path.join(scratch_root, "pyyaml-empty-home")
-        os.makedirs(pyyaml_env["HOME"], exist_ok=True)
-        pyyaml_env["PYTHONPATH"] = os.path.join(work, J.PYVENDOR_DIR)
-        rc, _out = _sh([sys.executable, "-s", "-B", "-c", "import yaml; yaml.safe_load('a: 1')"],
-                      env=pyyaml_env, check=False)
-        check("vendored PyYAML imports under an empty HOME", rc == 0)
+            head_before2 = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
+            results, shim_hits, proxy_hits = _run_jobs(work, "mutant/m-stale", NORMAL_ACTOR,
+                                                        os.path.join(scratch_root, "run-mstale-2"),
+                                                        model_dir, pred_map)
+            shim_total += shim_hits
+            proxy_total += proxy_hits
+            head_after2 = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
+            check("a second run adds zero commits", head_before2 == head_after2)
+            cc2 = _job_result(results, "compile-check")
+            check("compile-check job still exits 0 on the second run", cc2["rc"] == 0)
+            check("report-staleness step reads STALE: False on the second (post-regen) run",
+                 _stale_value(cc2["step_outputs"]) is False)
+            _require_budget(run_started, "after m-stale run 2")
+
+            head_before3 = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
+            _run_jobs(work, "mutant/m-stale", BOT_IDENTITY,
+                     os.path.join(scratch_root, "run-mstale-bot"), model_dir, pred_map)
+            head_after3 = _git(work, "rev-parse", "mutant/m-stale")[1].strip()
+            check("the bot actor's own push never re-triggers the regenerate step",
+                 head_before3 == head_after3)
+            _require_budget(run_started, "after bot-actor run")
+
+            check("no claude shim spawn across every scenario", shim_total == 0, shim_total)
+            check("zero proxy hits across every scenario", proxy_total == 0, proxy_total)
+
+            pyyaml_env = dict(os.environ)
+            pyyaml_env["HOME"] = os.path.join(scratch_root, "pyyaml-empty-home")
+            os.makedirs(pyyaml_env["HOME"], exist_ok=True)
+            pyyaml_env["PYTHONPATH"] = os.path.join(work, J.PYVENDOR_DIR)
+            rc, _out = _sh([sys.executable, "-s", "-B", "-c", "import yaml; yaml.safe_load('a: 1')"],
+                          env=pyyaml_env, check=False)
+            check("vendored PyYAML imports under an empty HOME", rc == 0)
+        except _BudgetExceeded as exc:
+            check("whole self-test run finishes inside the %ds cap" % WHOLE_RUN_CAP_S, False, exc)
     finally:
         if not keep_scratch:
             shutil.rmtree(scratch_root, ignore_errors=True)
 
+    wall_s = time.time() - run_started
     passed = sum(checks)
     total = len(checks)
+    print("WALL: %.1fs" % wall_s)
     print("RESULT: %s (%d/%d)" % ("PASS" if passed == total else "FAIL", passed, total))
     return 0 if passed == total else 1
+
 
 
 # --------------------------------------------------------------------------- CLI

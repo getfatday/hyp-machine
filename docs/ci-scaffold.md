@@ -130,8 +130,10 @@ is idempotent and byte-stable, and never overwrites a file a consumer hand-edite
 `--force`.
 
 **The bot-loop guard.** The regenerate-and-commit step, and the push step after it, run under
-`if: ${{ github.actor != 'om-check[bot]' }}` — parsed and re-checked a second time inside
-`om_check_regen_commit.py` itself, so a future template edit that drops the step-level `if`
+`if: ${{ github.actor != 'om-check[bot]' }}` — re-checked a second time inside
+`om_check_regen_commit.py` itself, which reads `GITHUB_ACTOR` and no-ops if it is somehow still
+the bot identity (it parses nothing; it is a belt-and-suspenders re-read of the same env var the
+step-level `if` already gates on), so a future template edit that drops the step-level `if`
 cannot reopen the loop silently.
 
 **What is still owed.** Everything above is proven against a scratch git consumer under a

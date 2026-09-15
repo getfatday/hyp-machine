@@ -4,9 +4,12 @@ byte-for-byte by the renderer (`render_yaml`, emitted into `.github/workflows/om
 `scripts/om-ci.py emit ci-tier0`) and the local self-test executor (`scripts/om-ci.py self-test
 ci-tier0`, which walks `iter_steps()` under the CI-runner constraint). Self-test equals CI by
 construction: both read this one list, never a second copy. This file is ALSO vendored
-byte-for-byte into every consumer's `.github/om-scripts/om_check_jobs.py` so a runner with no
-plugin cache can still import it (there is no `${CLAUDE_PLUGIN_ROOT}` on a GitHub-hosted
-runner).
+byte-for-byte into every consumer's `.github/om-scripts/om_check_jobs.py`; nothing the rendered
+workflow currently shells out to imports it there (each glue script carries its own inline copy
+of the one config rule it needs instead, mirroring how there is no `${CLAUDE_PLUGIN_ROOT}` on a
+GitHub-hosted runner) -- it rides along so a future glue script needing the shared table/config
+constants has something to import without a plugin install, not because anything on the runner
+imports it today (advisory A4, ship fix round 1).
 
 Ported from the lab keep (getfatday/cause-n-effect H-DRAFT-a28b91c9-om-ci-tier0, kept
 2026-09-15: five counted looks, A1-A5 pass in every one, SPRT llr 2.9389 over the 2.8904 promote
@@ -55,13 +58,13 @@ own into consumers that have no plugin install at all).
 """
 import os
 
-SCHEMA_VERSION = 1
 BOT_IDENTITY = "om-check[bot]"
 VENDOR_DIR = ".github/om-scripts"
 PYVENDOR_DIR = ".github/om-scripts/pyyaml"
 TIMEOUT_MINUTES = 5
 DEFAULT_MODEL_DIR = "operating-model"
-REGEN_COMMIT_MESSAGE = "chore(om-check): regenerate compiled artifacts [om-check]"
+# A6 (ship fix round 1): SCHEMA_VERSION and REGEN_COMMIT_MESSAGE (the commit message string
+# duplicated, unused, in om_check_regen_commit.py) were dead; dropped rather than left unread.
 
 
 def trigger_paths(model_dir=DEFAULT_MODEL_DIR):
@@ -75,11 +78,13 @@ def trigger_paths(model_dir=DEFAULT_MODEL_DIR):
 
 # One job = {name, permissions, timeout_minutes, env?, steps:[{name, run, if?, env?}]}. `run` is
 # a shell command template; "{vendor}"/"{pyvendor}"/"{model_dir}" are substituted at
-# render/exec time. `if`, when present, is the one boolean predicate this template ever needs:
-# "actor != BOT" -- the loop guard on the regenerate-and-push steps. Job-level `env` (PYTHONPATH
-# to the vendored PyYAML) applies to every step in the job: both jobs shell out to
-# `om-worker.py` verbs that internally re-invoke model-lint.py, and the lint job's own direct
-# `model-lint.py` step needs it too.
+# render/exec time. `if`, when present, is a presence-only marker (its value is never read --
+# render_yaml renders one fixed predicate text for every marked step, `github.actor != BOT`,
+# and om-ci.py's self-test parses THAT rendered text back out rather than re-deriving from this
+# table, per A6/B3 ship fix round 1): the loop guard on the regenerate-and-push steps. Job-level
+# `env` (PYTHONPATH to the vendored PyYAML) applies to every step in the job: both jobs shell
+# out to `om-worker.py` verbs that internally re-invoke model-lint.py, and the lint job's own
+# direct `model-lint.py` step needs it too.
 JOBS = [
     {
         "name": "lint",
@@ -119,7 +124,7 @@ JOBS = [
             {
                 "name": "regenerate and commit if stale",
                 "run": "python3 {vendor}/om_check_regen_commit.py",
-                "if": "actor != bot",
+                "if": True,  # presence-only marker; see comment above JOBS
             },
             {
                 "name": "push regenerated commit if any",
@@ -131,7 +136,7 @@ JOBS = [
                 # part of the disclosed, not-yet-run hosted acceptance check (see this module's
                 # docstring, drift 2).
                 "run": "git push origin HEAD",
-                "if": "actor != bot",
+                "if": True,  # presence-only marker; see comment above JOBS
             },
         ],
     },
