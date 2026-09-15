@@ -109,3 +109,69 @@ B1/B2 fix) not a fail-open advisory line either.
 Revert the merge commit that landed this release, or set `routing.enforce: off` in
 `.claude/hyp.json` (the hook still runs -- it writes its start/finish marks -- but exits 0
 before it opens the script).
+
+## The routing ledger
+
+Ships from the changeset that lands the lab keep `H-DRAFT-38f86fad-routing-ledger-row`
+(`VERDICT.json`: evidence-sufficient promote, five counted looks 5/5, llr 2.9389 >= the
+2.8904 promote bound) — see that lane for the full evidence trail.
+
+Separately from the guard above, `hooks/scripts/routing-ledger.py` runs as a **synchronous
+`Stop` hook** (timeout 15 s) and a **`SubagentStop` hook** (timeout 10 s) after every turn.
+It reads the session's own workflow run directories (`<project dir>/<session
+id>/subagents/workflows/wf_*`, the shape Claude Code writes: `journal.jsonl`
+started/result/failed records, `agent-<id>.meta.json`, and `agent-<id>.jsonl` transcripts)
+and appends one `agent-route/v1` row per finished workflow agent — a `result` record is
+what makes an agent finished; a `failed` or still-running agent is counted in the hook's own
+summary line and never given a row — to `<checkout>/ledger/routing-ledger.jsonl`, keyed
+`(wf, agent)` so a re-run never duplicates a row and a conflicting rewrite is refused (one
+stderr line) rather than silently overwritten.
+
+**Row schema** (`kind: "agent-route"`, `v: 1`):
+
+| Field | What |
+|---|---|
+| `ts`, `repo`, `session`, `wf`, `agent` | When, which repository/session/workflow/agent |
+| `label`, `role`, `class` | The call's `label` and its `role:slug` head, classed by a frozen head -> class table (`mechanical`/`execute`/`think`/`adversarial`/`unknown`) kept separate from the guard's own `rules/routing-default.json` roles map — see `hooks/scripts/routing_lib.py`'s module docstring for why |
+| `declared` | `{model, effort, agentType}` from the agent's own `meta.json`, verbatim (often `None`: only a call that named a tier word writes it) |
+| `observed` | `{model, tier}` — the model id actually served, read from the transcript's own `message.model` lines, and its tier bucket |
+| `tokens`, `wall_s` | Summed usage counters and elapsed time over the transcript's assistant lines |
+| `cost_usd` | `tokens x` the matching row of `rules/model-prices.json` (prefix-matched against `observed.model`); `0.0` when no row matches |
+| `prices_sha`, `table_sha`, `default_sha`, `override_sha` | The exact table/price bytes this row was computed against — the same `table_sha`/`default_sha` `routing.py table` prints |
+| `lane`, `run`, `outcome_ref` | Copied verbatim from the opt-in pointer file below, never resolved by the writer |
+| `outcome` | `{schema_valid, verdict, refuted}` from the agent's own structured result, `verdict` bounded to 64 characters — a token, never a report |
+| `mismatch`, `void` | `true`/`"annulled"` when `declared`'s tier disagrees with `observed`'s tier |
+| `host_load_1m`, `transcript_truncated` | Covariates: 1-minute load average at sweep time, and whether the transcript exceeded the 8 MB head+tail read cap |
+
+**The join pointer.** A workflow driver that wants its rows joined to a specific run writes
+`<checkout>/.claude/routing-outcomes/<wf>.json` `{"lane", "run", "outcome_ref"}` before the
+workflow's agents finish; the writer copies the three fields onto every row of that
+workflow verbatim and never resolves `outcome_ref` itself — resolving it (`RUN-RECORD.json`'s
+own `assertions` pass share) is a job for whoever reads the ledger.
+
+**The `SubagentStop` caveat.** Whether this row ever fires for a real workflow subagent was
+never measured against a live session in the source lane's build (only the `Stop` row is
+evidenced); it is wired the same way as the `Stop` row and is safe to run either way (fail-
+open, idempotent, dedup on `(wf, agent)`), but treat it as unproven until your own repository
+observes a row it contributed that the `Stop` row had not already written.
+
+**The Stop-wall covariate.** The source lane's stall was interpreter start plus the resolver's
+own git latency (~15 s at host load 15-24, roughly half the counted looks read as an
+ambiguous void at that load). This port keeps the writer's own imports light (stdlib only, no
+heavy import at module top) to stay inside its declared 15 s `Stop` row timeout, but a heavily
+loaded host can still push a *different* row in the same `Stop` batch past its own timeout —
+`host_load_1m` on each row is the covariate to check first if rows look sparse.
+
+**Redaction.** The writer never reads or writes a prompt or tool-input string — only the
+metadata fields listed above (`journal.jsonl` types/labels, `meta.json` model/effort/agentType,
+transcript `message.model`/`message.usage`/`timestamp`). `scripts/selftest-routing-ledger.py`
+plants a prompt string in a synthetic transcript and asserts it never reaches the ledger.
+
+**Config.** `.claude/hyp.json` `routing_ledger_file` overrides the default
+`ledger/routing-ledger.jsonl` path for the `/hyp:init`-scaffolded `.gitattributes` union row;
+the writer itself does not yet read this key (it always appends to the default path) — a
+disclosed parity gap with `ledger_file`/`om_feedback_file`, open for a later release.
+
+**Undo.** Revert the merge commit that landed this release. There is no `routing.enforce`-style
+off switch for the ledger itself (it never denies anything to turn off); removing the two
+hook rows from `hooks/hooks.json` locally also stops it.

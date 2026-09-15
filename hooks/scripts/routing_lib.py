@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # agent tier: build / sonnet / high
 """
-routing_lib.py -- the one library imported by routing-guard.py and scripts/routing.py.
+routing_lib.py -- the one library imported by routing-guard.py, scripts/routing.py, and
+hooks/scripts/routing-ledger.py.
 
 Ported byte-for-byte (find_matching_paren, extract_agent_calls core loop) from
 experiments/runs/DESIGN-model-routing/evidence/workflow-model-census.py so the guard
@@ -13,11 +14,24 @@ agentType-vs-label-head check (invariant 5).
 This is a bracket-matching regex scanner, not a JavaScript parser (DESIGN.md 4.3);
 that limitation is deliberate and disclosed -- it is why "cannot-parse" and "alias"
 are their own finding classes rather than silently missed defects.
+
+Below `scan_script` this module also carries the `agent-route/v1` schema (source lab
+H-DRAFT-38f86fad-routing-ledger-row, VERDICT.json evidence-sufficient promote): the pure
+helpers `hooks/scripts/routing-ledger.py`'s Stop/SubagentStop writer uses to read a
+workflow run directory in the shape Claude Code writes it and build one covariate row per
+finished agent. That schema does not resolve or enforce a routing table -- it only records
+what a run's own metadata already carries, and separately carries a frozen label-head ->
+class table (`CLASS_BY_HEAD`) kept deliberately distinct from `roles` above: the ledger's
+class is an observability label with its own fixture-pinned history, never a live read of
+the guard's `rules/routing-default.json`, so a later edit to the guard's table cannot
+silently redefine what an already-written row's `class` meant.
 """
 import bisect
 import hashlib
 import json
+import os
 import re
+from datetime import datetime, timezone
 
 AGENT_CALL_RE = re.compile(r"agent\(", re.MULTILINE)
 BARE_AGENT_RE = re.compile(r"\bagent\b")
@@ -41,8 +55,17 @@ def sha256_bytes(b):
 
 
 def sha256_file(path):
-    with open(path, "rb") as f:
-        return sha256_bytes(f.read())
+    """sha256 hex digest of a file's bytes, or None on any read error (missing file,
+    permissions, a directory) -- fail-open. Widened from a raising form for the ledger
+    writer (H-DRAFT-38f86fad): every caller in this module already has its own fallback
+    for "no usable hash", so a raised exception was strictly worse than returning None,
+    and this is the only definition (no other module in this plugin calls it), so the
+    widening changes no other caller's behaviour."""
+    try:
+        with open(path, "rb") as f:
+            return sha256_bytes(f.read())
+    except OSError:
+        return None
 
 
 def default_sha(default_table_obj):
@@ -563,3 +586,460 @@ def scan_script(text, table):
                                   "detail": "meta.phases[] entry at line %s names model %r, call at line %d names %r" % (
                                       phase_lines.get(phase_val, "?"), phase_models[phase_val], call["line"], model_val)})
     return findings, parsed_calls
+
+
+
+# ---------------------------------------------------------------------------------------
+# agent-route/v1 (source lab H-DRAFT-38f86fad-routing-ledger-row): pure helpers for
+# hooks/scripts/routing-ledger.py's Stop/SubagentStop writer. Every public function here
+# fails closed on bad input by returning None / a typed value rather than raising, because
+# the caller is a hook and a crashing hook is worse than a missed row (hyp_config's own
+# fail-open contract).
+#
+# The run-directory shape read is the one Claude Code persists under
+# `<project dir>/<session id>/subagents/workflows/wf_*/`:
+#
+#   journal.jsonl            {"type": "started", "key", "agentId", ["label", "phase"]}
+#                            {"type": "result",  "key", "agentId", "result": <object | string>}
+#                            {"type": "failed",  "key", "agentId"}
+#                            {"type": "launched"}
+#   agent-<id>.meta.json     {"agentType", "spawnDepth", ["model", "description", ...]}
+#   agent-<id>.jsonl         the agent transcript; every assistant line carries `timestamp`
+#                            and `message.model` + `message.usage`
+#
+# Nothing else is read: no `usage.json`, no per-agent key inside the meta file (the agent
+# id is the file name), no workflow `args` record (the journal has none -- the
+# experiment-level pointer is the consumer-side opt-in file
+# `.claude/routing-outcomes/<wf>.json`, see the writer).
+# ---------------------------------------------------------------------------------------
+
+SCHEMA = "agent-route/v1"
+
+# Transcripts over this many bytes are head+tail sampled, never fully read, and the row is
+# flagged `transcript_truncated`.
+MAX_READ_BYTES = 8 * 1024 * 1024
+HEAD_TAIL_BYTES = 64 * 1024
+
+_TIER_PREFIXES = (
+    ("claude-fable", "fable"),
+    ("claude-opus", "opus"),
+    ("claude-sonnet", "sonnet"),
+    ("claude-haiku", "haiku"),
+)
+TIERS = ("fable", "opus", "sonnet", "haiku")
+
+USAGE_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+
+_META_RE = re.compile(r"^agent-(.+)\.meta\.json$")
+
+# label head -> class: a FROZEN copy of the lane's fixture-pinned
+# experiments/runs/H-DRAFT-38f86fad-routing-ledger-row/fixture/class_by_head.json
+# (four classes: mechanical, execute, think, adversarial). Deliberately not derived from
+# `rules/routing-default.json`'s `roles` map above -- see the module docstring. A head not
+# in this map classes "unknown", never an error.
+CLASS_BY_HEAD = {
+    "amend": "mechanical", "apply": "execute", "author": "execute", "build": "execute",
+    "census": "mechanical", "close": "mechanical", "cold": "adversarial", "corpus": "mechanical",
+    "critic": "adversarial", "critique": "adversarial", "design": "think", "diagnose": "think",
+    "draft": "execute", "executor": "mechanical", "extract": "mechanical", "fix": "execute",
+    "gate": "mechanical", "grade": "mechanical", "judge": "think", "land": "execute",
+    "look": "mechanical", "migrate": "execute", "port": "execute", "publish": "execute",
+    "recon": "mechanical", "reconcile": "think", "record": "mechanical", "refute": "adversarial",
+    "render": "execute", "research": "think", "review": "adversarial", "rule": "think",
+    "run": "mechanical", "seal": "mechanical", "settle": "mechanical", "ship": "execute",
+    "state": "mechanical", "survey": "think", "sweep": "mechanical", "sync": "execute",
+    "synthesize": "think", "verify": "adversarial",
+}
+
+
+def tier_for_model(model_id):
+    """Served tier bucket for a model id string; 'unknown' for anything unrecognised, None
+    for no model at all."""
+    if not model_id:
+        return None
+    low = str(model_id).lower()
+    for prefix, tier in _TIER_PREFIXES:
+        if prefix in low:
+            return tier
+    return "unknown"
+
+
+def declared_tier(declared_model):
+    """The tier a `declared.model` literal names: the meta file's `model` is a tier word
+    ("sonnet" / "fable" / "haiku" on this host), but a full model id is admitted too and
+    bucketed through `tier_for_model` so a literal id never reads as a false mismatch."""
+    if not declared_model:
+        return None
+    low = str(declared_model).strip().lower()
+    if low.startswith("claude-"):
+        return tier_for_model(low)
+    return low
+
+
+def role_and_class(label):
+    """(role, class) from a label's head token (`role:slug` grammar); ("unknown", "unknown")
+    for an empty label."""
+    head = (label.split(":", 1)[0].strip().split()[0] if label else "").lower()
+    head = "".join(ch for ch in head if ch.isalnum() or ch == "-")
+    if not head:
+        return "unknown", "unknown"
+    return head, CLASS_BY_HEAD.get(head, "unknown")
+
+
+def agent_id_from_meta_path(path):
+    """The agent id is the meta file's name: `agent-<id>.meta.json` -> `<id>`; None otherwise."""
+    m = _META_RE.match(os.path.basename(path or ""))
+    return m.group(1) if m else None
+
+
+def canonical_bytes(obj):
+    """Deterministic JSON bytes for hashing / byte-identity comparisons (sorted keys, no
+    incidental whitespace). Distinct name from `canonical_json_bytes` above (identical
+    behaviour, ASCII-widened): both are kept so neither caller's import needs to change."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def read_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def read_capped(path, cap=MAX_READ_BYTES, head_tail=HEAD_TAIL_BYTES):
+    """(text, truncated). Reads the whole file under `cap` bytes; above it, reads only the
+    head and tail `head_tail` bytes each (never the middle) and marks truncated=True."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None, False
+    try:
+        if size <= cap:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                return fh.read(), False
+        with open(path, "rb") as fh:
+            head = fh.read(head_tail)
+            fh.seek(max(0, size - head_tail))
+            tail = fh.read(head_tail)
+        text = head.decode("utf-8", "replace") + "\n...[truncated]...\n" + tail.decode("utf-8", "replace")
+        return text, True
+    except OSError:
+        return None, False
+
+
+def read_jsonl_capped(path, cap=MAX_READ_BYTES, head_tail=HEAD_TAIL_BYTES):
+    """([row, ...], truncated) -- one JSON object per non-blank line; malformed lines are
+    skipped, never guessed."""
+    text, truncated = read_capped(path, cap, head_tail)
+    if text is None:
+        return [], False
+    rows = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("...["):
+            continue
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return rows, truncated
+
+
+def journal_index(journal_rows):
+    """{agentId: {"started": rec|None, "result": rec|None, "failed": rec|None}} over the real
+    journal record types. A `result` record is what makes an agent FINISHED for this writer
+    (one row per agent with a `result` record); `failed` and started-only agents are counted
+    by the caller's summary and never given a row (never imputed -- a later sweep records
+    them if a result ever lands; the (wf, agent) key keeps that safe). The first record of
+    each kind is the referent; a later one never overwrites it."""
+    idx = {}
+    for rec in journal_rows or []:
+        if not isinstance(rec, dict):
+            continue
+        agent = rec.get("agentId")
+        kind = rec.get("type")
+        if not agent or kind not in ("started", "result", "failed"):
+            continue
+        slot = idx.setdefault(agent, {"started": None, "result": None, "failed": None})
+        if slot[kind] is None:
+            slot[kind] = rec
+    return idx
+
+
+VERDICT_MAX_CHARS = 64
+
+
+def bound_verdict(value):
+    """A row's `outcome.verdict` is a verdict TOKEN (keep / discard / refine / a short label);
+    an agent whose structured output puts a paragraph in `verdict` gets the first 64
+    characters with a `...` marker -- the row records a verdict, never a report. None stays
+    None; a non-string is stringified first. Idempotent."""
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else str(value)
+    text = " ".join(text.split())
+    if len(text) > VERDICT_MAX_CHARS:
+        return text[:VERDICT_MAX_CHARS - 3].rstrip() + "..."
+    return text
+
+
+def outcome_from_result(result_rec):
+    """`outcome {schema_valid, verdict, refuted}` from a journal `result` record, or None when
+    there is none. `result` is the agent's structured output when the call declared a schema
+    (an object) or its final text otherwise (a string): `verdict` / `refuted` are read from an
+    object's own keys and are None otherwise -- never guessed. `schema_valid` is false only on
+    an explicit marker: the record's `schema_valid: false` / `schemaValid: false`, or the
+    object's `schema_retry_exhausted: true`."""
+    if not isinstance(result_rec, dict):
+        return None
+    result = result_rec.get("result")
+    marker_false = (result_rec.get("schema_valid") is False or result_rec.get("schemaValid") is False
+                    or (isinstance(result, dict) and result.get("schema_retry_exhausted") is True))
+    verdict = bound_verdict(result.get("verdict")) if isinstance(result, dict) else None
+    refuted = result.get("refuted") if isinstance(result, dict) else None
+    if refuted is not None and not isinstance(refuted, bool):
+        refuted = bool(refuted)
+    return {"schema_valid": not marker_false, "verdict": verdict, "refuted": refuted}
+
+
+def parse_ts(value):
+    """datetime for an ISO-8601 timestamp string (the transcript's `timestamp`), or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def summarise_transcript_rows(rows):
+    """Over parsed transcript lines: per-model usage buckets (a line counts iff `message`
+    carries both `model` and `usage`), the dominant model (most messages; ties broken by
+    model id so two readers agree), the four counters summed over EVERY model seen,
+    `messages`, and the first/last timestamp of those lines (`ts` = the last one, `wall_s` =
+    last - first). Pure, deterministic."""
+    models = {}
+    first = last = None
+    first_raw = last_raw = None
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        msg = row.get("message")
+        if not (isinstance(msg, dict) and "model" in msg and "usage" in msg):
+            continue
+        usage = msg.get("usage") or {}
+        if not isinstance(usage, dict):
+            usage = {}
+        bucket = models.setdefault(msg.get("model"), {k: 0 for k in USAGE_KEYS + ("n_messages",)})
+        for k in USAGE_KEYS:
+            v = usage.get(k, 0) or 0
+            bucket[k] += int(v) if isinstance(v, (int, float)) else 0
+        bucket["n_messages"] += 1
+        ts = parse_ts(row.get("timestamp"))
+        if ts is not None:
+            if first is None or ts < first:
+                first, first_raw = ts, row.get("timestamp")
+            if last is None or ts > last:
+                last, last_raw = ts, row.get("timestamp")
+    dominant = None
+    if models:
+        dominant = sorted(models.items(), key=lambda kv: (-kv[1]["n_messages"], str(kv[0])))[0][0]
+    totals = {k: sum(b[k] for b in models.values()) for k in USAGE_KEYS}
+    tokens = {
+        "in": totals["input_tokens"], "out": totals["output_tokens"],
+        "cache_create": totals["cache_creation_input_tokens"],
+        "cache_read": totals["cache_read_input_tokens"],
+        "messages": sum(b["n_messages"] for b in models.values()),
+    }
+    wall_s = round((last - first).total_seconds(), 3) if (first is not None and last is not None) else None
+    return {"dominant_model": dominant, "models": models, "tokens": tokens,
+            "ts": last_raw, "first_ts": first_raw, "wall_s": wall_s}
+
+
+def scan_transcript(path, cap=MAX_READ_BYTES, head_tail=HEAD_TAIL_BYTES):
+    """`summarise_transcript_rows` over `agent-<id>.jsonl` read under the disk rule; the
+    returned dict also carries `truncated` and `readable`."""
+    rows, truncated = read_jsonl_capped(path, cap, head_tail)
+    out = summarise_transcript_rows(rows)
+    out["truncated"] = bool(truncated)
+    out["readable"] = os.path.isfile(path)
+    return out
+
+
+def cost_usd(tokens, observed_model, prices_table):
+    """tokens x the pinned per-model rate from the SHIPPED `rules/model-prices.json` (a list
+    of `{"prefix", "in", "out", "cache_read", "cache_create"}` rows, one per model family,
+    prices per million tokens directly -- not the lane's placeholder tier+percentage
+    schema, which this ships-with-drift resolution replaces: `rules/model-prices.json`
+    already exists in this plugin as the guard's own price table, so the writer matches the
+    OBSERVED MODEL ID against each row's `prefix` (longest match wins; deterministic on a
+    tie by prefix text) rather than resolving a tier first. 0.0 for no match, no tokens, or
+    a missing table -- never raises."""
+    entries = (prices_table or {}).get("prices") or []
+    if not isinstance(entries, list) or not observed_model:
+        return 0.0
+    low = str(observed_model).lower()
+    matches = [e for e in entries if isinstance(e, dict) and e.get("prefix")
+               and low.startswith(str(e["prefix"]).lower())]
+    if not matches:
+        return 0.0
+    entry = sorted(matches, key=lambda e: (-len(e["prefix"]), e["prefix"]))[0]
+    tokens = tokens or {}
+    inp = float(tokens.get("in", 0) or 0)
+    out = float(tokens.get("out", 0) or 0)
+    cache_read = float(tokens.get("cache_read", 0) or 0)
+    cache_create = float(tokens.get("cache_create", 0) or 0)
+    total = (
+        inp / 1e6 * entry.get("in", 0)
+        + out / 1e6 * entry.get("out", 0)
+        + cache_read / 1e6 * entry.get("cache_read", 0)
+        + cache_create / 1e6 * entry.get("cache_create", 0)
+    )
+    return round(total, 6)
+
+
+def build_row(*, ts, repo, session, wf, agent, label, role, klass, declared, observed,
+              tokens, wall_s, cost, prices_sha, table_sha, default_sha, override_sha,
+              lane, run, outcome_ref, outcome, override, host_load_1m, guard_ran=None,
+              transcript_truncated=False):
+    """The agent-route/v1 row. `mismatch` and `void` are DERIVED here, never passed in, so a
+    caller cannot forget to set them: the declared literal is bucketed by `declared_tier`
+    and compared with the served tier."""
+    d_tier = declared_tier((declared or {}).get("model"))
+    o_tier = (observed or {}).get("tier")
+    mismatch = bool(d_tier and o_tier and d_tier != o_tier)
+    row = {
+        "kind": "agent-route",
+        "v": 1,
+        "ts": ts,
+        "repo": repo,
+        "session": session,
+        "wf": wf,
+        "agent": agent,
+        "label": label,
+        "role": role,
+        "class": klass,
+        "declared": declared,
+        "observed": observed,
+        "tokens": tokens,
+        "wall_s": wall_s,
+        "cost_usd": cost,
+        "prices_sha": prices_sha,
+        "table_sha": table_sha,
+        "default_sha": default_sha,
+        "override_sha": override_sha,
+        "lane": lane,
+        "run": run,
+        "outcome_ref": outcome_ref,
+        "outcome": outcome,
+        "override": override,
+        "host_load_1m": host_load_1m,
+        "mismatch": mismatch,
+        "transcript_truncated": bool(transcript_truncated),
+    }
+    if mismatch:
+        row["void"] = "annulled"
+    if guard_ran is not None:
+        row["guard_ran"] = bool(guard_ran)
+    return row
+
+
+def row_key(row):
+    return (row.get("wf"), row.get("agent"))
+
+
+def load_existing_rows(ledger_path):
+    """{(wf, agent): row} for every well-formed line already on disk; malformed lines are
+    counted separately so a splice is visible, never silently dropped."""
+    rows, malformed = {}, 0
+    if not os.path.isfile(ledger_path):
+        return rows, malformed
+    try:
+        with open(ledger_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.rstrip("\n")
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    malformed += 1
+                    continue
+                rows[row_key(obj)] = obj
+    except OSError:
+        pass
+    return rows, malformed
+
+
+def append_rows(ledger_path, rows):
+    """Appends every row as one canonical JSON line terminated by exactly one newline (a
+    writer that omits the final newline lets `merge=union` splice two rows into one on the
+    next append)."""
+    os.makedirs(os.path.dirname(os.path.abspath(ledger_path)), exist_ok=True)
+    with open(ledger_path, "a", encoding="utf-8", newline="\n") as fh:
+        for row in rows:
+            fh.write(canonical_bytes(row).decode("utf-8"))
+            fh.write("\n")
+
+
+def classify_new_rows(candidates, existing):
+    """(to_write, duplicates, conflicts) -- `to_write` are keys not seen yet; a candidate whose
+    key was already seen (on disk from a prior sweep, OR earlier in this same batch) and whose
+    canonical bytes match is a `duplicate` (collapsed silently, never a finding); one whose
+    bytes differ is a `conflict` (refused, one error-log line, never written). Sequential: a
+    batch's own first occurrence of a key becomes the referent its second occurrence is
+    checked against."""
+    seen = dict(existing)
+    to_write, duplicates, conflicts = [], [], []
+    for row in candidates:
+        key = row_key(row)
+        prior = seen.get(key)
+        if prior is None:
+            to_write.append(row)
+            seen[key] = row
+        elif canonical_bytes(prior) == canonical_bytes(row):
+            duplicates.append(row)
+        else:
+            conflicts.append(row)
+    return to_write, duplicates, conflicts
+
+
+def join_outcome(run_record):
+    """The pass share of a sealed run's own `assertions` dict (real RUN-RECORD.json shape:
+    `{"A1": {"pass": true, ...}, ...}`), to 4 decimals, or None when the record carries no
+    usable table. A row's `outcome_ref` names one run's RUN-RECORD.json directly; the join
+    computes that run's own pass share, never a lane's pooled VERDICT.json share -- the run
+    record is the artifact the pointer actually resolves to."""
+    if not isinstance(run_record, dict):
+        return None
+    table = run_record.get("assertions")
+    if not isinstance(table, dict) or not table:
+        return None
+    total = passed = 0
+    for entry in table.values():
+        total += 1
+        if isinstance(entry, dict) and entry.get("pass") is True:
+            passed += 1
+    if total == 0:
+        return None
+    return round(passed / total, 4)
+
+
+def read_watermark(path):
+    data = read_json(path)
+    return data if isinstance(data, dict) else {}
+
+
+def write_watermark(path, state):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, sort_keys=True)
+    os.replace(tmp, path)

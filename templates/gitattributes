@@ -6,6 +6,7 @@
 # no line-position dependence) is a valid ledger. Never edit a landed row in place.
 {{LEDGER_FILE}} merge=union
 {{OM_FEEDBACK_FILE}} merge=union
+{{ROUTING_LEDGER_FILE}} merge=union
 .claude/leak-meter-fires.log merge=union
 #
 # Compiled projections -- regenerated whole from their sources, never merged line by line
