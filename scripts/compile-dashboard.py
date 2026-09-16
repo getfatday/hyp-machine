@@ -965,6 +965,38 @@ def parse_fragment(name, text):
     return frag_id, slug or stem, date
 
 
+ROUTING_CLASS_RE = re.compile(
+    r"^## (\S+)\n- n=(\d+) cost_usd=([\d.]+) wall_s=([\d.]+) tokens_in=(\d+) "
+    r"tokens_out=(\d+) pass_share=(\S+) tiers=(\S*)\n- stream_state: (.+)$", re.M)
+
+
+def parse_routing_report(text):
+    """One dict per class section of a compiled routing-report.md (scripts/routing-
+    derive.py's `report` verb); [] for missing/empty text -- never raises."""
+    rows = []
+    for m in ROUTING_CLASS_RE.finditer(text or ""):
+        rows.append({"class": m.group(1), "n": int(m.group(2)), "cost_usd": float(m.group(3)),
+                     "pass_share": m.group(7), "tiers": m.group(8), "state": m.group(9)})
+    return rows
+
+
+def render_routing_section(root):
+    """## 4. ROUTING -- compiled from routing-report.md when present, nothing when absent
+    (source lab H-DRAFT-d5a8d9b6-routing-derive)."""
+    text = read_text(os.path.join(root, "routing-report.md"))
+    if text is None:
+        return []
+    out = ["## 4. ROUTING", ""]
+    rows = parse_routing_report(text)
+    if not rows:
+        out.append("(routing-report.md present but has no class sections yet)")
+        return out
+    for r in sorted(rows, key=lambda r: r["class"]):
+        out.append("- %s: n=%d cost=$%.2f pass_share=%s tiers=%s -- %s" % (
+            r["class"], r["n"], r["cost_usd"], r["pass_share"], r["tiers"], r["state"]))
+    return out
+
+
 def compile_text(root):
     cfg = load_config(root)
     tracked_list = git_lines(root, ["ls-tree", "-r", "--name-only", "HEAD"])
@@ -1156,6 +1188,11 @@ def compile_text(root):
             out.append("- %s (%s)" % (f["slug"], fid))
     if not day_keys and names is not None:
         out.append("(none yet -- journal fragments will appear here)")
+
+    routing_section = render_routing_section(root)
+    if routing_section:
+        out.append("")
+        out.extend(routing_section)
 
     out.append("")
     return "\n".join(out) + "\n", decisions_html

@@ -249,3 +249,100 @@ disclosed parity gap with `ledger_file`/`om_feedback_file`, open for a later rel
 **Undo.** Revert the merge commit that landed this release. There is no `routing.enforce`-style
 off switch for the ledger itself (it never denies anything to turn off); removing the two
 hook rows from `hooks/hooks.json` locally also stops it.
+
+## The derive loop
+
+Ships from the changeset that lands the lab keep `H-DRAFT-d5a8d9b6-routing-derive`
+(`VERDICT.json`: evidence-sufficient promote, five counted looks 5/5, the frozen SPRT walk to
+the promote bound) — see that lane for the full evidence trail.
+
+`scripts/routing-derive.py` reads this repository's own `ledger/routing-ledger.jsonl` (the
+routing ledger above) and proposes at most one bounded, rule-conformant routing change per
+run — **never applied automatically**: a candidate is written only as a draft hypothesis spec,
+never as a table edit. Four verbs:
+
+- `report` — one section per CLASS (`mechanical`/`execute`/`think`/`adversarial`/`unknown`):
+  call count, cost, tokens, pass share, tiers seen, and the class's stopping-rule stream state
+  (`rules/lineage-sprt.json`, the same frozen policy `scripts/lineage-stopping.py` uses) — plus
+  a cost/pass-share hull per class. Writes `routing-report.md` at the repository root, a
+  compiled projection the same way `DASHBOARD.md` is (see "The compiled dashboard block"
+  below).
+- `propose` — the single largest-saving, rule-conformant candidate (or none), written as
+  `candidate.json` plus a filled `candidate-spec.md` (from `templates/routing-candidate-
+  template.md`) under an out-dir; a human or the `hyp:hypothesis` skill allocates the `H-NNN`
+  and registers it — this script never registers anything itself. Also writes `actions.json`:
+  rollback and expired-pin advisories, observational only (see "Rollback" below).
+- `apply-rollbacks` / `default-bump` — the only two verbs that persist a table, and only the
+  one the caller names with `--out-table`; neither runs from the cadence hook.
+- `--check` — recomputes and names drift between a committed derive-state table and the
+  ledger; exit 1 and one line per undone rollback, 0 (`no drift`) otherwise.
+
+**The run-completed cadence.** `hooks/scripts/routing-derive-cadence.py` runs as a synchronous
+`Stop` hook, right after the routing ledger's own `Stop` row appends this turn's rows, and calls
+only `report` and `propose` — bounded, fail-open (any error is swallowed, the hook always exits
+0), and silent when `ledger/routing-ledger.jsonl` does not exist yet or carries no rows (a
+repository with no routing history gets no report and no candidate, never an error). It writes
+`<root>/routing-report.md`, `<root>/.claude/routing-candidates/{candidate.json,candidate-
+spec.md,actions.json}`, and reads (never writes) `<root>/ledger/routing-derive-state.json` if
+present.
+
+**The state file.** `ledger/routing-derive-state.json` is new: a small, per-CLASS record this
+script owns (`basis: prior|evidence|pin`, `tier`, `since_row`, and — for `think`/`adversarial`
+only — `license_id`; plus a `bank` of already-tried (class, tier) pairs). A repository with no
+such file yet is a normal cold start: `report` and `propose` seed any class the ledger has seen
+but the state file has not, in memory only, from that class's CURRENT live tier
+(`rules/routing-default.json` merged with `.claude/routing.json`) with `basis: prior` — nothing
+is written back by either verb. Only `apply-rollbacks` and `default-bump` persist the state
+file, and only when the caller names an existing (or freshly-seeded) path explicitly.
+
+**Rollback, today.** `rollback_check` reads a `matched-pair` ledger stream for the actual
+rollback decision; this plugin does not yet write that kind of row (no A/B pairing mechanism
+ships yet), so on a real ledger this path is live-safe but dormant — it can raise a
+`rollback-advisory` (observational-only covariate) or a `routing-ceiling-advisory` (a
+top-tier class holding), but never an applied `rollback`, until a future release ships matched-
+pair rows. `apply-rollbacks` stays correct and tested for that day (`scripts/selftest-routing-
+derive.py` scenarios S6/S7/R2/R3) without depending on it.
+
+**The compiled dashboard block.** `scripts/compile-dashboard.py` adds a `## 4. ROUTING` section
+compiled from `routing-report.md` — one line per class (`n`, cost, pass share, tiers, stream
+state) — only when that file exists; a repository with no routing history yet gets no section
+at all, not an empty one.
+
+### Reconciling with the live tables
+
+This loop is a port of the lab hypothesis's kept placeholder fixture, not a re-pin of this
+plugin's live tables to that fixture's shape. Every drift the port resolved:
+
+1. **Unit of change is the CLASS, not an arbitrary role.** Only a class carries a model tier
+   in the live table (every role mapped to a class shares its tier); the lab fixture's
+   placeholder table had no live analog for "the tier-carrying unit" and keyed per-role. This
+   port keys `rules/routing-derive.json` (`class_asymmetry`, `grades`) and the state file's
+   `classes` map on the same class names `hooks/scripts/routing_lib.py`'s `CLASS_BY_HEAD`
+   already assigns every ledger row.
+2. **Grader-stability restates the same relationship at class granularity.** Every pairing in
+   `rules/routing-default.json`'s `grades_edges` (role grades role) sits entirely between the
+   `adversarial` class and the `execute` class, so `rules/routing-derive.json`'s `grades` reads
+   `{"adversarial": ["execute"]}` — a restatement, not a new policy.
+3. **The ledger row shape is the real one.** `observed.tier` (never a bare top-level `tier`),
+   no `seq` field (the ledger is append-only and dedup'd on `(wf, agent)`, so file order
+   already is temporal order — `routing-derive.py` assigns each row a 1-based `seq` from its
+   position at load time), and no `matched-pair` kind yet (see "Rollback, today" above).
+4. **Prices are the live list-of-prefixes shape**, not the fixture's tier-keyed placeholder
+   dict — `prices_by_tier` adapts `rules/model-prices.json`'s `{"prefix": "claude-<tier>", ...}`
+   rows into the tier-keyed dict `saving()` reads. Under the CURRENT live prices, `opus` and
+   `fable` are priced identically (both 15/75 per million tokens); a one-step-down candidate
+   from `fable` to `opus` therefore always measures a saving of exactly `$0.00` and never opens
+   — disclosed, not a defect. `tier_order` stays the fixed canonical rank `[haiku, sonnet,
+   opus, fable]`; the rule goes quiet at a price plateau rather than being re-tuned to today's
+   numbers, and re-opens on its own if a future price update reintroduces a gap.
+
+**The frozen rule.** `rules/routing-derive.json` is frozen the same way `rules/lineage-
+sprt.json` is: a byte-identical sibling copy at `rules/frozen/routing-derive.json`, and its
+sha256 hardcoded in `scripts/routing-derive.py` (`FROZEN_REF_SHA256`, mirroring
+`scripts/lineage-stopping.py`'s `FROZEN_REF_REL`/`FROZEN_REF_SHA256` constants for
+`rules/lineage-sprt.json`). A rule edit that does not refresh both the sibling copy and the
+hardcoded sha is refused (`rule-tampered`), never silently read.
+
+**Undo.** Revert the merge commit that landed this release, or remove the `routing-derive-
+cadence.py` row from the `Stop` hook in `hooks/hooks.json` locally to stop the cadence alone
+(the CLI, the dashboard block, and the state file are all inert with no consumer calling them).

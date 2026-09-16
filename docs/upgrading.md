@@ -268,3 +268,17 @@ model from this same table instead of a hardcoded `haiku` literal. After upgradi
 install the project-scope copy a consumer repository's own `.claude/agents/` needs (the
 surface the lab lane measured live; see docs/model-routing.md, "The compiled agent
 surface", for what remains unmeasured). Undo: revert the release's merge commit.
+
+From the release that carries the model-routing derive loop (source lab
+`H-DRAFT-d5a8d9b6-routing-derive`, kept: five counted looks 5/5, the frozen SPRT walk to the
+promote bound), `hooks/scripts/routing-derive-cadence.py` runs at every `Stop`, right after the
+routing ledger's own row-append, and writes `routing-report.md` plus (if this repository's
+ledger already supports one) a candidate spec under `.claude/routing-candidates/` — it never
+edits a routing table itself; a candidate is only ever a draft hypothesis spec for a human or
+`hyp:hypothesis` to register. `scripts/compile-dashboard.py` gains a `## 4. ROUTING` section
+compiled from `routing-report.md`, present only once that file exists. After upgrading:
+nothing — the first `Stop` after your next agent-route row writes `routing-report.md`; a
+repository with no routing history yet gets no report, no candidate, and no dashboard section
+at all. Undo: revert the release's merge commit, or remove the `routing-derive-cadence.py` row
+from the `Stop` hook in `hooks/hooks.json` if you have forked it — the CLI
+(`scripts/routing-derive.py`) and its selftest keep working standalone either way.
