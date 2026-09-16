@@ -22,7 +22,8 @@ promote bound) — see that lane for the full evidence trail.
 | `adversarial` | fable | high | refuting, verifying, reviewing |
 | `unmodeled` | sonnet | high | explicit escape valve, used only under `advise` |
 
-The `execute` row's tier is evidenced by the lab keep `H-DRAFT-f6ce02b7-sonnet-builders-mechanical`
+The `execute` row carries as its prior (basis: prior; a keep in one repository is a prior in
+another, never evidence) the lab keep `H-DRAFT-f6ce02b7-sonnet-builders-mechanical`
 (`experiments/runs/H-DRAFT-f6ce02b7-sonnet-builders-mechanical/VERDICT.json`): on one sealed
 single-file build task, a sonnet builder matched a fable builder's sealed-suite pass set and
 planted-mutant kill rate at 4.0-4.2x lower US$ per passing build, across five counted looks
