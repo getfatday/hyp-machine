@@ -486,6 +486,19 @@ if hf=$(hs merge-attrs-check.py) && hb advisory-36 python3 "$hf" --root . && [ "
   ma=$(grep -c '^MERGE-ATTR-MISSING' "$hb_out" | tr -d ' '); mr=$(grep -c '^LEDGER-ROW-MALFORMED' "$hb_out" | tr -d ' ')
   echo "ADVISORY-36 merge-attributes: ${ma:-0} hook-written file(s) without their .gitattributes merge shape, ${mr:-0} malformed ledger row(s) (python3 scripts/merge-attrs-check.py --root . for detail; re-run /hyp:init to add the rows, or copy them from the plugin's templates/gitattributes; a projection that conflicts on merge is regenerated — compile-dashboard.py <root>, git add DASHBOARD.md decisions.html, git commit --no-edit — never edited)"; W=1
 fi
+# ADVISORY-37 routing-agents (H-DRAFT-75b03e6e-routing-determinism, kept: a routed agent()
+# call is served by the table's model regardless of the session model). Compares every
+# committed agents/hyp-<role>.md against the plugin's own rules/routing-default.json via
+# scripts/compile-routing-agents.py --check; this block prints the one line the count comes
+# from. Both the table and the agents/ dir being checked are the plugin's OWN (never the
+# consumer repo's), unlike every helper above that inspects the repo the session works in --
+# so this block is plugin-rooted twice over: silent when the checker or the table is absent
+# there, or nothing disagrees. Report-only, never blocks.
+rt="${CLAUDE_PLUGIN_ROOT:-$HERE}/rules/routing-default.json"
+if hf=$(hs compile-routing-agents.py) && [ -f "$rt" ] && hb advisory-37 python3 "$hf" "$rt" --check && [ "$hb_rc" -ne 0 ]; then
+  ra=$(wc -l < "$hb_out" | tr -d ' ')
+  echo "ADVISORY-37 routing-agents: $ra committed agents/hyp-<role>.md file(s) disagree with rules/routing-default.json (python3 scripts/compile-routing-agents.py rules/routing-default.json --check for detail; python3 scripts/compile-routing-agents.py rules/routing-default.json to recompile)"; W=1
+fi
 if [ -n "$skipped" ]; then
   echo "HARDEN-SKIP: whole-tree scan(s) deferred to the cached refresh:$skipped ($ntracked tracked files > ${HARDEN_TREE_MAX:-2000}, no advisory cache yet; bash scripts/harden-check.sh --fresh after this session for the full reading)"; W=1
 fi

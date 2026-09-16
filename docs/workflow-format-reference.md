@@ -31,7 +31,11 @@ beginning with a PURE-LITERAL meta export (no variables, calls, spreads, interpo
   that omits or misroutes model/effort), effort
   ('low'|'medium'|'high'|'xhigh'|'max' — 'low' for mechanical stages), isolation:
   'worktree' (EXPENSIVE, only for parallel file mutation), agentType (custom agent from
-  the registry). Returns null if skipped/dead — filter with .filter(Boolean).
+  the registry — a compiled `hyp-<role>`/`hyp:<role>` agent definition's own `model:`
+  frontmatter is a second, independent input the platform reads beside this call's literal
+  `model`/`effort`; see docs/model-routing.md, "The compiled agent surface", for the
+  resolution order and what is proven vs. inferred). Returns null if skipped/dead — filter
+  with .filter(Boolean).
 - parallel([thunks]) — concurrency with a BARRIER; a throwing thunk resolves null, never
   rejects. Use ONLY when stage N needs ALL of stage N-1.
 - pipeline(items, stage1, stage2, ...) — per-item chains, NO barrier between stages; the
