@@ -208,6 +208,30 @@ revert the release's merge commit that added the ignore row; if a retire commit 
 `git add -f operating-model/<context>/model.md` re-tracks the current work-tree file. See
 `docs/passive-feedback.md`, "The catalogue projection".
 
+From the release that carries the operating-model tier-0 CI check (source lab
+H-DRAFT-a28b91c9-om-ci-tier0, kept 2026-09-15), `scripts/om-ci.py emit ci-tier0` writes a
+zero-credential GitHub Actions workflow that lints the operating model and checks compile
+staleness on every push and pull request touching `operating-model/**`. Nothing runs on its
+own: after upgrading, run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-ci.py" emit ci-tier0`
+once in the repository and commit `.github/workflows/om-check.yml` plus the vendored
+`.github/om-scripts/` it names (the workflow calls those vendored scripts, never the plugin
+install — a GitHub-hosted runner has neither). Both jobs check out full history
+(`fetch-depth: 0`): the staleness check dates paths by their last commit, and the checkout
+action's default depth-1 clone would read every stale tree as clean. The check's glue calls
+the vendored `om-worker.py`'s own path and staleness functions, so a repository that moved its
+feedback ledger through `om_feedback_file` or its model through `model_dir` is checked exactly
+as `om-worker.py` sees it, and a ledger that already holds an identical row cannot hide a stale
+tree. Re-running `emit ci-tier0` is idempotent and
+byte-stable, and a file you have hand-edited is kept, not overwritten, unless you pass
+`--force`. Verify locally without pushing anything with
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-ci.py" self-test ci-tier0` (also
+`scripts/selftest-om-ci.py` in this plugin's own tree). What is still owed: the hosted
+acceptance check (`github.actor` semantics for a bot push, whether that push re-triggers the
+workflow, and the hosting service's own evaluation of the one-`paths:`-list trigger) — see
+`docs/ci-scaffold.md`, "Shipped ahead of the scaffold". Undo: delete
+`.github/workflows/om-check.yml` and `.github/om-scripts/`; nothing else in the repository
+depends on either.
+
 From the release that carries the startup wake (source lab `H-DRAFT-10383178-om-startup-wake`,
 kept 2026-09-15), `hooks.json`'s existing `resolver` `SessionStart` row gains one `--also
 om-worker '...'` clause: every `startup` now runs `scripts/om-worker.py drain` in the background,
