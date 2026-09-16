@@ -22,7 +22,8 @@ probe as ambiguous instead of grading a refusal.
 (`.claude/hyp.json` `om_substrates_file` overrides the path; `merge=union` -- see
 `docs/passive-feedback.md`), one canonical JSON object per line.
 
-Zero LLM calls anywhere in this file. Python 3.9, stdlib only.
+Zero LLM calls anywhere in this file. Python 3.9, stdlib plus the plugin's own
+`hooks/scripts/hyp_config` helper.
 
 Ported by intent from the lab keep getfatday/cause-n-effect
 H-DRAFT-e2a5e911-om-integrate-probe (kept 2026-09-15: five counted looks, A1-A5 pass in every

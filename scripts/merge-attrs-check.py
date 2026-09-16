@@ -40,6 +40,7 @@ from hyp_config import safe_rel_path  # noqa: E402  (the one rule every override
 
 DEFAULT_LEDGER = "ledger/ledger.jsonl"
 DEFAULT_OM_FEEDBACK = "ledger/om-feedback.jsonl"
+DEFAULT_OM_SUBSTRATES = "ledger/om-substrates.jsonl"
 UNION_FIXED = [".claude/leak-meter-fires.log"]
 DERIVED = ["DASHBOARD.md", "decisions.html"]
 DERIVED_GLOB_DIR = "ledger/north-stars"
@@ -65,6 +66,10 @@ def ledger_rel(root):
 
 def om_feedback_rel(root):
     return _config_rel(root, "om_feedback_file", DEFAULT_OM_FEEDBACK)
+
+
+def om_substrates_rel(root):
+    return _config_rel(root, "om_substrates_file", DEFAULT_OM_SUBSTRATES)
 
 
 def check_attr(root, paths):
@@ -95,6 +100,10 @@ def expected_rows(root):
     # the file exists (a consumer that never ran the worker is not nagged about it)
     if os.path.isfile(os.path.join(root, om_feedback_rel(root))):
         rows.append((om_feedback_rel(root), "union"))
+    # the substrate probe ledger is written by om-integrate.py's `probe` verb on first use; same
+    # once-the-file-exists gating as the feedback ledger above.
+    if os.path.isfile(os.path.join(root, om_substrates_rel(root))):
+        rows.append((om_substrates_rel(root), "union"))
     for p in DERIVED:
         if os.path.isfile(os.path.join(root, p)):
             rows.append((p, "binary"))
@@ -108,7 +117,7 @@ def expected_rows(root):
 
 def lint_rows(root):
     findings = []
-    for rel in (ledger_rel(root), om_feedback_rel(root)):
+    for rel in (ledger_rel(root), om_feedback_rel(root), om_substrates_rel(root)):
         findings.extend(_lint_one(os.path.join(root, rel)))
     return findings
 

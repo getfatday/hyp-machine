@@ -42,15 +42,21 @@ Nine candidate background mechanisms, in this frozen priority order (first probe
    probe-verified (`usable`) rows alone — never from `authors_90d` or disk space, which ride the
    rows only as covariates.
 
-3. **Emit.** Writes, but never loads or activates, whatever `compose` picked:
+3. **Emit.** Writes, but never loads or activates, whatever `compose` picked. `--agents-dir`
+   names where the plist is STAGED, not where it runs from — never point it at
+   `~/Library/LaunchAgents` itself: launchd scans that directory at your next login (macOS 13+
+   also registers it as a background login item), so a plist merely sitting there stops being
+   "not activated" the moment you log in again. Stage it anywhere else, for example:
    ```
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" emit --root . \
-     --agents-dir ~/Library/LaunchAgents
+     --agents-dir .claude/om-staged-agents
    ```
    - `launchd-queue`: a `plutil`-linted plist at `<agents-dir>/com.hyp-machine.om-worker.<key>.plist`,
      `ProcessType Background`, watching the SAME inbox directory `om-worker.py`'s own `drain`
-     reads by default. Not loaded. The command that would activate it is printed —
-     `launchctl load <path>` — and is the user's own separate, deliberate act.
+     reads by default. Staged, not loaded, and not inside `~/Library/LaunchAgents`. The ONE
+     disclosed activation step, run only when and if you want this running: copy the staged
+     plist into `~/Library/LaunchAgents/` and load it from there —
+     `cp <agents-dir>/<label>.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/<label>.plist`.
    - `ci-tier0`: delegated whole to `scripts/om-ci.py emit ci-tier0` (already shipped; see
      `docs/ci-scaffold.md`) — the workflow and its vendored dependencies land under
      `.github/workflows/om-check.yml` and `.github/om-scripts/`. Nothing here carries a second
@@ -76,9 +82,14 @@ Nine candidate background mechanisms, in this frozen priority order (first probe
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" report --root .
    ```
    Prints `holds` when the recorded handle still probes usable, or `no longer holds: <handle>
-   (propose: <new-handle>)` when it does not (a host capability changed) — plus a
-   `mixed-installs:` line naming which of this repository's worktrees carry which plugin
-   version, when they differ.
+   (propose: <new-handle>)` when it does not (a host capability changed). Add
+   `--installed-plugins <path>` to also get a `mixed-installs:` line naming which of this
+   repository's worktrees carry which plugin version, when they differ: `<path>` names a JSON
+   file YOU build, shaped `{"<absolute worktree path>": "<version>", ...}` — one entry per
+   worktree you want checked. This is NOT the real Claude Code
+   `~/.claude/plugins/installed_plugins.json` (a different shape this verb does not read
+   directly); build the map yourself from whatever you already know about your worktrees'
+   plugin versions.
 
 6. **Uninstall.** The one removal command, always available:
    ```

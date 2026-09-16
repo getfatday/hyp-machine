@@ -627,8 +627,11 @@ handle whole to `scripts/om-ci.py emit ci-tier0` (never a second copy of that wo
 template); `test` drives one real transcript and the worker lane's own two poison seeds through
 the pinned worker under a stub substrate that plays the `QueueDirectories`/`ThrottleInterval`
 role without ever touching real launchd, and reports `test: PASS`/`FAIL` from what actually
-landed on disk; `report` reads back whether the recorded handle still probes usable and flags
-mixed plugin versions across a repository's worktrees; `uninstall --dry-run` prints the exact
+landed on disk; `report` reads back whether the recorded handle still probes usable, and, when
+invoked with `--installed-plugins <path>` naming a hand-built `{<worktree-path>: <version>}`
+JSON map, flags mixed plugin versions across a repository's worktrees (the real
+`~/.claude/plugins/installed_plugins.json` has a different shape and is not read directly);
+`uninstall --dry-run` prints the exact
 removal and reversal commands, and `uninstall` leaves zero emitted artifacts and drops the
 `.claude/hyp.json` `om_offload` key.
 

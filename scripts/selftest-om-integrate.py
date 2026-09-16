@@ -60,6 +60,8 @@ for _k in ("GH_TOKEN", "GITHUB_TOKEN"):
 
 RESULTS = []
 RAW = {}
+_SCRATCH_HYP_STATE_DIR = None  # set by main() before any run_integrate call; every verb call
+                                # must use scratch, never the real host ~/.hyp-state
 
 
 def check(name, cond, detail=""):
@@ -78,6 +80,8 @@ def git(cwd, *args, env=None):
 
 def run_integrate(args, cwd=None, timeout=90, env=None):
     e = dict(os.environ)
+    if _SCRATCH_HYP_STATE_DIR:
+        e["HYP_STATE_DIR"] = _SCRATCH_HYP_STATE_DIR
     if env:
         e.update(env)
     p = subprocess.run([sys.executable, OM_INTEGRATE] + args, cwd=cwd, env=e,
@@ -378,7 +382,9 @@ def a7_report(root):
 
 
 def main():
+    global _SCRATCH_HYP_STATE_DIR
     scratch = tempfile.mkdtemp(prefix="selftest-om-integrate-")
+    _SCRATCH_HYP_STATE_DIR = os.path.join(scratch, "hyp-state")
     try:
         a1_probe(scratch)
         a2_compose()
