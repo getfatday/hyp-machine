@@ -14,9 +14,10 @@ the harness discipline for A/B arms. Frozen references:
 
 ## Harness discipline (what makes a verdict trustworthy)
 
-1. **Spec first** — falsifiable sentence, ONE variable, baseline, fixed budget, 3–5 binary
-   assertions, mechanical verdict rule ("keep if N/N pass in 2 consecutive runs; failures →
-   refine or discard"). No run without a spec.
+1. **Spec first** — falsifiable sentence, ONE variable, baseline, fixed budget, one to five
+   binary assertions (fewer than three only with typed voids in the Verdict rule), mechanical
+   verdict rule ("keep if N/N pass in 2 consecutive runs; failures → refine or discard"). No
+   run without a spec.
 2. **Freeze at registration** — protocols, rubrics, and fixtures are immutable for the life of
    the hypothesis; a needed change is a refine into a new hypothesis, never an in-place edit.
 3. **Isolate** — arms run in clones/worktrees/sandboxes pinned at a commit; ground truth and
