@@ -61,7 +61,9 @@ Claim type: <!-- REQUIRED — fill exactly one: descriptive (measures what is) |
      containment function of their own. -->
 
 ## Binary assertions
-<!-- 3-5 pass/fail checks. The ONLY basis for the verdict. No subjective scores. -->
+<!-- 1-5 pass/fail decision checks (fewer than 3 only with a SUBSTANTIVE-ASSERTIONS: line
+     naming the primary and a typed void in the Verdict rule). The ONLY basis for the verdict.
+     No subjective scores. -->
 1. <!-- e.g. All 3 tasks completed within budget. -->
 2. <!-- e.g. Zero changed lines outside the requested scope. -->
 3. <!-- e.g. Fewer clarification round-trips than baseline run. -->

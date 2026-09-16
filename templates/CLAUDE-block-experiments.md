@@ -57,8 +57,9 @@ budget, binary assertions, mechanical verdict, journaled always.
 
 ### Experiment rules
 
-- Every experiment declares 3-5 binary pass/fail assertions BEFORE running. No subjective
-  scores.
+- Every experiment declares its binary pass/fail assertions BEFORE running: one to five
+  decision assertions, and, when fewer than three, its run-validity conditions typed as
+  voids that void a run rather than fail it. No subjective scores.
 - One variable per experiment. If a design changes two things, split it into two hypotheses.
 - Run the smallest experiment that can falsify the hypothesis; specs follow the template —
   nothing beyond its sections.
