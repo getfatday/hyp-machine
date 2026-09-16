@@ -659,6 +659,31 @@ from; and every probe row gains a `host_key` field beside `authors_90d` and `dis
 throwaway consumer and a selftest-only stub substrate, never against the real host's launchd or
 GitHub Actions.
 
+**Credential policy.** `compose` never binds a model-calling tier to a shared subscription token
+in a repository with more than one recent author: given a consumer's own request for a
+model-calling tier's credential (`.claude/hyp.json` `om_credential_tier` + `om_credential_class`,
+or `--tier`/`--credential-class` for a cold caller), it runs `scripts/om-credential-policy.py`
+(one call site, its own imported entry, never folded into `compose`'s mechanism picks) over the
+same probe rows: `authors_90d` > 1 and class `shared-subscription-token` prints one
+`CREDENTIAL-REFUSED tier=<tier> class=shared-subscription-token authors_90d=<n>` line and three
+`OFFER` lines (`api-key repository-owned`, `federation workload-identity`, `platform-identity
+oidc`, in that order), `emit` writes no `credential` entry into `.claude/om-offload.lock.json`
+for that tier and exits 3; `authors_90d` = 1, or any of the three offered classes, proceeds
+silently and `emit`'s lock carries `credential: {tier, class, allowed: true}`. An OAuth token
+from `claude setup-token` is tied to the subscription of the person who ran it, so wiring it into
+a repository more than one person commits to makes every model call by every author look like
+one person's -- the attribution failure GOVERNANCE.md's Recoverability invariant names, and its
+Isolation invariant wants concurrent work to reach the shared line through attributed changes
+rather than a shared credential. No handle shipped today (`launchd-queue`, `ci-tier0`, ...) calls
+a model, so no consumer declares this request yet and the clause is a no-op on every call this
+plugin itself makes -- it guards the place a future model-calling tier's credential would be
+bound, never invents a token-binding feature of its own; `ci-tier0` in particular is the
+zero-credential CI tier (`om-ci.py self-test ci-tier0` proves it never spawns `claude`) and needs
+no credential decision at all. Evidence: lab `H-DRAFT-744a5773-om-credential-policy`, kept
+2026-09-16 -- five counted looks, A1 pass in every one, cold-verified (`VERDICT.json`,
+`VERIFY.md`, journal fragment 0581; five cold fixture refute rounds preceded the looks).
+`python3 scripts/selftest-om-credential-policy.py` ports A1 onto the live plugin tip.
+
 Undo: revert the release's merge commit; if you already ran `emit` or `test`, run
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" uninstall --root .` first (dry-run with
 `--dry-run`) -- it removes everything those verbs wrote and prints the one

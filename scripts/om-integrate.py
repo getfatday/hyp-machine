@@ -63,9 +63,21 @@ diff:
    prints the `~/Library/LaunchAgents/<label>` unload+rm line (the activation step's exact
    reversal); a corrupt lock / hyp.json / --installed-plugins file is a typed
    `void: corrupt-json <path>` (exit 2, nothing changed), never a traceback.
+6. `compose` gained an optional `credential_class`/`tier` guard, one call site, before any
+   model-calling tier is bound: given both, it runs `scripts/om-credential-policy.py` (its own
+   imported entry, never re-implemented here) over the same probe rows and refuses a
+   `shared-subscription-token` credential when the recorded `authors_90d` census exceeds one,
+   printing the refusal and three offered alternatives (`api-key`, `federation`,
+   `platform-identity`) instead of letting the caller bind it. No handle in this file calls a
+   model yet, so no consumer declares this request today and the clause is a no-op on every
+   call this file itself makes. Ported from getfatday/cause-n-effect
+   H-DRAFT-744a5773-om-credential-policy (kept 2026-09-16: five counted looks, A1 pass in every
+   one, cold-verified); not present in the kept fixture bytes of the parent lane this docstring
+   otherwise documents drift against.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import plistlib
@@ -425,11 +437,51 @@ def _print_lying_rows(rows):
                   % (r["handle"], r.get("probe_cmd"), r.get("exit")))
 
 
-def compose(rows):
+def _load_credential_policy():
+    """Imports `om-credential-policy.py` by path (never re-implemented here) the same way the
+    source lane's fixture shim imported the pinned `compose` it wrapped."""
+    path = os.path.join(HERE, "om-credential-policy.py")
+    spec = importlib.util.spec_from_file_location("om_credential_policy_pinned", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _consumer_credential_request(root):
+    """The consumer's own recorded request for a model-calling tier's credential --
+    `.claude/hyp.json` `om_credential_tier` / `om_credential_class`. Both keys must be present
+    together, or neither is treated as a request (never a half-request, never a default class
+    invented here). No consumer sets these keys today -- no handle in this file calls a model
+    yet -- so this reads `(None, None)` on every repository until one does."""
+    cfg = _consumer_config(root)
+    tier = cfg.get("om_credential_tier")
+    credential_class = cfg.get("om_credential_class")
+    if not tier or not credential_class:
+        return None, None
+    return tier, credential_class
+
+
+def compose(rows, credential_class=None, tier=None):
     """Pick exactly one on-device handle and at most one remote handle from the `usable` rows
     ALONE -- covariates (`authors_90d`, `disk`, `host_key`) are never a compose input; a
     `usable: true` row whose `probe_cmd` is empty or whose `exit` is not 0 is refused
-    (`_verified_usable`)."""
+    (`_verified_usable`).
+
+    When BOTH `tier` and `credential_class` are given -- the consumer's own recorded request for
+    a model-calling tier's credential (`.claude/hyp.json` `om_credential_tier`/
+    `om_credential_class`, read by `cmd_compose`/`cmd_emit`, or the `--tier`/`--credential-class`
+    CLI flags for a cold caller) -- this call also runs the credential policy check
+    `om-credential-policy.py` (H-DRAFT-744a5773-om-credential-policy, kept 2026-09-16) as its own
+    imported entry over these SAME probe rows, before any model-calling tier is bound: one call
+    site, never folded into the picks above and never a re-implementation of its threshold or
+    class table. No handle shipped in this file calls a model today, so no consumer declares this
+    request yet and the clause is a no-op on every call this file itself makes -- it guards the
+    place a future model-calling tier's credential would be bound, never invents a token-binding
+    feature of its own. On a hit, the returned dict carries `credential`: `{'tier', 'class',
+    'allowed', 'exit', 'lines'}` -- `allowed` False means the caller writes no token-bearing
+    binding for `tier` and surfaces `lines` (one `CREDENTIAL-REFUSED` and three `OFFER` lines) to
+    the user; the mechanism picks (`on_device`, `remote`) are unaffected either way, exactly as
+    before this credential clause existed."""
     usable = {r["handle"]: _verified_usable(r) for r in rows}
     on_device = "none"
     for h in ON_DEVICE_ORDER:
@@ -445,13 +497,25 @@ def compose(rows):
         if usable.get(h):
             remote = h
             break
-    return {"on_device": on_device, "remote": remote}
+    result = {"on_device": on_device, "remote": remote}
+    if tier and credential_class:
+        policy = _load_credential_policy()
+        lines, code = policy.evaluate(rows, tier, credential_class)
+        result["credential"] = {"tier": tier, "class": credential_class,
+                                "allowed": code == 0, "exit": code, "lines": lines}
+    return result
 
 
 def cmd_compose(args):
     rows = probe_all(args.root, args.remote_host)
     _print_lying_rows(rows)
-    result = compose(rows)
+    tier, credential_class = args.tier, args.credential_class
+    if credential_class is None:
+        tier, credential_class = _consumer_credential_request(args.root)
+    result = compose(rows, credential_class=credential_class, tier=tier)
+    if result.get("credential"):
+        for line in result["credential"]["lines"]:
+            print(line)
     print(json.dumps(result, sort_keys=True))
     _print_probe_voids(rows)
     if result["on_device"] == "none":
@@ -523,10 +587,14 @@ def _emit_ci_tier0(root, plugin_scripts):
     return relpaths
 
 
-def emit(root, agents_dir, worker_path, plugin_scripts, remote_host="github.com"):
+def emit(root, agents_dir, worker_path, plugin_scripts, remote_host="github.com",
+         credential_class=None, tier=None):
     rows = probe_all(root, remote_host)
     _print_lying_rows(rows)
-    decision = compose(rows)
+    decision = compose(rows, credential_class=credential_class, tier=tier)
+    if decision.get("credential"):
+        for line in decision["credential"]["lines"]:
+            print(line)
     lock_path = os.path.join(root, LOCK_REL)
     prior = {}
     if os.path.isfile(lock_path):
@@ -573,6 +641,9 @@ def emit(root, agents_dir, worker_path, plugin_scripts, remote_host="github.com"
     lock = {"on_device_handle": decision["on_device"], "remote_handle": decision["remote"],
             "emitted": emitted, "rootkey": _rootkey(root), "probe_voids": probe_voids(rows),
             "ci_tier0_relpaths": ci_relpaths}
+    cred = decision.get("credential")
+    if cred and cred.get("allowed"):
+        lock["credential"] = {"tier": cred["tier"], "class": cred["class"], "allowed": True}
     with open(lock_path, "w", encoding="utf-8") as fh:
         json.dump(lock, fh, indent=1, sort_keys=True)
 
@@ -608,7 +679,11 @@ def cmd_emit(args):
               "there is scanned by launchd at your next login, which is activation, not "
               "staging; pick any other directory")
         return 1
-    result = emit(args.root, args.agents_dir, args.worker, args.plugin_scripts, args.remote_host)
+    tier, credential_class = args.tier, args.credential_class
+    if credential_class is None:
+        tier, credential_class = _consumer_credential_request(args.root)
+    result = emit(args.root, args.agents_dir, args.worker, args.plugin_scripts, args.remote_host,
+                  credential_class=credential_class, tier=tier)
     if result.get("voids"):
         print(json.dumps(result, sort_keys=True))
         return 2
@@ -621,6 +696,9 @@ def cmd_emit(args):
         print("om-integrate: to activate (a deliberate, separate step -- never run by this "
               "verb): cp %s ~/Library/LaunchAgents/ && launchctl load "
               "~/Library/LaunchAgents/%s.plist" % (plist_path, label))
+    cred = result["decision"].get("credential")
+    if cred and not cred.get("allowed"):
+        return 3
     return 0
 
 
@@ -950,6 +1028,11 @@ def main(argv=None):
     p = sub.add_parser("compose")
     p.add_argument("--root", default=None)
     p.add_argument("--remote-host", default="github.com")
+    p.add_argument("--tier", default=None,
+                   help="a model-calling tier's credential request, paired with --credential-class"
+                        " (default: read .claude/hyp.json om_credential_tier/om_credential_class;"
+                        " no request today -- no-op)")
+    p.add_argument("--credential-class", default=None)
     p.set_defaults(fn=cmd_compose)
 
     p = sub.add_parser("emit")
@@ -958,6 +1041,11 @@ def main(argv=None):
     p.add_argument("--worker", default=None)
     p.add_argument("--plugin-scripts", default=None)
     p.add_argument("--remote-host", default="github.com")
+    p.add_argument("--tier", default=None,
+                   help="a model-calling tier's credential request, paired with --credential-class"
+                        " (default: read .claude/hyp.json om_credential_tier/om_credential_class;"
+                        " no request today -- no-op)")
+    p.add_argument("--credential-class", default=None)
     p.set_defaults(fn=cmd_emit)
 
     p = sub.add_parser("test")

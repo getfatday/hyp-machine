@@ -40,7 +40,12 @@ Nine candidate background mechanisms, in this frozen priority order (first probe
    ```
    Prints the one on-device handle and the one remote handle the priority order picks from the
    probe-verified (`usable`) rows alone — never from `authors_90d` or disk space, which ride the
-   rows only as covariates.
+   rows only as covariates. If the repository has requested a model-calling tier's credential
+   (`--tier`/`--credential-class`, or `.claude/hyp.json` `om_credential_tier`/
+   `om_credential_class`) and its `authors_90d` census exceeds one, `compose` refuses a shared
+   subscription token for that tier and prints three alternatives (`api-key`, `federation`,
+   `platform-identity`) instead — see `docs/passive-feedback.md`, "Credential policy"; no shipped
+   handle asks for one yet, so this is silent today.
 
    Before you emit, put two or three concrete options to the user with their tradeoffs, in plain
    English, built from what `compose` picked: (a) emit and run the on-device handle (for

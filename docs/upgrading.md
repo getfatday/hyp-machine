@@ -297,3 +297,14 @@ is called by any hook or session-start step; run the `integrate` skill (or
 see what this host can offer. Undo: revert the release's merge commit, or run
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" uninstall --root .` first if you already
 had it emit something.
+
+From the release that carries the credential policy (source lab
+`H-DRAFT-744a5773-om-credential-policy`, kept 2026-09-16: five counted looks, A1 pass in every
+one, cold-verified), `compose` gains one optional guard: given a model-calling tier's credential
+request (`.claude/hyp.json` `om_credential_tier`/`om_credential_class`, or `--tier`/
+`--credential-class`), `scripts/om-credential-policy.py` refuses a `shared-subscription-token`
+class when the repository's recorded `authors_90d` exceeds one and offers `api-key`,
+`federation`, and `platform-identity` instead; `emit`'s lock then carries no `credential` entry
+for that tier and its process exits 3. After upgrading: nothing runs differently -- no shipped
+handle requests a model-calling tier's credential yet, so this guard is silent on every
+repository until one does. Undo: revert the release's merge commit.
