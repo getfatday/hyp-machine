@@ -241,3 +241,15 @@ and no added foreground interpreter start on the row you actually see. After upg
 can arrive one session-start boundary late (see `docs/passive-feedback.md`, "The startup wake").
 Undo: revert the release's merge commit, or remove the `--also om-worker '...'` clause from the
 resolver row in your `hooks/hooks.json` if you have forked it.
+
+From the release that carries the startup reading surface (source lab
+`H-DRAFT-3aef12a5-om-startup-reading-surface`, kept 2026-09-15), the SAME `startup` row that
+already wakes the passive feedback worker in the background now also PRINTS its last landed
+reading: up to 8 lines prefixed `OM-FEEDBACK: `, the first carrying how old the reading is,
+never the worker's own content verbatim where it would match one of two structural leak checks
+(see `docs/passive-feedback.md`, "The reading surface"). The `resume|clear|compact` cached row
+gains the same reading under the same hold. After upgrading: nothing -- it shows on the next
+`startup` (and next `resume`/`clear`/`compact`) with no configuration, and shows nothing at all
+until a wake has landed a reading for this checkout. Undo: revert the release's merge commit, or
+remove the `om-worker` name from the `cached` row's argument list and drop the
+`print_om_feedback` call from `hooks/scripts/session-start-budget.py` if you have forked it.
