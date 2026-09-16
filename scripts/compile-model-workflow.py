@@ -1152,6 +1152,39 @@ DISALLOW_ALL = ("Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Task,TodoWrit
                 "NotebookEdit,SlashCommand,Skill")
 
 
+def resolve_role_model(repo, role, fallback):
+    """Best-effort resolution of `role`'s model via the routing table (rules/routing-
+    default.json under CLAUDE_PLUGIN_ROOT, if set, merged with <repo>/.claude/routing.json
+    if present) -- the same effective table `scripts/routing.py resolve <role>` reads.
+    Never raises: any missing piece (no CLAUDE_PLUGIN_ROOT, no default table, unknown role,
+    malformed JSON) returns `fallback` unchanged, so a standalone run of this emitted
+    runner with no plugin installed keeps working exactly as before (source lab
+    H-DRAFT-75b03e6e-routing-determinism)."""
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if not plugin_root:
+        return fallback
+    default_path = os.path.join(plugin_root, "rules", "routing-default.json")
+    try:
+        with open(default_path) as f:
+            table = json.load(f)
+    except (OSError, ValueError):
+        return fallback
+    table = {"classes": dict(table.get("classes", {})), "roles": dict(table.get("roles", {}))}
+    override_path = os.path.join(repo, ".claude", "routing.json")
+    if os.path.isfile(override_path):
+        try:
+            with open(override_path) as f:
+                override = json.load(f)
+        except (OSError, ValueError):
+            override = {}
+        table["classes"].update(override.get("classes", {}))
+        table["roles"].update(override.get("roles", {}))
+    cls = table["roles"].get(role)
+    if cls is None:
+        return fallback
+    return table["classes"].get(cls, {}).get("model", fallback)
+
+
 def cap_text(s):
     t = "" if s is None else str(s)
     return t[:CAP_BYTES] + "\\n...[truncated at CAP_BYTES]" if len(t) > CAP_BYTES else t
@@ -1564,7 +1597,11 @@ def main():
     ap.add_argument("--repo", default=None)
     ap.add_argument("--claude", default=None)
     ap.add_argument("--model", default=None)
-    ap.add_argument("--model-low", dest="model_low", default="haiku")
+    ap.add_argument("--model-low", dest="model_low", default=None,
+                    help="DEPRECATED: passing this overrides the model the routing table's "
+                         "`gate` role resolves to (rules/routing-default.json under "
+                         "CLAUDE_PLUGIN_ROOT, the same table `scripts/routing.py resolve gate` "
+                         "reads); omit it to let the table decide")
     ap.add_argument("--max-usd", dest="max_usd", type=float,
                     default=CONFIG["tier_audit"]["ceiling_usd"]["portable_t2"])
     ap.add_argument("--wall", type=int, default=600)
@@ -1575,6 +1612,12 @@ def main():
     if o.repo is None:
         p = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
         o.repo = p.stdout.strip() or os.getcwd()
+    if o.model_low is not None:
+        print("compile-model-workflow.py (emitted runner): --model-low is deprecated -- "
+              "the `gate` role's model now resolves from the routing table; pass nothing "
+              "to use it", file=sys.stderr)
+    else:
+        o.model_low = resolve_role_model(o.repo, "gate", "haiku")
     if o.claude is None:
         o.claude = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
     if o.out is None:

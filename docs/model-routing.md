@@ -59,7 +59,8 @@ A finding names the script, the line, and one of these classes: `no-model` / `no
 above for the two escapes that admit), `non-literal` (a routing option is a
 spread, variable, or template instead of a string literal), `phase-mismatch` (a
 `meta.phases[]` entry names a different model than the call), `agent-type-relabel`
-(`agentType` disagrees with the label's head), `alias` (the identifier `agent` used somewhere
+(`agentType` disagrees with the label's head -- the accepted
+forms for head `<role>` are `hyp:hyp-<role>` and `hyp-<role>`), `alias` (the identifier `agent` used somewhere
 other than a direct call), `cannot-parse` (the scanner cannot balance the call's parens/strings
 — a finding, never a silent pass), `too-large` (the script exceeds the guard's timeout-safe
 byte bound), `default-sha-mismatch`, and `subagent-model-env`
@@ -93,6 +94,65 @@ guard fails open on payload/IO problems, but it never fails silently.
   finding — and a `meta.phases[]` entry is never rewritten either: a `phase-mismatch` finding
   stays until the phases block is edited by hand (`lint` reports it).
 
+## The compiled agent surface
+
+Ships from the changeset that lands the lab keep `H-DRAFT-75b03e6e-routing-determinism`
+(`VERDICT.json`: evidence-sufficient promote, five counted looks 5/5, llr 2.9389 >= the
+2.8904 promote bound): naming `model`/`effort` on the `agent()` call is one input the
+platform reads, but a compiled agent DEFINITION whose own frontmatter pins a `model` is a
+second, independent one. The lane's claim, proven live against real headless children on
+CLI version 2.1.272: a routed call shape (a call literal from this table PLUS an agent
+definition with pinned frontmatter naming the same tier) is served by the table's model in
+every session it ran in, survives a resumed session (`resumeFromRunId`), and beats a
+planted `CLAUDE_CODE_SUBAGENT_MODEL` — while a call naming no model at all is served by
+whatever model the calling session happens to run.
+
+**The resolution order the platform applied to the lane's literals**, most specific wins:
+
+1. the called agent's own definition frontmatter (`model:` in `agents/hyp-<role>.md`), if
+   the call's `agentType` names one that resolves;
+2. the call's own literal `model`/`effort` options, if named;
+3. the calling session's own model;
+4. `CLAUDE_CODE_SUBAGENT_MODEL` in the environment never wins over a routed call (rung 1 or
+   2 above) — it is what a call with none of those falls back to before rung 3, and the
+   lane's A4 assertion is exactly that a routed call beats a planted one.
+
+`scripts/compile-routing-agents.py` renders one `agents/hyp-<role>.md` per role in the
+table's `roles` map — YAML frontmatter naming `name`, `description`, `model`, `role`,
+`class`, and a one-line body — committed inside this plugin (deterministic and pure: same
+table bytes in, same file bytes out, always). Three modes:
+
+- (no flag) — compile every role (or `--role ROLE`, repeatable) into this plugin's own
+  `agents/` directory — what this repository commits, and what a released-plugin install
+  ships.
+- `--check` — compare, write nothing; exit 1 and print one line per file that is missing or
+  disagrees with the table, 0 if every wanted file matches. `scripts/harden-check.sh`'s
+  ADVISORY-37 calls this at every session start.
+- `--emit <dir>` — write into `<dir>` instead — the **project-scope install path** (e.g. a
+  consumer's own `.claude/agents/`), named `hyp-<role>` with no colon.
+
+**What was measured and what is inferred, stated plainly.** The lab lane's headless
+children installed the compiled definition at PROJECT SCOPE
+(`<workdir>/.claude/agents/hyp-build.md`) with `agentType: 'hyp-build'` (no colon), because a
+project-scope PLUGIN install never resolved the plugin-qualified id `hyp:build` in a
+headless child (round 1 of the lane's fixture fixes). That project-scope surface is what
+`--emit` reproduces, and it is what the lane's resolution-order claim above was proven
+against, live, on real children. The surface a released install of THIS plugin ships —
+`agents/hyp-<role>.md` inside the plugin — resolves under `agentType: 'hyp:hyp-<role>'`
+(plugin name `hyp` plus the
+definition's own `name: hyp-<role>`), NOT the bare `agentType: 'hyp:<role>'` a reader might
+guess from the plugin name and role alone: a cold refute review observed `hyp:hyp-build`
+served the table model in one headless child on CLI 2.1.273 (a single observation, not a
+keep) while `hyp:build` never started an agent, and a bare `hyp-build` with no project-scope
+copy also failed to start. Treat this as a single observation, not a lane-grade measurement:
+until a lane measures `hyp:hyp-<role>` directly, treat the project-scope path (`--emit` into
+your own `.claude/agents/`, calls naming `agentType: 'hyp-<role>'`) as the proven one, and if
+you call the plugin-qualified id, use `hyp:hyp-<role>`, never `hyp:<role>`.
+The guard's `agent-type-relabel` check (invariant 5) and `scripts/routing.py
+resolve`/`rewrite` now agree with this: they accept and emit `hyp:hyp-<role>` (and
+the project-scope `hyp-<role>`), never the bare `hyp:<role>`, so a call written
+exactly as this section says is admitted under `routing.enforce: deny`, not denied.
+
 ## Known limitation
 
 The scanner is a bracket-matching regex, not a JavaScript parser (deliberate: a real parser is
@@ -100,7 +160,7 @@ a much larger surface for a 10-second hook row to depend on). It sees every `age
 site the census counted and denies what it cannot balance (`cannot-parse`) rather than missing
 it silently, but it will never understand a script that builds its calls dynamically. The
 `Agent`-matcher row only advises; it does not yet check whether a subagent call is a shipped
-`hyp:` agent naming its own model. A real `Agent` tool call carries no `script`/`scriptPath` at
+`hyp:hyp-<role>` agent naming its own model. A real `Agent` tool call carries no `script`/`scriptPath` at
 all, so this row admits it with no scan and no record -- not a targeted finding, and (since the
 B1/B2 fix) not a fail-open advisory line either.
 

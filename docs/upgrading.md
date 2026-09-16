@@ -253,3 +253,18 @@ gains the same reading under the same hold. After upgrading: nothing -- it shows
 until a wake has landed a reading for this checkout. Undo: revert the release's merge commit, or
 remove the `om-worker` name from the `cached` row's argument list and drop the
 `print_om_feedback` call from `hooks/scripts/session-start-budget.py` if you have forked it.
+
+From the release that carries the model-routing determinism port (source lab
+`H-DRAFT-75b03e6e-routing-determinism`, kept: five counted looks 5/5, llr 2.9389 >= 2.8904),
+every role in `rules/routing-default.json` gains a compiled agent definition at
+`agents/hyp-<role>.md`, pinning that role's model in the definition's own frontmatter —
+independent of, and a second input beside, the call-site `model`/`effort` literal the guard
+already required. `scripts/compile-model-workflow.py`'s emitted portable runner's
+`--model-low` flag is deprecated the same way: passing it still overrides the model as
+before (one deprecation line on stderr), but omitting it now resolves the `gate` role's
+model from this same table instead of a hardcoded `haiku` literal. After upgrading: nothing
+— the committed `agents/hyp-<role>.md` files ship as-is; run
+`python3 scripts/compile-routing-agents.py rules/routing-default.json --emit <dir>` to
+install the project-scope copy a consumer repository's own `.claude/agents/` needs (the
+surface the lab lane measured live; see docs/model-routing.md, "The compiled agent
+surface", for what remains unmeasured). Undo: revert the release's merge commit.

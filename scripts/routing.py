@@ -52,7 +52,7 @@ def cmd_resolve(args):
         sys.stderr.write("routing.py: unknown role %r\n" % (args.role,))
         return 1
     row = table["classes"][cls]
-    print(json.dumps({"model": row["model"], "effort": row["effort"], "agentType": "hyp:" + args.role}))
+    print(json.dumps({"model": row["model"], "effort": row["effort"], "agentType": "hyp:hyp-" + args.role}))
     return 0
 
 
@@ -109,7 +109,7 @@ def cmd_rewrite(args):
         opts_text = arg_text[opts_offset:]
         import re as _re
         to_insert = []
-        for key, new_val in (("model", row["model"]), ("effort", row["effort"]), ("agentType", "hyp:" + head)):
+        for key, new_val in (("model", row["model"]), ("effort", row["effort"]), ("agentType", "hyp:hyp-" + head)):
             kind, _old = opts[key]
             if kind == "literal":
                 opts_text = _re.sub(
