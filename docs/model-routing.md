@@ -275,11 +275,13 @@ never as a table edit. Four verbs:
 - `apply-rollbacks` / `default-bump` — the only two verbs that persist a table, and only the
   one the caller names with `--out-table`; neither runs from the cadence hook.
 - `--check` — recomputes and names drift between a committed derive-state table and the
-  ledger; exit 1 and one line per undone rollback, 0 (`no drift`) otherwise.
+  ledger; exit 1 with a single comma-joined line naming every undone rollback, 0 (`no drift`)
+  otherwise.
 
 **The run-completed cadence.** `hooks/scripts/routing-derive-cadence.py` runs as a synchronous
-`Stop` hook, right after the routing ledger's own `Stop` row appends this turn's rows, and calls
-only `report` and `propose` — bounded, fail-open (any error is swallowed, the hook always exits
+`Stop` hook, in the SAME `Stop` event as the routing ledger's own row-append — hooks attached to
+one event run in parallel, so this hook's report reflects rows landed by EARLIER turns, never a
+guarantee of this turn's own rows — and calls only `report` and `propose` — bounded, fail-open (any error is swallowed, the hook always exits
 0), and silent when `ledger/routing-ledger.jsonl` does not exist yet or carries no rows (a
 repository with no routing history gets no report and no candidate, never an error). It writes
 `<root>/routing-report.md`, `<root>/.claude/routing-candidates/{candidate.json,candidate-
@@ -306,7 +308,9 @@ derive.py` scenarios S6/S7/R2/R3) without depending on it.
 **The compiled dashboard block.** `scripts/compile-dashboard.py` adds a `## 4. ROUTING` section
 compiled from `routing-report.md` — one line per class (`n`, cost, pass share, tiers, stream
 state) — only when that file exists; a repository with no routing history yet gets no section
-at all, not an empty one.
+at all, not an empty one. Because `compile-dashboard.py`'s own `Stop` row is `async` and runs in
+the same `Stop` event as the cadence hook, this section reflects the PREVIOUS `Stop`'s
+`routing-report.md`, one turn behind.
 
 ### Reconciling with the live tables
 
@@ -326,7 +330,10 @@ plugin's live tables to that fixture's shape. Every drift the port resolved:
 3. **The ledger row shape is the real one.** `observed.tier` (never a bare top-level `tier`),
    no `seq` field (the ledger is append-only and dedup'd on `(wf, agent)`, so file order
    already is temporal order — `routing-derive.py` assigns each row a 1-based `seq` from its
-   position at load time), and no `matched-pair` kind yet (see "Rollback, today" above).
+   position at load time), and no `matched-pair` kind yet (see "Rollback, today" above). The
+   source fixture's F10 non-monotonic-`seq` refusal (exit 2) does not carry over: the real
+   ledger has no `seq` field to arrive out of order in the first place, so `load_ledger`
+   assigns `seq` purely from file position and never refuses a row on this account.
 4. **Prices are the live list-of-prefixes shape**, not the fixture's tier-keyed placeholder
    dict — `prices_by_tier` adapts `rules/model-prices.json`'s `{"prefix": "claude-<tier>", ...}`
    rows into the tier-keyed dict `saving()` reads. Under the CURRENT live prices, `opus` and
@@ -335,6 +342,14 @@ plugin's live tables to that fixture's shape. Every drift the port resolved:
    — disclosed, not a defect. `tier_order` stays the fixed canonical rank `[haiku, sonnet,
    opus, fable]`; the rule goes quiet at a price plateau rather than being re-tuned to today's
    numbers, and re-opens on its own if a future price update reintroduces a gap.
+5. **Outcome is the real object, not a bare string.** The real `agent-route/v1` row's
+   `outcome` is `{schema_valid, verdict, refuted}` (from
+   `hooks/scripts/routing_lib.py`'s `outcome_from_result`), or `None` when the workflow never
+   resolved an outcome pointer — never the fixture's bare `"pass"`/`"fail"` string. A new
+   `_row_outcome` helper maps it: `schema_valid: false` or `refuted: true` → `fail`;
+   `schema_valid: true` and `refuted: false` → `pass`; anything else (no `refuted` signal, or
+   no outcome at all) stays ungraded. `build_report`, `propose_candidate`, and
+   `rollback_check` all read outcomes through this helper now, never `row["outcome"]` directly.
 
 **The frozen rule.** `rules/routing-derive.json` is frozen the same way `rules/lineage-
 sprt.json` is: a byte-identical sibling copy at `rules/frozen/routing-derive.json`, and its

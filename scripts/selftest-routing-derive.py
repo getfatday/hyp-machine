@@ -163,13 +163,17 @@ def run_scenarios(rd, workdir):
     with open(ledger_path, "w", encoding="utf-8") as fh:
         for i in range(5):
             row = {"kind": "agent-route", "wf": "wf1", "agent": "a%d" % i, "role": "build",
-                   "class": "execute", "observed": {"tier": "sonnet"}, "outcome": "pass",
+                   "class": "execute", "observed": {"tier": "sonnet"},
+                   "outcome": {"schema_valid": True, "verdict": "keep", "refuted": False},
                    "tokens": {"in": 500000, "out": 500000}}
             fh.write(json.dumps(row) + "\n")
     rows_r4 = rd.load_ledger(ledger_path)
     check("R4 a live-shaped row with no seq field is assigned one at load time",
           all(r.get("seq") == i + 1 for i, r in enumerate(rows_r4)))
     check("R4b observed.tier is read through _row_tier", rd._row_tier(rows_r4[0]) == "sonnet")
+    check("R4c a real outcome OBJECT (schema_valid/refuted, not a bare string) reads as pass "
+          "through _row_outcome",
+          rd._row_outcome(rows_r4[0]) == "pass")
 
     return checks
 

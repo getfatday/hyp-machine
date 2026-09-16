@@ -183,6 +183,34 @@ def _row_tier(r):
     return (r.get("observed") or {}).get("tier") or r.get("tier")
 
 
+def _row_outcome(row):
+    """Maps a ledger row's `outcome` field to 'pass', 'fail', or None (ungraded). The real
+    agent-route/v1 row's `outcome` is the object {schema_valid, verdict, refuted} written by
+    hooks/scripts/routing_lib.py's outcome_from_result, or None when the workflow never
+    resolved an outcome pointer -- never the bare 'pass'/'fail' string this loop graded
+    before this fix. Mapping (stated rule, never guessed):
+      - outcome already the string 'pass' or 'fail' -> itself (back-compat with literal rows)
+      - outcome not a dict and not one of those strings -> None (ungraded)
+      - outcome is a dict:
+          schema_valid is False -> 'fail' (the agent's own structured result never validated)
+          refuted is True       -> 'fail' (an explicit refutation)
+          schema_valid is True and refuted is False -> 'pass'
+          anything else (no refuted signal, verdict-only, etc.) -> None (ungraded)
+    """
+    outcome = row.get("outcome")
+    if outcome in ("pass", "fail"):
+        return outcome
+    if not isinstance(outcome, dict):
+        return None
+    if outcome.get("schema_valid") is False:
+        return "fail"
+    if outcome.get("refuted") is True:
+        return "fail"
+    if outcome.get("schema_valid") is True and outcome.get("refuted") is False:
+        return "pass"
+    return None
+
+
 def rows_for_class(rows, cls, kind="agent-route", void_ok=False):
     out = []
     for r in rows:
@@ -328,14 +356,14 @@ def build_report(rows, table, rule, workdir):
         cls_rows = rows_for_class(rows, cls)
         tiers = sorted(set(_row_tier(r) for r in cls_rows if _row_tier(r)))
         n = len(cls_rows)
-        cost = sum(float(r.get("cost_usd", 0.0)) for r in cls_rows)
+        cost = sum(float(r.get("cost_usd") or 0.0) for r in cls_rows)
         wall = sum(float(r.get("wall_s", 0.0) or 0.0) for r in cls_rows)
         tok_in = sum(int((r.get("tokens") or {}).get("in", 0) or 0) for r in cls_rows)
         tok_out = sum(int((r.get("tokens") or {}).get("out", 0) or 0) for r in cls_rows)
-        passes = sum(1 for r in cls_rows if r.get("outcome") == "pass")
-        graded = sum(1 for r in cls_rows if r.get("outcome") in ("pass", "fail"))
+        passes = sum(1 for r in cls_rows if _row_outcome(r) == "pass")
+        graded = sum(1 for r in cls_rows if _row_outcome(r) in ("pass", "fail"))
         pass_share = (passes / graded) if graded else None
-        outcomes = [r.get("outcome") for r in cls_rows if r.get("outcome") in ("pass", "fail")]
+        outcomes = [_row_outcome(r) for r in cls_rows if _row_outcome(r) in ("pass", "fail")]
         state = read_stream(outcomes, lineage_policy_path, workdir)
         per_class[cls] = {"n": n, "cost_usd": round(cost, 6), "wall_s": round(wall, 3),
                            "tokens_in": tok_in, "tokens_out": tok_out,
@@ -352,10 +380,10 @@ def build_report(rows, table, rule, workdir):
         for r in rows_for_class(rows, cls):
             t = _row_tier(r)
             by_tier.setdefault(t, {"cost": 0.0, "pass": 0, "graded": 0})
-            by_tier[t]["cost"] += float(r.get("cost_usd", 0.0))
-            if r.get("outcome") in ("pass", "fail"):
+            by_tier[t]["cost"] += float(r.get("cost_usd") or 0.0)
+            if _row_outcome(r) in ("pass", "fail"):
                 by_tier[t]["graded"] += 1
-                if r.get("outcome") == "pass":
+                if _row_outcome(r) == "pass":
                     by_tier[t]["pass"] += 1
         points = []
         for t in sorted(by_tier):
@@ -446,7 +474,7 @@ def propose_candidate(rows, table, rule, prices, workdir, budget_usd):
         cls_rows = rows_for_class(rows, cls)
         since = row.get("since_row", 0)
         window = [r for r in cls_rows if r.get("seq", 0) >= since]
-        outcomes = [r.get("outcome") for r in window if r.get("outcome") in ("pass", "fail")]
+        outcomes = [_row_outcome(r) for r in window if _row_outcome(r) in ("pass", "fail")]
         state = read_stream(outcomes, lineage_policy_path, workdir)
         if state != "evidence-sufficient promote":
             continue
@@ -490,7 +518,7 @@ def rollback_check(rows, table, rule, workdir):
         current_tier = row.get("tier")
         pair_rows = [r for r in rows_for_class(rows, cls, kind="matched-pair")
                      if r.get("on_tier") == current_tier]
-        pair_outcomes = [r.get("outcome") for r in pair_rows if r.get("outcome") in ("pass", "fail")]
+        pair_outcomes = [_row_outcome(r) for r in pair_rows if _row_outcome(r) in ("pass", "fail")]
         idx = tier_order.index(current_tier) if current_tier in tier_order else -1
         is_top = idx == len(tier_order) - 1
         if pair_outcomes:
@@ -504,8 +532,8 @@ def rollback_check(rows, table, rule, workdir):
                     actions.append({"kind": "rollback", "class": cls, "from": current_tier, "to": to_tier,
                                      "pair_ids": sorted(set(r.get("pair_id") for r in pair_rows))})
         elif not is_top:
-            obs_outcomes = [r.get("outcome") for r in rows_for_class(rows, cls)
-                             if r.get("outcome") in ("pass", "fail")]
+            obs_outcomes = [_row_outcome(r) for r in rows_for_class(rows, cls)
+                             if _row_outcome(r) in ("pass", "fail")]
             if obs_outcomes:
                 obs_state = read_stream(obs_outcomes, lineage_policy_path, workdir)
                 if obs_state == "evidence-sufficient hold":
@@ -621,7 +649,7 @@ def cmd_check(args):
     rows = load_ledger(args.ledger)
     table = _load_table_seeded(args, rows)
     rule = load_rule(args.rule)
-    workdir = args.workdir or os.path.dirname(os.path.abspath(args.table)) if os.path.isfile(args.table) else os.getcwd()
+    workdir = args.workdir or (os.path.dirname(os.path.abspath(args.table)) if os.path.isfile(args.table) else os.getcwd())
     actions = rollback_check(rows, table, rule, workdir)
     applied = sorted(a["class"] + "->" + a["to"] for a in actions if a["kind"] == "rollback")
     if applied:

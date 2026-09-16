@@ -271,9 +271,11 @@ surface", for what remains unmeasured). Undo: revert the release's merge commit.
 
 From the release that carries the model-routing derive loop (source lab
 `H-DRAFT-d5a8d9b6-routing-derive`, kept: five counted looks 5/5, the frozen SPRT walk to the
-promote bound), `hooks/scripts/routing-derive-cadence.py` runs at every `Stop`, right after the
-routing ledger's own row-append, and writes `routing-report.md` plus (if this repository's
-ledger already supports one) a candidate spec under `.claude/routing-candidates/` — it never
+promote bound), `hooks/scripts/routing-derive-cadence.py` runs at every `Stop`, in the SAME `Stop` event as the
+routing ledger's own row-append (hooks in one event run in parallel, so it reflects rows landed
+by earlier turns, not necessarily this turn's own), and writes `routing-report.md` plus (if
+this repository's ledger already supports one) a candidate spec under
+`.claude/routing-candidates/` — it never
 edits a routing table itself; a candidate is only ever a draft hypothesis spec for a human or
 `hyp:hypothesis` to register. `scripts/compile-dashboard.py` gains a `## 4. ROUTING` section
 compiled from `routing-report.md`, present only once that file exists. After upgrading:

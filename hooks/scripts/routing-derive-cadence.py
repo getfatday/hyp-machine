@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """routing-derive-cadence.py -- runs scripts/routing-derive.py `report` and `propose` on the
-run-completed cadence: a synchronous `Stop` hook, right after `routing-ledger.py` (Stop, timeout
-15 s) has appended this turn's agent-route rows. Source: lab H-DRAFT-d5a8d9b6-routing-derive
-(VERDICT.json evidence-sufficient promote). Never applies a rollback or a default-bump --
-those persist a table and stay separate, manual verbs (see scripts/routing-derive.py's module
-docstring).
+run-completed cadence: a synchronous `Stop` hook that runs in the SAME `Stop` event as
+`routing-ledger.py` (Stop, timeout 15 s) -- hooks attached to one event run in parallel, so this
+hook's report reflects agent-route rows appended by EARLIER turns, never a guarantee of this
+turn's own rows. Source: lab H-DRAFT-d5a8d9b6-routing-derive (VERDICT.json evidence-sufficient
+promote). Never applies a rollback or a default-bump -- those persist a table and stay
+separate, manual verbs (see scripts/routing-derive.py's module docstring).
 
 Bounded and fail-open, matching hooks/scripts/routing-ledger.py's own contract: any error is
 swallowed and the hook exits 0 (an observational hook never blocks the turn). Silent when
@@ -16,6 +17,9 @@ Writes (consumer checkout, never the plugin tree):
   <root>/.claude/routing-candidates/candidate.json      -- {"candidate": null|{...}}
   <root>/.claude/routing-candidates/candidate-spec.md   -- only when a candidate opened
   <root>/.claude/routing-candidates/actions.json        -- rollbacks/pin advisories (observational)
+  <root>/.claude/routing-derive-cache/frozen-rule.json  -- the stopping-rule freeze copy (this
+                                                             hook's --workdir); undeclared before
+                                                             this fix
   <root>/ledger/routing-derive-state.json          -- read if present; NEVER written here
 """
 import json
