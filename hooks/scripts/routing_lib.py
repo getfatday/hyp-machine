@@ -577,9 +577,10 @@ def scan_script(text, table):
             if role_cls == "execute" and model_val in table.get("frontier", []):
                 findings.append({"class": "frontier-on-execute", "line": call["line"],
                                   "detail": "execute role on frontier model %r without an override" % (model_val,)})
-        if head and agent_type_kind == "literal" and agent_type_val != ("hyp:" + head):
+        if head and agent_type_kind == "literal" and agent_type_val not in ("hyp:hyp-" + head, "hyp-" + head):
             findings.append({"class": "agent-type-relabel", "line": call["line"],
-                              "detail": "agentType %r disagrees with label head %r" % (agent_type_val, head)})
+                              "detail": "agentType %r disagrees with label head %r (want %r or %r)" % (
+                                  agent_type_val, head, "hyp:hyp-" + head, "hyp-" + head)})
         if phase_kind == "literal" and phase_val in phase_models and model_kind == "literal":
             if phase_models[phase_val] != model_val:
                 findings.append({"class": "phase-mismatch", "line": call["line"],

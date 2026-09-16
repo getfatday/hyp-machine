@@ -21,6 +21,11 @@ table model in one headless child on CLI 2.1.273 (a single observation, not a ke
 `agentType: 'hyp:build'` never started an agent — so no reader writes a call that fails at
 runtime; that surface inherits the resolution-order claim above but remains otherwise
 unmeasured until a lane exercises it directly.
+Round 2 of this changeset's cold-refute review found the guard's own
+`agent-type-relabel` check and `scripts/routing.py resolve`/`rewrite` still spoke the
+old bare `hyp:<role>` form and denied the very `hyp:hyp-<role>` calls this changeset
+told readers to write; both now accept/emit `hyp:hyp-<role>` (and the project-scope
+`hyp-<role>`), so the documented call and the live guard agree.
 What to do after upgrading: nothing, or run
 `python3 scripts/compile-routing-agents.py rules/routing-default.json --emit <dir>` to install
 a project-scope copy into your own repository's `.claude/agents/`. How to undo: revert this

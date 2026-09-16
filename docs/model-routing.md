@@ -59,7 +59,8 @@ A finding names the script, the line, and one of these classes: `no-model` / `no
 above for the two escapes that admit), `non-literal` (a routing option is a
 spread, variable, or template instead of a string literal), `phase-mismatch` (a
 `meta.phases[]` entry names a different model than the call), `agent-type-relabel`
-(`agentType` disagrees with the label's head), `alias` (the identifier `agent` used somewhere
+(`agentType` disagrees with the label's head -- the accepted
+forms for head `<role>` are `hyp:hyp-<role>` and `hyp-<role>`), `alias` (the identifier `agent` used somewhere
 other than a direct call), `cannot-parse` (the scanner cannot balance the call's parens/strings
 — a finding, never a silent pass), `too-large` (the script exceeds the guard's timeout-safe
 byte bound), `default-sha-mismatch`, and `subagent-model-env`
@@ -147,6 +148,10 @@ copy also failed to start. Treat this as a single observation, not a lane-grade 
 until a lane measures `hyp:hyp-<role>` directly, treat the project-scope path (`--emit` into
 your own `.claude/agents/`, calls naming `agentType: 'hyp-<role>'`) as the proven one, and if
 you call the plugin-qualified id, use `hyp:hyp-<role>`, never `hyp:<role>`.
+The guard's `agent-type-relabel` check (invariant 5) and `scripts/routing.py
+resolve`/`rewrite` now agree with this: they accept and emit `hyp:hyp-<role>` (and
+the project-scope `hyp-<role>`), never the bare `hyp:<role>`, so a call written
+exactly as this section says is admitted under `routing.enforce: deny`, not denied.
 
 ## Known limitation
 
@@ -155,7 +160,7 @@ a much larger surface for a 10-second hook row to depend on). It sees every `age
 site the census counted and denies what it cannot balance (`cannot-parse`) rather than missing
 it silently, but it will never understand a script that builds its calls dynamically. The
 `Agent`-matcher row only advises; it does not yet check whether a subagent call is a shipped
-`hyp:` agent naming its own model. A real `Agent` tool call carries no `script`/`scriptPath` at
+`hyp:hyp-<role>` agent naming its own model. A real `Agent` tool call carries no `script`/`scriptPath` at
 all, so this row admits it with no scan and no record -- not a targeted finding, and (since the
 B1/B2 fix) not a fail-open advisory line either.
 

@@ -65,46 +65,46 @@ DEFAULT_TABLE = os.path.join(PLUGIN, "rules", "routing-default.json")
 
 COMPLIANT = (
     "async function main() {\n"
-    "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:build', model: 'sonnet', effort: 'high' });\n"
+    "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:hyp-build', model: 'sonnet', effort: 'high' });\n"
     "}\n"
 )
 
 MUTANTS = {
     "no-model": (
         "async function main() {\n"
-        "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:build', effort: 'high' });\n"
+        "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:hyp-build', effort: 'high' });\n"
         "}\n"
     ),
     "unknown-role": (
         "async function main() {\n"
-        "  await agent({ label: 'summarise:x', phase: 'p', agentType: 'hyp:summarise', model: 'sonnet', effort: 'high' });\n"
+        "  await agent({ label: 'summarise:x', phase: 'p', agentType: 'hyp:hyp-summarise', model: 'sonnet', effort: 'high' });\n"
         "}\n"
     ),
     "frontier-on-execute": (
         "async function main() {\n"
-        "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:build', model: 'fable', effort: 'high' });\n"
+        "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:hyp-build', model: 'fable', effort: 'high' });\n"
         "}\n"
     ),
     "non-literal": (
         "async function main() {\n"
-        "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:build', model: someVar, effort: 'high' });\n"
+        "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:hyp-build', model: someVar, effort: 'high' });\n"
         "}\n"
     ),
     "phase-mismatch": (
         "export const meta = { phases: [ { label: 'p', model: 'fable' } ] };\n"
         "async function main() {\n"
-        "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:build', model: 'sonnet', effort: 'high' });\n"
+        "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:hyp-build', model: 'sonnet', effort: 'high' });\n"
         "}\n"
     ),
     "agent-type-relabel": (
         "async function main() {\n"
-        "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:design', model: 'sonnet', effort: 'high' });\n"
+        "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:hyp-design', model: 'sonnet', effort: 'high' });\n"
         "}\n"
     ),
     "alias": (
         "async function main() {\n"
         "  const spawn = agent;\n"
-        "  await spawn({ label: 'build:x', phase: 'p', agentType: 'hyp:build', model: 'sonnet', effort: 'high' });\n"
+        "  await spawn({ label: 'build:x', phase: 'p', agentType: 'hyp:hyp-build', model: 'sonnet', effort: 'high' });\n"
         "}\n"
     ),
     "cannot-parse": (
@@ -308,7 +308,7 @@ def main():
         override_script = (
             "async function main() {\n"
             "  // route-override: guard-false-positive tested by selftest-routing\n"
-            "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:build', effort: 'high' });\n"
+            "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:hyp-build', effort: 'high' });\n"
             "}\n"
         )
         rc, decision, reason, _adv = run_guard(override_script, deny_consumer, tool_use_id="tu-override")
@@ -319,7 +319,7 @@ def main():
         empty_reason_script = (
             "async function main() {\n"
             "  // route-override: guard-false-positive\n"
-            "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:build', effort: 'high' });\n"
+            "  await agent({ label: 'build:x', phase: 'p', agentType: 'hyp:hyp-build', effort: 'high' });\n"
             "}\n"
         )
         rc, decision, reason, _adv = run_guard(empty_reason_script, deny_consumer, tool_use_id="tu-override-empty")
