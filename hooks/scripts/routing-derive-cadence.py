@@ -104,6 +104,8 @@ def main():
         root = resolve_root(payload)
         summary = run(root)
         sys.stdout.write(json.dumps({"routing_derive": summary}) + "\n")
+    except SystemExit:
+        pass  # a die() call already wrote its refusal word to stderr; fail open below regardless
     except Exception as exc:  # fail open: an observational hook never blocks the turn.
         sys.stderr.write("routing-derive-cadence: internal error (fail-open, nothing written): %r\n" % (exc,))
     sys.exit(0)

@@ -259,7 +259,7 @@ the promote bound) — see that lane for the full evidence trail.
 `scripts/routing-derive.py` reads this repository's own `ledger/routing-ledger.jsonl` (the
 routing ledger above) and proposes at most one bounded, rule-conformant routing change per
 run — **never applied automatically**: a candidate is written only as a draft hypothesis spec,
-never as a table edit. Four verbs:
+never as a table edit. Five verbs:
 
 - `report` — one section per CLASS (`mechanical`/`execute`/`think`/`adversarial`/`unknown`):
   call count, cost, tokens, pass share, tiers seen, and the class's stopping-rule stream state
@@ -285,8 +285,12 @@ guarantee of this turn's own rows — and calls only `report` and `propose` — 
 0), and silent when `ledger/routing-ledger.jsonl` does not exist yet or carries no rows (a
 repository with no routing history gets no report and no candidate, never an error). It writes
 `<root>/routing-report.md`, `<root>/.claude/routing-candidates/{candidate.json,candidate-
-spec.md,actions.json}`, and reads (never writes) `<root>/ledger/routing-derive-state.json` if
-present.
+spec.md,actions.json}`, `<root>/.claude/routing-derive-cache/frozen-rule.json` (the
+stopping-rule freeze copy, keyed by this hook's own `--workdir`), and reads (never writes)
+`<root>/ledger/routing-derive-state.json` if present. (The on-keep spec names "the
+`emit-event.py` `run-completed` cadence hook"; `scripts/emit-event.py` carries six
+choke-point verbs and no `run-completed` event, so this `Stop` hook is a by-intent
+substitution for that named hook, not an extension of it.)
 
 **The state file.** `ledger/routing-derive-state.json` is new: a small, per-CLASS record this
 script owns (`basis: prior|evidence|pin`, `tier`, `since_row`, and — for `think`/`adversarial`
@@ -303,7 +307,9 @@ ships yet), so on a real ledger this path is live-safe but dormant — it can ra
 `rollback-advisory` (observational-only covariate) or a `routing-ceiling-advisory` (a
 top-tier class holding), but never an applied `rollback`, until a future release ships matched-
 pair rows. `apply-rollbacks` stays correct and tested for that day (`scripts/selftest-routing-
-derive.py` scenarios S6/S7/R2/R3) without depending on it.
+derive.py` scenarios S6/S7/R2/R3) without depending on it. A future matched-pair writer
+must also emit a `class` field on every row, never only `role`: `rows_for_class(...,
+kind="matched-pair")` keys on `class`, the same field the selftest's own fixture rows carry.
 
 **The compiled dashboard block.** `scripts/compile-dashboard.py` adds a `## 4. ROUTING` section
 compiled from `routing-report.md` — one line per class (`n`, cost, pass share, tiers, stream
@@ -333,7 +339,10 @@ plugin's live tables to that fixture's shape. Every drift the port resolved:
    position at load time), and no `matched-pair` kind yet (see "Rollback, today" above). The
    source fixture's F10 non-monotonic-`seq` refusal (exit 2) does not carry over: the real
    ledger has no `seq` field to arrive out of order in the first place, so `load_ledger`
-   assigns `seq` purely from file position and never refuses a row on this account.
+   assigns `seq` purely from file position and never refuses a row on this account. Because
+`ledger_prefix_sha256` hashes the rows AFTER this `seq` injection, an independent reader
+recomputing it over the raw ledger bytes must inject the same 1-based-by-file-position `seq`
+before hashing, or the recomputed sha will not match.
 4. **Prices are the live list-of-prefixes shape**, not the fixture's tier-keyed placeholder
    dict — `prices_by_tier` adapts `rules/model-prices.json`'s `{"prefix": "claude-<tier>", ...}`
    rows into the tier-keyed dict `saving()` reads. Under the CURRENT live prices, `opus` and
@@ -350,6 +359,11 @@ plugin's live tables to that fixture's shape. Every drift the port resolved:
    `schema_valid: true` and `refuted: false` → `pass`; anything else (no `refuted` signal, or
    no outcome at all) stays ungraded. `build_report`, `propose_candidate`, and
    `rollback_check` all read outcomes through this helper now, never `row["outcome"]` directly.
+   In practice only a structured result that itself carries a `refuted` key produces a graded
+   row -- adversarial/refute-class outputs (refutation, review, verification) -- while most
+   execute-class workflow schemas (build, fix, ship) carry a `verdict` but no `refuted` key and
+   so stay ungraded; that is why the `execute` class reads `evidence-insufficient n=0` on most
+   real ledgers, not a defect in the helper.
 
 **The frozen rule.** `rules/routing-derive.json` is frozen the same way `rules/lineage-
 sprt.json` is: a byte-identical sibling copy at `rules/frozen/routing-derive.json`, and its

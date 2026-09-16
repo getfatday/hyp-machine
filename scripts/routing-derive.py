@@ -309,7 +309,15 @@ def _frozen_rule_for(lineage_policy_path, workdir):
     frozen_copy = os.path.join(workdir, "frozen-rule.json")
     if not os.path.isfile(frozen_copy):
         mod.freeze(lineage_policy_path, frozen_copy)
-    rule, sha = mod.load_frozen(frozen_copy)
+    try:
+        rule, sha = mod.load_frozen(frozen_copy)
+    except SystemExit:
+        # The cached copy exists but fails load_frozen (corrupt/tampered on disk, not the
+        # source rule). Re-freeze it from the source rule -- mod.freeze() writes atomically
+        # via tmp+rename -- and retry once. A second failure means the SOURCE rule itself is
+        # bad and propagates (caught fail-open by the cadence hook's own main(), edit 3).
+        mod.freeze(lineage_policy_path, frozen_copy)
+        rule, sha = mod.load_frozen(frozen_copy)
     _FROZEN_CACHE[lineage_policy_path] = (rule, sha)
     return rule, sha
 
