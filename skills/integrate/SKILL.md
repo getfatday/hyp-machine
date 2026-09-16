@@ -42,6 +42,17 @@ Nine candidate background mechanisms, in this frozen priority order (first probe
    probe-verified (`usable`) rows alone — never from `authors_90d` or disk space, which ride the
    rows only as covariates.
 
+   Before you emit, put two or three concrete options to the user with their tradeoffs, in plain
+   English, built from what `compose` picked: (a) emit and run the on-device handle (for
+   `launchd-queue`: the worker runs on this machine while you are logged in, nothing leaves the
+   host, and you run the one activation command yourself); (b) emit and use only the remote handle
+   (`ci-tier0`: the workflow runs in GitHub Actions on push and on its schedule, costs Actions
+   minutes, and does nothing until you commit and push `.github/`; leave the staged plist
+   unloaded); (c) install nothing and keep draining by hand with `om-worker.py drain` (zero
+   footprint, nothing runs unless you run it). `emit` writes every artifact `compose` picked
+   regardless; the choice is which activation step the user takes, and `uninstall` removes all of
+   it either way.
+
 3. **Emit.** Writes, but never loads or activates, whatever `compose` picked. `--agents-dir`
    names where the plist is STAGED, not where it runs from — never point it at
    `~/Library/LaunchAgents` itself: launchd scans that directory at your next login (macOS 13+
@@ -63,7 +74,15 @@ Nine candidate background mechanisms, in this frozen priority order (first probe
      copy of that template.
    - Records the decision in `.claude/om-offload.lock.json` and sets `.claude/hyp.json`
      `om_offload` to the chosen handle. Re-running `emit` with nothing changed on the host is a
-     byte-for-byte no-op.
+     byte-for-byte no-op. When this host's answer HAS changed (a handle that composed last time no
+     longer probes usable -- one failed `gh auth status` is enough), `emit` prints
+     `no longer holds: <handle>` and keeps that handle's earlier artifacts in the lock, so
+     `uninstall` still removes them; a lock that no longer parses is a typed
+     `void: corrupt-json <path>` and `emit` writes nothing (exit 2).
+   - `emit` also creates the worker's state root (`~/.hyp-state/om/<key>/`, or
+     `$HYP_STATE_DIR/om/<key>/` when that variable is set) so the plist's `QueueDirectories` names
+     a directory that exists. It is the worker's own inbox and log directory, shared with direct
+     `drain` runs, so `uninstall` leaves it in place and names it in its reversal output.
    - The lock, the staged plist and the `test` verb's `.claude/om-state/` scratch all carry
      absolute paths of THIS machine: `/hyp:init` appends ignore rows for
      `.claude/om-offload.lock.json`, `.claude/om-staged-agents/` and `.claude/om-state/` to your
@@ -113,16 +132,17 @@ Nine candidate background mechanisms, in this frozen priority order (first probe
    ```
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" uninstall --root . --dry-run
    ```
-   Prints exactly what would be removed and the reversal commands without changing anything. For
+   Prints exactly what would be removed (every emitted file that still exists, the lock, the
+   `.claude/om-state/` test scratch) and the reversal commands without changing anything. For
    a plist the reversal line is
    `launchctl unload ~/Library/LaunchAgents/<label> && rm ~/Library/LaunchAgents/<label>  # only if you ran the activation step; the staged copy is removed by this verb`
    — the staged copy under `--agents-dir` is removed by the verb itself; the `~/Library/LaunchAgents/`
    copy exists only if you ran step 3's activation command, and leaving it there would let
    launchd re-register the job at your next login, so run that line yourself. For the workflow
    the line is `git rm ...` (and push). Drop `--dry-run` to actually remove: the staged plist,
-   the workflow and its vendored tree (plus the emptied `.github/workflows/` directory when the
-   workflow was the only file in it), the lock file, the `.claude/om-state/` test scratch, and
-   the `om_offload` key — zero artifacts left behind.
+   the workflow and its vendored tree (plus the emptied `.github/workflows/` and `.github/`
+   directories when the workflow was the only thing in them), the lock file, the
+   `.claude/om-state/` test scratch, and the `om_offload` key — zero artifacts left behind.
 
 ## What this skill does not do
 

@@ -634,12 +634,16 @@ JSON map, flags mixed plugin versions across a repository's worktrees (the real
 `uninstall --dry-run` prints the exact
 removal and reversal commands (for a plist: `launchctl unload ~/Library/LaunchAgents/<label>
 && rm ~/Library/LaunchAgents/<label>`, to run only if you ran the disclosed activation step --
-the staged copy the verb removes itself), and `uninstall` leaves zero emitted artifacts (the
-staged plist, the workflow and its vendored tree, the `test` verb's `.claude/om-state/`
-scratch) and drops the `.claude/hyp.json` `om_offload` key; `compose` refuses a probe row that
-claims `usable` without a recorded exit 0; `report` also flags a plist whose baked worker path
-no longer exists (`-- missing path: <p>`); a lock, hyp.json or `--installed-plugins` file that
-does not parse is a typed `void: corrupt-json <path>` (exit 2, nothing changed).
+the staged copy the verb removes itself), naming every emitted file that still exists, and
+`uninstall` leaves zero emitted artifacts (the staged plist, the workflow and its vendored tree
+with the `.github/workflows/` and `.github/` directories they emptied, the `test` verb's
+`.claude/om-state/` scratch) and drops the `.claude/hyp.json` `om_offload` key; `compose`
+refuses a probe row that claims `usable` without a recorded exit 0; `report` also flags a plist
+whose baked worker path no longer exists (`-- missing path: <p>`); a lock, hyp.json or
+`--installed-plugins` file that does not parse is a typed `void: corrupt-json <path>` (exit 2,
+nothing changed). A later `emit` on a host whose answer changed (a handle that composed earlier
+no longer probes usable) prints `no longer holds: <handle>` and unions the prior lock's artifacts
+into the new lock so `uninstall` still removes them (B1, ship fix round 4).
 
 Ported by intent from the lab keep `H-DRAFT-e2a5e911-om-integrate-probe` (kept 2026-09-15: five
 counted looks, A1-A5 pass in every one). Three drifts from the kept fixture bytes: the `ci-tier0`

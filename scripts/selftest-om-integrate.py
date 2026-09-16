@@ -14,7 +14,7 @@ loading anything into real launchd") is a stub `launchctl` shim this file writes
 real host; `HYP_STATE_DIR` is pointed at scratch for the whole run so the worker-state-directory
 helpers never touch `~/.hyp-state`.
 
-Cases (numbered A1-A7 below, ported by intent from the source lab's assertions):
+Cases (numbered A1-A8 below, ported by intent from the source lab's assertions):
   A1  9 of 9 probe rows land, `advertised`/`usable` are separate booleans, every `usable` row
       carries a non-empty `probe_cmd` and `exit == 0`; a custom `om_substrates_file` override
       is honoured (rows land at the configured path, not the default)
@@ -26,7 +26,8 @@ Cases (numbered A1-A7 below, ported by intent from the source lab's assertions):
       `ProcessType Background`; the delegated `ci-tier0` workflow parses as YAML; the plist
       bakes `HYP_STATE_DIR` as `EnvironmentVariables`
   A4  a second `emit` with nothing changed on the host is a byte-level no-op (every emitted
-      file's sha256 unchanged)
+      file's sha256 unchanged); when this host's own compose answer flips between the two emits
+      the case prints a typed `void: probe flipped <field>` line instead of a FAIL
   A5  `test` lands exactly one `session-observed` row under the stub substrate within the cited
       window, and the two poison seeds land as exactly two `quarantine` rows, in at most 2
       launches, with the inbox left empty; `uninstall` removes the `.claude/om-state` test
@@ -38,6 +39,10 @@ Cases (numbered A1-A7 below, ported by intent from the source lab's assertions):
   A7  `report` reads `holds` right after install and `not installed` right after uninstall; a
       plist whose baked worker path is gone reads `no longer holds ... missing path`; a corrupt
       lock is a typed `void: corrupt-json` exit 2 that changes nothing
+  A8  (B1, fix round 4) a handle that composed on the first `emit` (an ok `gh` shim) and no longer
+      probes usable on the second (a failing `gh` shim) prints `no longer holds: ci-tier0`; the new
+      lock unions the prior lock's `emitted`/`ci_tier0_relpaths`; `uninstall --dry-run` names every
+      emitted file; `uninstall` leaves zero files under .github/ and removes the emptied directory
 
 The raw evidence this run collected (every probe row, the compose decision, emitted file
 hashes, the test-verb phase reports) is written beside this run's PASS/FAIL lines to
@@ -341,10 +346,18 @@ def a3_a4_emit(scratch):
     before.update({"AGENTS:" + k: v for k, v in sha_tree(agents_dir).items()} if os.path.isdir(agents_dir) else {})
     p2 = run_integrate(["emit", "--root", root, "--agents-dir", agents_dir, "--plugin-scripts", HERE])
     check("a4-emit-rerun-exit0", p2.returncode == 0, p2.stderr[-300:])
-    after = sha_tree(root)
-    after.update({"AGENTS:" + k: v for k, v in sha_tree(agents_dir).items()} if os.path.isdir(agents_dir) else {})
-    check("a4-emit-rerun-byte-identical", before == after,
-          {k: (before.get(k), after.get(k)) for k in set(before) | set(after) if before.get(k) != after.get(k)})
+    lock2 = json.load(open(lock_path)) if os.path.isfile(lock_path) else {}
+    RAW["a4_lock2"] = lock2
+    flipped = [h for h in ("on_device_handle", "remote_handle") if lock.get(h) != lock2.get(h)]
+    if flipped:
+        print("void: probe flipped %s (%s -> %s): this host's own answer changed between the two "
+              "emits; a4-emit-rerun-byte-identical is not graded"
+              % (flipped[0], lock.get(flipped[0]), lock2.get(flipped[0])))
+    else:
+        after = sha_tree(root)
+        after.update({"AGENTS:" + k: v for k, v in sha_tree(agents_dir).items()} if os.path.isdir(agents_dir) else {})
+        check("a4-emit-rerun-byte-identical", before == after,
+              {k: (before.get(k), after.get(k)) for k in set(before) | set(after) if before.get(k) != after.get(k)})
     return root, agents_dir
 
 
@@ -487,6 +500,76 @@ def a7_corrupt_lock(scratch):
           (p2.returncode, p2.stdout[-300:], p2.stderr[-300:]))
 
 
+def _write_gh_shim(bindir, exit_code):
+    os.makedirs(bindir, exist_ok=True)
+    path = os.path.join(bindir, "gh")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\n# selftest-only gh shim: answers `gh auth status` with a fixed exit code\nexit %d\n" % exit_code)
+    st = os.stat(path)
+    os.chmod(path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return bindir
+
+
+def _load_lock(lock_path):
+    return json.load(open(lock_path)) if os.path.isfile(lock_path) else {}
+
+
+def a8_dropped_handle_union(scratch):
+    """A8 (B1, fix round 4): a handle that composed on the first `emit` (an ok `gh` shim) and no
+    longer probes usable on the second (a failing `gh` shim) prints `no longer holds: ci-tier0`,
+    the new lock unions the prior lock's `emitted`/`ci_tier0_relpaths`, `uninstall --dry-run`
+    names every emitted file, and `uninstall` leaves zero files under .github/ and removes the
+    emptied directory. The shim is first on PATH only for these subprocess calls; the real
+    host's `gh` is never touched."""
+    root = build_consumer(os.path.join(scratch, "a8"))
+    agents_dir = os.path.join(scratch, "a8-agents")
+    ok_bin = _write_gh_shim(os.path.join(scratch, "a8-bin-ok"), 0)
+    bad_bin = _write_gh_shim(os.path.join(scratch, "a8-bin-fail"), 1)
+    base_path = os.environ.get("PATH", "")
+    emit_args = ["emit", "--root", root, "--agents-dir", agents_dir, "--plugin-scripts", HERE]
+    lock_path = os.path.join(root, ".claude", "om-offload.lock.json")
+    wf_abs = os.path.join(root, ".github", "workflows", "om-check.yml")
+    github_dir = os.path.join(root, ".github")
+
+    p1 = run_integrate(emit_args, env={"PATH": ok_bin + os.pathsep + base_path})
+    lock1 = _load_lock(lock_path)
+    check("a8-first-emit-composes-ci-tier0-under-ok-gh-shim",
+          p1.returncode == 0 and lock1.get("remote_handle") == "ci-tier0" and os.path.isfile(wf_abs),
+          (p1.returncode, lock1.get("remote_handle"), p1.stdout[-300:], p1.stderr[-300:]))
+    github_files_before = sum(len(fs) for _dp, _dns, fs in os.walk(github_dir)) if os.path.isdir(github_dir) else 0
+    check("a8-first-emit-lands-github-files", github_files_before > 0, github_files_before)
+
+    p2 = run_integrate(emit_args, env={"PATH": bad_bin + os.pathsep + base_path})
+    lock2 = _load_lock(lock_path)
+    check("a8-second-emit-exit0", p2.returncode == 0, p2.stderr[-300:])
+    check("a8-second-emit-drops-ci-tier0", lock2.get("remote_handle") == "none", lock2.get("remote_handle"))
+    check("a8-second-emit-prints-no-longer-holds", "no longer holds: ci-tier0" in p2.stdout, p2.stdout[-400:])
+    check("a8-lock-unions-prior-emitted",
+          set(lock1.get("emitted", [])) <= set(lock2.get("emitted", []))
+          and set(lock1.get("ci_tier0_relpaths", [])) <= set(lock2.get("ci_tier0_relpaths", [])),
+          (len(lock1.get("emitted", [])), len(lock2.get("emitted", []))))
+
+    dry = run_integrate(["uninstall", "--root", root, "--dry-run"])
+    try:
+        dres = json.loads(dry.stdout.splitlines()[0])
+    except (ValueError, IndexError):
+        dres = {}
+    check("a8-dry-run-removed-names-every-emitted-file",
+          dry.returncode == 0 and wf_abs in dres.get("removed", [])
+          and all(p in dres.get("removed", []) for p in lock2.get("emitted", []) if os.path.isfile(p)),
+          (dry.returncode, len(dres.get("removed", []))))
+    check("a8-dry-run-changes-nothing", os.path.isfile(lock_path) and os.path.isfile(wf_abs))
+
+    real = run_integrate(["uninstall", "--root", root])
+    leftover = [os.path.join(dp, f) for dp, _, fs in os.walk(github_dir) for f in fs] if os.path.isdir(github_dir) else []
+    check("a8-uninstall-leaves-zero-github-files", real.returncode == 0 and leftover == [],
+          (real.returncode, leftover[:5], real.stderr[-300:]))
+    check("a8-uninstall-removes-empty-github-dir", not os.path.isdir(github_dir))
+    RAW["a8_lock1"] = lock1
+    RAW["a8_lock2"] = lock2
+    RAW["a8_second_emit_stdout"] = p2.stdout
+
+
 def main():
     global _SCRATCH_HYP_STATE_DIR
     scratch = tempfile.mkdtemp(prefix="selftest-om-integrate-")
@@ -501,6 +584,7 @@ def main():
         a6_uninstall(root, agents_dir)
         a7_report(root)
         a7_corrupt_lock(scratch)
+        a8_dropped_handle_union(scratch)
     finally:
         try:
             with open("selftest-om-integrate.raw.json", "w", encoding="utf-8") as fh:

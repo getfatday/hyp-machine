@@ -11,7 +11,10 @@ host that ships one) that plays the QueueDirectories-fire / ThrottleInterval-thr
 reports drift + mixed plugin versions across a repository's worktrees. `emit` never activates
 anything it writes: a launchd plist is written but never `launchctl load`ed, and the `ci-tier0`
 remote handle is delegated whole to `scripts/om-ci.py emit ci-tier0` (the shipped tier-0 CI
-emitter) rather than carrying a second copy of that workflow's template. Every probe row carries
+emitter) rather than carrying a second copy of that workflow's template; a later emit whose host
+answer changed prints `no longer holds: <handle>` and keeps that handle's artifacts in the lock
+for uninstall; a corrupt prior lock is a typed `void: corrupt-json <path>` (exit 2, nothing
+written). Every probe row carries
 a `void` field: `None` when the probe command ran to completion, else the typed void
 (`timeout` / `not-found` / `os-error:<T>`) of the subprocess that never answered -- a stalled
 `gh` or `launchctl` is never collapsed into a substantive `usable: false`; `compose`, `emit` and
@@ -524,6 +527,17 @@ def emit(root, agents_dir, worker_path, plugin_scripts, remote_host="github.com"
     rows = probe_all(root, remote_host)
     _print_lying_rows(rows)
     decision = compose(rows)
+    lock_path = os.path.join(root, LOCK_REL)
+    prior = {}
+    if os.path.isfile(lock_path):
+        prior, prior_void = _load_json(lock_path)
+        if prior_void:
+            print(prior_void + " (emit refused: nothing written; fix or remove the lock, or run "
+                  "uninstall, then re-run emit)")
+            return {"decision": decision, "emitted": [], "lock": lock_path,
+                    "probe_voids": probe_voids(rows), "voids": [prior_void]}
+        if not isinstance(prior, dict):
+            prior = {}
     emitted = []
     ci_relpaths = []
     if decision["on_device"] == "launchd-queue":
@@ -540,7 +554,21 @@ def emit(root, agents_dir, worker_path, plugin_scripts, remote_host="github.com"
         ci_relpaths = _emit_ci_tier0(root, plugin_scripts)
         emitted.extend(os.path.join(root, p) for p in ci_relpaths)
 
-    lock_path = os.path.join(root, LOCK_REL)
+    # B1 (ship fix round 4): a handle that composed earlier but no longer probes usable must not
+    # make the lock forget its artifacts -- union the prior lock in and say so.
+    for field in ("on_device_handle", "remote_handle"):
+        prev = prior.get(field)
+        key = "on_device" if field == "on_device_handle" else "remote"
+        if prev and prev != "none" and prev != decision[key]:
+            print("no longer holds: %s (its earlier artifacts stay in the lock so uninstall still "
+                  "removes them)" % prev)
+    for p in prior.get("emitted", []) or []:
+        if isinstance(p, str) and p not in emitted:
+            emitted.append(p)
+    for p in prior.get("ci_tier0_relpaths", []) or []:
+        if isinstance(p, str) and p not in ci_relpaths:
+            ci_relpaths.append(p)
+
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     lock = {"on_device_handle": decision["on_device"], "remote_handle": decision["remote"],
             "emitted": emitted, "rootkey": _rootkey(root), "probe_voids": probe_voids(rows),
@@ -570,7 +598,7 @@ def emit(root, agents_dir, worker_path, plugin_scripts, remote_host="github.com"
                 json.dump(data, fh, indent=1, sort_keys=True)
 
     return {"decision": decision, "emitted": emitted, "lock": lock_path,
-            "probe_voids": lock["probe_voids"]}
+            "probe_voids": lock["probe_voids"], "voids": []}
 
 
 def cmd_emit(args):
@@ -581,6 +609,9 @@ def cmd_emit(args):
               "staging; pick any other directory")
         return 1
     result = emit(args.root, args.agents_dir, args.worker, args.plugin_scripts, args.remote_host)
+    if result.get("voids"):
+        print(json.dumps(result, sort_keys=True))
+        return 2
     print(json.dumps(result, sort_keys=True))
     for item in result["probe_voids"]:
         print("probe-void: %s" % item)
@@ -844,18 +875,27 @@ def uninstall(root, dry_run=False):
                 elif os.path.relpath(path, root) == WORKFLOW_REL:
                     reversal.append("git rm -r %s %s  # and push to disable the workflow" %
                                     (WORKFLOW_REL, os.path.join(".github", "om-scripts")))
-                if not dry_run and os.path.isfile(path):
-                    os.remove(path)
+                if os.path.isfile(path):
+                    if not dry_run:
+                        os.remove(path)
                     removed.append(path)
+            if any(str(p).endswith(".plist") for p in lock.get("emitted", [])):
+                reversal.append(
+                    "(left in place: worker state root %s -- the worker's own inbox and log directory that "
+                    "emit created so the plist's QueueDirectories names an existing path; shared with direct "
+                    "drain runs, so remove it by hand only if you no longer want the worker's state)"
+                    % worker_state_root(root))
             if not dry_run:
                 os.remove(lock_path)
-                # best-effort cleanup of now-empty vendor and workflow directories the ci-tier0
-                # delegation made; deepest first, never raises on a non-empty or absent directory.
+                # best-effort cleanup of now-empty vendor, workflow and .github directories the
+                # ci-tier0 delegation made; deepest first, never raises on a non-empty or absent
+                # directory.
                 vendor_dir = os.path.join(root, ".github", "om-scripts")
                 dirs = [os.path.join(vendor_dir, "pyyaml", "yaml"),
                         os.path.join(vendor_dir, "pyyaml"), vendor_dir]
                 if any(os.path.relpath(p, root) == WORKFLOW_REL for p in lock.get("emitted", [])):
                     dirs.append(os.path.join(root, ".github", "workflows"))
+                    dirs.append(os.path.join(root, ".github"))
                 for d in dirs:
                     try:
                         os.rmdir(d)
