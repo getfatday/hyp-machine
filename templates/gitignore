@@ -4,3 +4,11 @@
 # and conflict; regenerate with scripts/compile-catalog.py <context-dir> wherever the model
 # is read (H-DRAFT-4e06e157-om-rows-merge-shape).
 /{{MODEL_DIR}}/*/model.md
+
+# hyp: the model-routing derive loop's per-Stop projections (hooks/scripts/routing-derive-cadence.py,
+# lab H-DRAFT-d5a8d9b6-routing-derive) are regenerated every turn: the candidate draft is a
+# proposal for /hyp:hypothesis to register under hypotheses/, and the cache is the
+# stopping-rule freeze copy. routing-report.md is NOT listed: it is a committed projection
+# like DASHBOARD.md.
+/.claude/routing-candidates/
+/.claude/routing-derive-cache/

@@ -1,0 +1,17 @@
+{
+  "schema": "routing-derive/v1",
+  "tier_order": ["haiku", "sonnet", "opus", "fable"],
+  "one_step": true,
+  "grades": {
+    "adversarial": ["execute"]
+  },
+  "class_asymmetry": ["think", "adversarial"],
+  "think_drop_licenses": ["LIC-E2-CALIBRATION-001"],
+  "lineage_policy": {
+    "path": "rules/lineage-sprt.json",
+    "sha256": "8052bda9c051a90c762d3af9b84317941a5a5e9d44db5db90122a61a13aeeae1"
+  },
+  "candidate_saving_window": "since_row",
+  "rollback_step": 1,
+  "candidate_step": 1
+}

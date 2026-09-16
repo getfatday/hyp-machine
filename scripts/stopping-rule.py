@@ -92,9 +92,11 @@ def freeze(rule_path, into):
     parent = os.path.dirname(os.path.abspath(into))
     if parent and not os.path.isdir(parent):
         os.makedirs(parent)
-    with open(into, "w", encoding="utf-8") as fh:
+    tmp = into + ".tmp-%d" % os.getpid()
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=1, sort_keys=True)
         fh.write("\n")
+    os.replace(tmp, into)
     return doc
 
 
