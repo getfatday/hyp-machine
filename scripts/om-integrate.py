@@ -429,6 +429,7 @@ def _emit_launchd_plist(root, agents_dir, worker_path, plugin_scripts):
     the log paths name `worker_state_root(root)` -- the same directory the worker's own default
     `drain` reads from -- so `ProgramArguments` runs plain `drain --root ... --plugin-scripts ...`
     with no `--inbox` override, matching what a real launchd load would actually fire against."""
+    agents_dir = os.path.abspath(agents_dir)
     os.makedirs(agents_dir, exist_ok=True)
     state_dir = worker_state_root(root)
     inbox = os.path.join(state_dir, "inbox")
@@ -454,8 +455,13 @@ def _emit_ci_tier0(root, plugin_scripts):
     relpaths = []
     for line in (r["stdout"] or "").splitlines():
         parts = line.split()
-        if parts:
-            relpaths.append(parts[-1])
+        if not parts:
+            continue
+        if parts[0] == "kept":
+            print("om-integrate: %s (not managed by om-integrate; leaving it alone for "
+                  "uninstall accounting)" % line)
+            continue
+        relpaths.append(parts[-1])
     if r["exit"] != 0 or r["void"]:
         print("om-integrate: ci-tier0 delegation to om-ci.py did not complete (%s); nothing "
               "emitted for the remote handle" % (r["void"] or ("om-ci.py exit %s" % r["exit"])))
@@ -508,6 +514,12 @@ def emit(root, agents_dir, worker_path, plugin_scripts, remote_host="github.com"
 
 
 def cmd_emit(args):
+    launch_agents_dir = os.path.realpath(os.path.expanduser("~/Library/LaunchAgents"))
+    if os.path.realpath(args.agents_dir) == launch_agents_dir:
+        print("om-integrate: refusing --agents-dir ~/Library/LaunchAgents -- staging a plist "
+              "there is scanned by launchd at your next login, which is activation, not "
+              "staging; pick any other directory")
+        return 1
     result = emit(args.root, args.agents_dir, args.worker, args.plugin_scripts, args.remote_host)
     print(json.dumps(result, sort_keys=True))
     for item in result["probe_voids"]:
@@ -516,7 +528,8 @@ def cmd_emit(args):
         label = "com.hyp-machine.om-worker.%s" % _rootkey(args.root)
         plist_path = os.path.join(args.agents_dir, label + ".plist")
         print("om-integrate: to activate (a deliberate, separate step -- never run by this "
-              "verb): launchctl load %s" % plist_path)
+              "verb): cp %s ~/Library/LaunchAgents/ && launchctl load "
+              "~/Library/LaunchAgents/%s.plist" % (plist_path, label))
     return 0
 
 
@@ -821,6 +834,8 @@ def main(argv=None):
         args.plugin_scripts = _plugin_scripts_dir(args.plugin_scripts)
         if not getattr(args, "worker", None):
             args.worker = os.path.join(args.plugin_scripts, "om-worker.py")
+    if getattr(args, "agents_dir", None):
+        args.agents_dir = os.path.abspath(args.agents_dir)
     return args.fn(args)
 
 

@@ -67,15 +67,16 @@ Nine candidate background mechanisms, in this frozen priority order (first probe
    - Tell the user plainly: "nothing is running yet — this wrote the job description; loading it
      is a separate step you run yourself" and give them the exact printed command.
 
-4. **Test** (optional, before or after loading). Exercises the worker integration end to end
-   under a substrate that plays the launchd role without ever touching real launchd:
-   ```
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" test --root . \
-     --transcript <any .jsonl session transcript, e.g. one of your own under ~/.claude/projects/>
-   ```
-   Reports `test: PASS` once one `session-observed` row lands from a real transcript AND two
-   poison seeds (a non-JSON pointer, a format-shifted transcript) land as `quarantine` rows
-   without spinning (at most 2 launches). `test` never itself loads a job into real launchd.
+4. **Test** is a disclosed gap for a direct consumer run today: it exercises the worker
+   integration end to end against a substrate that plays the launchd role (a `launchctl watch`
+   verb no real `launchctl` implements), so running
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" test --root . --transcript <path>`
+   directly on your own host will report `test: FAIL` -- that failure is expected, not a bug in
+   your setup. The integration this verb exercises is validated by the plugin's own cold
+   selftest instead: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/selftest-om-integrate.py"`, which
+   stages the stub substrate ahead of the real binary on `PATH` for the duration of that one
+   check and reports the same `session-observed` / `quarantine` outcome this step describes.
+   Skip straight to step 5 (report) on a real host.
 
 5. **Report drift.** Any time later, from any worktree:
    ```
