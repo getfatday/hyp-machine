@@ -137,12 +137,16 @@ project-scope PLUGIN install never resolved the plugin-qualified id `hyp:build` 
 headless child (round 1 of the lane's fixture fixes). That project-scope surface is what
 `--emit` reproduces, and it is what the lane's resolution-order claim above was proven
 against, live, on real children. The surface a released install of THIS plugin ships —
-`agents/hyp-<role>.md` inside the plugin, an `agentType: 'hyp:<role>'` call resolving to it
-— inherits the same resolution-order argument but is **not itself the surface the lane
-measured**; it is unmeasured, and this line says so on purpose rather than implying
-otherwise. Until a lane measures the plugin-qualified id directly in a headless child with
-this plugin installed at project scope, treat the project-scope path (`--emit` into your own
-`.claude/agents/`, calls naming `agentType: 'hyp-<role>'`) as the proven one.
+`agents/hyp-<role>.md` inside the plugin — resolves under `agentType: 'hyp:hyp-<role>'`
+(plugin name `hyp` plus the
+definition's own `name: hyp-<role>`), NOT the bare `agentType: 'hyp:<role>'` a reader might
+guess from the plugin name and role alone: a cold refute review observed `hyp:hyp-build`
+served the table model in one headless child on CLI 2.1.273 (a single observation, not a
+keep) while `hyp:build` never started an agent, and a bare `hyp-build` with no project-scope
+copy also failed to start. Treat this as a single observation, not a lane-grade measurement:
+until a lane measures `hyp:hyp-<role>` directly, treat the project-scope path (`--emit` into
+your own `.claude/agents/`, calls naming `agentType: 'hyp-<role>'`) as the proven one, and if
+you call the plugin-qualified id, use `hyp:hyp-<role>`, never `hyp:<role>`.
 
 ## Known limitation
 

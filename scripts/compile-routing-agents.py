@@ -12,10 +12,14 @@ against a copy of the table installed at project scope in a throwaway consumer, 
 project-scope PLUGIN install never resolved the plugin-qualified agent id `hyp:build` in a
 headless child (VERIFY.md finding 2, AMENDMENTS.md 4). This script generalizes the same
 render function to every role in the table and ships the output as agents/hyp-<role>.md
-INSIDE the plugin -- the plugin-qualified id `hyp:<role>` this surface would resolve to
-under a released-plugin install is unmeasured by the lane; the project-scope surface it did
-measure (a consumer's own `.claude/agents/hyp-<role>.md`, `agentType: 'hyp-<role>'` with no
-colon) is what `--emit` reproduces. See docs/model-routing.md, "The compiled agent surface".
+INSIDE the plugin -- the plugin-qualified id this surface resolves to under a
+released-plugin install is `hyp:hyp-<role>` (plugin name `hyp` plus the definition's own
+`name: hyp-<role>`), NOT the bare `hyp:<role>` a reader might guess: a cold refute review
+observed `hyp:hyp-build` served the table model in one headless child on CLI 2.1.273 (a
+single observation, not a keep) while `hyp:build` never started an agent. The project-scope
+surface the lane did measure (a consumer's own `.claude/agents/hyp-<role>.md`, `agentType:
+'hyp-<role>'` with no colon) is what `--emit` reproduces. See docs/model-routing.md, "The
+compiled agent surface".
 
 Three modes, one table in:
   (no flag)      compile every role (or --role ROLE, repeatable) into this plugin's own

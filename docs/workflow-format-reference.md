@@ -31,7 +31,7 @@ beginning with a PURE-LITERAL meta export (no variables, calls, spreads, interpo
   that omits or misroutes model/effort), effort
   ('low'|'medium'|'high'|'xhigh'|'max' — 'low' for mechanical stages), isolation:
   'worktree' (EXPENSIVE, only for parallel file mutation), agentType (custom agent from
-  the registry — a compiled `hyp-<role>`/`hyp:<role>` agent definition's own `model:`
+  the registry — a compiled `hyp-<role>`/`hyp:hyp-<role>` agent definition's own `model:`
   frontmatter is a second, independent input the platform reads beside this call's literal
   `model`/`effort`; see docs/model-routing.md, "The compiled agent surface", for the
   resolution order and what is proven vs. inferred). Returns null if skipped/dead — filter
