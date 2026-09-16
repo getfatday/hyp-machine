@@ -32,7 +32,16 @@ Two layers:
                         STALE: False with nothing committed (the checkout action's default
                         depth -- why the template renders `fetch-depth: 0`) while a
                         full-history clone of the same ref reads STALE: True and regenerates
-                        exactly one bot commit, the paths-only mutant never firing a job,
+                        exactly one bot commit, a stale mutant on a consumer whose
+                        `.claude/hyp.json` sets `om_feedback_file` and whose ledger already
+                        carries this checkout's byte-identical model-evaluated row followed
+                        by a row of another kind reading STALE: True and regenerating exactly
+                        one bot commit while the pass appends nothing (round 5, B1: the glue
+                        asks the vendored om-worker.py's own staleness function on the
+                        checkout instead of reading a hardcoded ledger tail, which om-worker's
+                        silent byte-dedupe never guaranteed to be this pass's rows), the
+                        detached and rejected-push cases each requiring the local bot commit
+                        too (not only the job's rc), the paths-only mutant never firing a job,
                         zero `claude` shim spawns, zero proxy hits, and PyYAML importing
                         under an empty HOME
 
@@ -141,6 +150,11 @@ def main():
         "the push step skips with a notice on a detached checkout",
         "compile-check job FAILS on an attached head whose push is rejected (unreachable origin), "
         "naming the push step",
+        "dedupe shape seeded on the override ledger",
+        "a stale mutant whose .claude/hyp.json sets om_feedback_file reads STALE: True and "
+        "regenerates exactly one bot commit",
+        "the CI pass appended nothing to the override ledger (its row was a byte-duplicate) and "
+        "the default ledger path stays absent",
         "a depth-1 clone of the stale ref reads STALE: False and commits nothing",
         "a full-history clone of the same stale ref reads STALE: True and regenerates exactly one "
         "bot commit",

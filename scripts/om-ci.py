@@ -17,7 +17,9 @@ throwaway git consumer under a temp directory, runs the same JOBS table's steps 
 the CI-runner constraint the lab keep measured (empty `HOME`, a minimal `PATH`, HTTPS/HTTP
 proxies pointed at a local sink that only counts connections, a `claude` shim that fails loudly
 if spawned), seeds the same defects the lab lane graded (one broken link, one stale compiled
-artifact, one compiled-only touch), re-measures on fresh `file://` clones why the checkout must
+artifact, one compiled-only touch) plus a stale tree on a consumer whose `.claude/hyp.json`
+overrides `om_feedback_file` (ship fix round 5, B1: the glue must read the ledger om-worker.py
+actually wrote), re-measures on fresh `file://` clones why the checkout must
 fetch full history (a depth-1 clone of a stale ref reads clean; the same ref with history reads
 stale and regenerates once -- ship fix round 4, B1), and prints one PASS/FAIL line per case.
 Exit 0 iff every case passed.
@@ -62,6 +64,20 @@ PYYAML_LICENSE_SRC = os.path.join(HERE, "vendor", "pyyaml", "LICENSE")
 WORKFLOW_REL = os.path.join(".github", "workflows", "om-check.yml")
 BOT_IDENTITY = J.BOT_IDENTITY
 NORMAL_ACTOR = "consumer-contributor"
+
+# A2 (ship fix round 5): scratch-consumer commit dates pinned minutes apart, as the lane
+# fixture's lane_common.DATES did (pre-mortem risk iii). om-worker.py dates the model tree and
+# the compiled artifact by `git log -1 --format=%ct -- <path>`; in the kept scratch run the three
+# base commits all landed in one second and the first seed only 3 s later, so a faster host
+# could collide a seed with the compiled commit and read STALE: False -- a spurious FAIL
+# (fail-safe direction, never a false pass). The bot's regenerate commit is dated by the step's
+# own clock (the CI-runner env carries no date override), always later than these.
+DATES = {
+    "c1_scaffold": "2026-09-01T00:00:00+00:00",
+    "c2_compiled": "2026-09-01T00:05:00+00:00",
+    "c3_emit": "2026-09-01T00:10:00+00:00",
+    "mutant_edit": "2026-09-01T00:15:00+00:00",
+}
 
 # B4 (ship fix round 1): a hung step must read as a recorded FAIL, never hang the run.
 STEP_TIMEOUT_S = 60
@@ -223,9 +239,11 @@ def _sh(cmd, cwd=None, env=None, check=True, timeout=None):
     return proc.returncode, out
 
 
-def _git(cwd, *args, check=True):
+def _git(cwd, *args, check=True, date=None):
     env = dict(os.environ)
     env.update(GIT_ENV)
+    if date:
+        env["GIT_AUTHOR_DATE"] = env["GIT_COMMITTER_DATE"] = date
     return _sh(["git", "-C", cwd, "-c", "commit.gpgsign=false"] + list(args), env=env, check=check)
 
 
@@ -322,17 +340,18 @@ def _build_scratch_consumer(work, origin, model_dir="operating-model"):
                "%s/*/model.md\nledger/om-feedback.jsonl\n" % model_dir)
     _write_text(os.path.join(work, "scripts", "render_compiled.py"), RENDER_COMPILED_PY)
     _git(work, "add", "-A")
-    _git(work, "commit", "-q", "-m", "model tree v1 (clean)")
+    _git(work, "commit", "-q", "-m", "model tree v1 (clean)", date=DATES["c1_scaffold"])
 
     _sh([sys.executable, "-B", os.path.join(HERE, "compile-catalog.py"),
         os.path.join(work, model_dir, "ops"), "--write"])
     _sh([sys.executable, "-B", os.path.join(work, "scripts", "render_compiled.py")], cwd=work)
     _git(work, "add", "-A")
-    _git(work, "commit", "-q", "-m", "compiled v1 (fresh)")
+    _git(work, "commit", "-q", "-m", "compiled v1 (fresh)", date=DATES["c2_compiled"])
 
     emit_ci_tier0(work, force=True)
     _git(work, "add", "-A")
-    _git(work, "commit", "-q", "-m", "emit .github/workflows/om-check.yml (tier-0 CI)")
+    _git(work, "commit", "-q", "-m", "emit .github/workflows/om-check.yml (tier-0 CI)",
+         date=DATES["c3_emit"])
     _git(work, "branch", "on-base", "main")
 
     _git(work, "init", "-q", "--bare", "-b", "main", origin)
@@ -341,10 +360,26 @@ def _build_scratch_consumer(work, origin, model_dir="operating-model"):
 
 
 def _seed(work, branch, rel, content, message):
+    _seed_files(work, branch, {rel: content}, message)
+
+
+def _seed_files(work, branch, files, message):
+    """One mutant commit on a fresh `branch` off `on-base` touching every path in `files`
+    (rel -> content), dated DATES["mutant_edit"] (A2, ship fix round 5) so it post-dates the
+    compiled commit by a full ten minutes and never shares its second."""
+    dirty = _git(work, "status", "--porcelain", "--untracked-files=no")[1].strip()
+    if dirty:
+        # Round 5 found this crash shape live: a scenario whose regenerate commit silently did
+        # not happen left `compiled/SOP.md` modified in the shared tree, the next seed's
+        # `checkout -b` carried it across and `git add -A` committed another scenario's bytes
+        # into the new mutant. Name the gap instead of tripping on it (see _run_jobs docstring).
+        raise RuntimeError("shared scratch work tree is dirty before seeding %s -- a previous "
+                           "scenario left tracked changes uncommitted:\n%s" % (branch, dirty))
     _git(work, "checkout", "-q", "-b", branch, "on-base")
-    _write_text(os.path.join(work, rel), content)
+    for rel, content in files.items():
+        _write_text(os.path.join(work, rel), content)
     _git(work, "add", "-A")
-    _git(work, "commit", "-q", "-m", message)
+    _git(work, "commit", "-q", "-m", message, date=DATES["mutant_edit"])
     _git(work, "checkout", "-q", "main")
 
 
@@ -502,8 +537,10 @@ def _run_jobs(work, ref, actor, scratch_root, model_dir, pred_map):
     clone -- untracked leftovers (the ignored ledger row file, `__pycache__`-free by -B) ride
     across scenarios. A cold refuter re-drove every scenario on fresh clones and every kept
     behaviour held; the gap is disclosed here rather than closed. The depth-1 / full-history
-    pair (ship fix round 4, B1) is the exception: `work` there is a fresh `file://` clone of
-    the bare origin per arm, because clone depth is the variable under test."""
+    pair (ship fix round 4, B1) and the `om_feedback_file` override scenario (round 5, B1) are
+    the exceptions: `work` there is a fresh `file://` clone of the bare origin per arm, because
+    clone depth, respectively the absence of the default ledger path, is the variable under
+    test."""
     _git(work, "checkout", "-q", ref)
     proxy_port, proxy_log, stop = _start_proxy_sink(scratch_root)
     try:
@@ -731,8 +768,20 @@ def self_test_ci_tier0(keep_scratch=False):
             proxy_total += proxy_hits
             cc_detached = _job_result(results, "compile-check")
             push_out_detached = cc_detached["step_outputs"].get("push regenerated commit if any", "")
+            detached_head = _git(work, "rev-parse", "HEAD")[1].strip()
+            detached_count = int(_git(work, "rev-list", "--count",
+                                      "%s..%s" % (detached_sha, detached_head))[1].strip()) \
+                if detached_sha != detached_head else 0
+            detached_author = _git(work, "log", "-1", "--format=%an", detached_head)[1].strip()
+            # Round 5: the commit itself is asserted, not only the job's rc -- a run whose
+            # regenerate step silently did nothing (the ledger-tail read of rounds 1-4 on a
+            # deduped row) still exited 0 here and only surfaced two scenarios later as a
+            # dirty shared tree.
             check("compile-check job exits 0 on a detached checkout of a stale mutant "
-                 "(pull_request-style merge-ref checkout)", cc_detached["rc"] == 0, cc_detached)
+                 "(pull_request-style merge-ref checkout) and regenerates exactly one bot "
+                 "commit locally",
+                 cc_detached["rc"] == 0 and detached_count == 1 and detached_author == BOT_IDENTITY,
+                 "rc=%s commits=%d author=%s" % (cc_detached["rc"], detached_count, detached_author))
             check("the push step skips with a notice on a detached checkout",
                  "PUSH skipped" in push_out_detached, push_out_detached)
             _require_budget(run_started, "after detached-checkout run")
@@ -750,6 +799,7 @@ def self_test_ci_tier0(keep_scratch=False):
                  "attached-HEAD failed-push check).\n",
                  "seed M-stale (attached head, unreachable origin scenario)")
             bad_origin = os.path.join(scratch_root, "does-not-exist.git")
+            nopush_before = _git(work, "rev-parse", "mutant/m-stale-nopush")[1].strip()
             _git(work, "remote", "set-url", "origin", bad_origin)
             try:
                 results, shim_hits, proxy_hits = _run_jobs(work, "mutant/m-stale-nopush", NORMAL_ACTOR,
@@ -761,12 +811,102 @@ def self_test_ci_tier0(keep_scratch=False):
             proxy_total += proxy_hits
             cc_nopush = _job_result(results, "compile-check")
             push_out_nopush = cc_nopush["step_outputs"].get("push regenerated commit if any", "")
+            nopush_after = _git(work, "rev-parse", "mutant/m-stale-nopush")[1].strip()
+            nopush_count = int(_git(work, "rev-list", "--count",
+                                    "%s..%s" % (nopush_before, nopush_after))[1].strip()) \
+                if nopush_before != nopush_after else 0
+            # Round 5: a push to an unreachable origin fails whether or not a commit exists, so
+            # this check passed vacuously when the regenerate step silently did nothing; the
+            # local bot commit is now required too.
             check("compile-check job FAILS on an attached head whose push is rejected "
-                 "(unreachable origin), naming the push step",
+                 "(unreachable origin), naming the push step, after regenerating exactly one bot "
+                 "commit locally",
                  cc_nopush["rc"] != 0 and cc_nopush["failing_step"] == "push regenerated commit if any"
-                 and "PUSH skipped" not in push_out_nopush,
-                 "rc=%s failing_step=%s" % (cc_nopush["rc"], cc_nopush["failing_step"]))
+                 and "PUSH skipped" not in push_out_nopush and nopush_count == 1,
+                 "rc=%s failing_step=%s commits=%d" % (cc_nopush["rc"], cc_nopush["failing_step"],
+                                                       nopush_count))
             _require_budget(run_started, "after attached-head failed-push run")
+
+            # B1 (ship fix round 5): the glue scripts hardcoded `ledger/om-feedback.jsonl` and
+            # read its last N rows as "the rows the compile-check step just appended". Both
+            # halves fail on documented om-worker.py behaviour: it resolves the ledger through
+            # `.claude/hyp.json` `om_feedback_file` (the refuter's measurement: om-worker wrote
+            # one file, the report step read another, `STALE: unknown`, `COMMIT: no (nothing
+            # stale)`, green on a stale tree), and its `append_to_path` dedupes by exact bytes
+            # against the whole file and returns `duplicate` silently, so a committed ledger
+            # that already carries this checkout's byte-identical `model-evaluated` row followed
+            # by any other row leaves the tail without a row from this pass (no `STALE:` line,
+            # no regenerate -- the shape that surfaced here once the A2 date pins made two
+            # scenarios' rows identical). The glue now asks the vendored om-worker.py's own
+            # `_compiled_staleness` on the checkout. Seed a stale mutant whose hyp.json sets
+            # `om_feedback_file`, push it, clone it fresh (so the default ledger path provably
+            # does not exist), pre-build the dedupe shape in the override ledger, then run the
+            # whole JOBS table: STALE: True, exactly one bot commit, the override ledger
+            # unchanged by the pass (its row was a duplicate), the default path still absent.
+            with open(os.path.join(work, ".claude", "hyp.json"), encoding="utf-8") as fh:
+                override_cfg = json.load(fh)
+            override_cfg["om_feedback_file"] = "ledger/feedback.jsonl"
+            _seed_files(work, "mutant/m-stale-ledger-override", {
+                os.path.join(".claude", "hyp.json"): json.dumps(override_cfg, indent=1) + "\n",
+                "%s/ops/actors/builder.md" % model_dir:
+                    "---\nid: actor/builder\ntype: actor\ncontext: ops\nsummary: the builder "
+                    "(edited a fourth time)\nstatus: current\n---\nEdited a fourth time (seeds a "
+                    "stale check on a consumer whose ledger path is overridden).\n",
+            }, "seed M-stale (om_feedback_file override scenario)")
+            _git(work, "push", "-q", "origin", "mutant/m-stale-ledger-override")
+            ledger_clone = os.path.join(scratch_root, "clone-ledger-override")
+            _git(scratch_root, "clone", "-q", "--branch", "mutant/m-stale-ledger-override",
+                 "file://" + origin, ledger_clone)
+            vendor_dir = os.path.join(ledger_clone, J.VENDOR_DIR)
+            pre_env = dict(os.environ)
+            pre_env["PYTHONPATH"] = os.path.join(ledger_clone, J.PYVENDOR_DIR)
+            pre_env["PYTHONDONTWRITEBYTECODE"] = "1"
+            _sh([sys.executable, "-B", os.path.join(vendor_dir, "om-worker.py"), "compile-check",
+                 "--root", ".", "--plugin-scripts", vendor_dir], cwd=ledger_clone, env=pre_env)
+            override_ledger = os.path.join(ledger_clone, "ledger", "feedback.jsonl")
+            with open(override_ledger, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"kind": "session-observed", "schema": 1,
+                                     "note": "seeded trailing row of another kind"},
+                                    sort_keys=True, separators=(",", ":")) + "\n")
+            with open(override_ledger, encoding="utf-8") as fh:
+                pre_rows = [l for l in fh.read().splitlines() if l.strip()]
+            check("dedupe shape seeded on the override ledger: this checkout's byte-identical "
+                 "model-evaluated row followed by a trailing row of another kind",
+                 len(pre_rows) == 2 and '"kind":"model-evaluated"' in pre_rows[0]
+                 and '"kind":"session-observed"' in pre_rows[1], len(pre_rows))
+            ledger_before = _git(ledger_clone, "rev-parse", "HEAD")[1].strip()
+            results, shim_hits, proxy_hits = _run_jobs(ledger_clone, "mutant/m-stale-ledger-override",
+                                                        NORMAL_ACTOR,
+                                                        os.path.join(scratch_root, "run-ledger-override"),
+                                                        model_dir, pred_map)
+            shim_total += shim_hits
+            proxy_total += proxy_hits
+            cc_ledger = _job_result(results, "compile-check")
+            ledger_after = _git(ledger_clone, "rev-parse", "HEAD")[1].strip()
+            ledger_count = int(_git(ledger_clone, "rev-list", "--count",
+                                    "%s..%s" % (ledger_before, ledger_after))[1].strip()) \
+                if ledger_before != ledger_after else 0
+            ledger_author = _git(ledger_clone, "log", "-1", "--format=%an", ledger_after)[1].strip()
+            report_out = cc_ledger["step_outputs"].get("report staleness", "")
+            check("a stale mutant whose .claude/hyp.json sets om_feedback_file reads STALE: True "
+                 "and regenerates exactly one bot commit (the glue asks om-worker.py's own "
+                 "staleness function, never a hardcoded ledger tail)",
+                 cc_ledger["rc"] == 0 and _stale_value(cc_ledger["step_outputs"]) is True
+                 and ledger_count == 1 and ledger_author == BOT_IDENTITY
+                 and "LEDGER: ledger/feedback.jsonl present" in report_out,
+                 "rc=%s stale=%s commits=%d author=%s failing_step=%s report=%r regen=%r" % (
+                     cc_ledger["rc"], _stale_value(cc_ledger["step_outputs"]), ledger_count,
+                     ledger_author, cc_ledger["failing_step"], report_out.strip(),
+                     cc_ledger["step_outputs"].get("regenerate and commit if stale", "").strip()))
+            with open(override_ledger, encoding="utf-8") as fh:
+                post_rows = [l for l in fh.read().splitlines() if l.strip()]
+            check("the CI pass appended nothing to the override ledger (its row was a "
+                 "byte-duplicate) and the default ledger path stays absent -- the verdict came "
+                 "from om-worker.py's function, not the tail",
+                 post_rows == pre_rows
+                 and not os.path.exists(os.path.join(ledger_clone, "ledger", "om-feedback.jsonl")),
+                 "rows before=%d after=%d" % (len(pre_rows), len(post_rows)))
+            _require_budget(run_started, "after om_feedback_file override run")
 
             # B1 (ship fix round 4): WHY the rendered checkout carries `fetch-depth: 0`.
             # actions/checkout@v4 defaults to depth 1; om-worker.py's `_compiled_staleness`

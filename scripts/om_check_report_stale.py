@@ -1,70 +1,78 @@
 #!/usr/bin/env python3
 """om_check_report_stale.py -- tier-0 CI glue (this ship's own new bytes, not vendored from a
 plugin release; ported from the lab keep getfatday/cause-n-effect H-DRAFT-a28b91c9-om-ci-tier0,
-kept 2026-09-15). Reads the LAST `model-evaluated` row `om-worker.py compile-check` just
-appended to the feedback ledger in the current checkout and prints one decidable line per model
-tree:
+kept 2026-09-15). Prints one decidable line per model tree of the current checkout:
 
     STALE: True|False|None <model_tree>
 
-in the same order om-worker.py appended them, so the last N rows -- N = number of model trees --
-are exactly the rows this compile-check pass wrote. Never mutates anything; never commits.
+computed by the vendored `om-worker.py` beside this file -- its own `_compiled_staleness`, the
+same call its `compile-check` verb made one step earlier -- plus one informational line
 
-Drift from the kept fixture's `om_check_report_stale.py`: `model_dir` is read from the
-consumer's `.claude/hyp.json` (default `operating-model`) instead of a hardcoded literal, via
-its own inline copy of the same safe-default rule `hooks/scripts/hyp_config.safe_rel_path`
-states (this file is vendored standalone into `.github/om-scripts/` on a runner with no plugin
-install, so it cannot import that module -- it re-implements the one rule it needs, as
-`scripts/om-worker.py` already does for the same reason).
+    LEDGER: <repository-relative path> present|absent
+
+naming the feedback ledger om-worker.py resolved through `.claude/hyp.json` `om_feedback_file`.
+Never mutates anything; never commits.
+
+Why the verdict is computed here and not read back from the ledger (ship fix round 5, B1):
+rounds 1-4 read the last N rows of a hardcoded `ledger/om-feedback.jsonl` on the assumption
+that they were the N rows the compile-check step had just appended. Both halves of that
+assumption fail on documented om-worker.py behaviour. (1) It resolves the ledger through
+`om_feedback_file` (`ledger_rel`), so a consumer that set the key had om-worker.py write one
+file and this script read another -- `STALE: unknown`, then `COMMIT: no (nothing stale)`,
+green on a stale tree (the round-5 refuter's measurement). (2) Its `append_to_path` dedupes by
+exact bytes against the whole file and returns `duplicate` silently, so when a byte-identical
+`model-evaluated` row already sits in the committed ledger (a session hook evaluated the same
+commit locally, session rows followed, the ledger was committed) nothing is appended and the
+tail is whatever the ledger ended with -- no `STALE:` line at all, the regenerate step never
+runs, green on a stale tree. Asking om-worker.py's own functions on the checkout has neither
+failure and needs no inline copy of its path rules: `_model_trees` and `ledger_rel` are
+called, not mirrored, and the two files are emitted and sha-pinned together by
+`om-ci.py emit ci-tier0` (`MANIFEST.json`), so the private name is pinned with its caller.
+
+Exit status (A1): 0 when every model tree got a verdict (`True`, `False`, or om-worker.py's
+own `None` for "a date is unknown", printed as-is); 1 when the vendored om-worker.py beside
+this file cannot be loaded -- the one shape in which no verdict can be produced -- so an
+unreadable verdict goes red, never green. A checkout with no model tree exits 0 (nothing to
+report; the trigger's `paths:` list should never have fired).
 
 Stdlib only, Python 3.9.
 """
-import glob
-import json
+import importlib.util
 import os
 import sys
 
-
-def _model_dir(root):
-    """The consumer's configured `model_dir` (`.claude/hyp.json`), or the plugin default
-    `operating-model` when the file, the key, or the value is absent/malformed/unsafe (never
-    absolute, never a `..` escape) -- the one rule `hyp_config.safe_rel_path` states, inlined."""
-    cfg_path = os.path.join(root, ".claude", "hyp.json")
-    try:
-        with open(cfg_path, "r", encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    except (OSError, ValueError):
-        cfg = {}
-    v = cfg.get("model_dir") if isinstance(cfg, dict) else None
-    if isinstance(v, str) and v.strip() and not os.path.isabs(v.strip()) and ".." not in v.strip("/").split("/"):
-        return v.strip().strip("/")
-    return "operating-model"
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def model_trees(root):
-    om_dir = os.path.join(root, _model_dir(root))
-    if not os.path.isdir(om_dir):
-        return []
-    return sorted(d for d in glob.glob(os.path.join(om_dir, "*")) if os.path.isdir(d))
+def load_om_worker():
+    """The `om-worker.py` vendored beside this file (same `emit`, same `MANIFEST.json`), so the
+    functions this script calls are the byte-pinned copy the compile-check step itself ran."""
+    spec = importlib.util.spec_from_file_location("om_worker_vendored",
+                                                  os.path.join(HERE, "om-worker.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def main():
     root = os.path.abspath(".")
-    ledger = os.path.join(root, "ledger", "om-feedback.jsonl")
-    trees = model_trees(root)
-    n = len(trees)
-    if not os.path.isfile(ledger) or n == 0:
-        print("STALE: unknown (no ledger or no model trees)")
+    try:
+        omw = load_om_worker()
+    except Exception as exc:  # noqa: BLE001 -- the one shape with no verdict: go red and say why
+        print("STALE: unknown (cannot load vendored om-worker.py beside this script: %s: %s)"
+              % (type(exc).__name__, exc))
+        return 1
+    trees = omw._model_trees(root)
+    if not trees:
+        print("STALE: unknown (no model trees)")
         return 0
-    with open(ledger, "r", encoding="utf-8") as fh:
-        lines = [l for l in fh.read().splitlines() if l.strip()]
-    tail = lines[-n:] if len(lines) >= n else lines
-    for line in tail:
-        row = json.loads(line)
-        if row.get("kind") != "model-evaluated":
-            continue
-        stale = row.get("compiled", {}).get("stale")
-        print("STALE: %r %s" % (stale, row.get("model_tree")))
+    ledger_rel = omw.ledger_rel(root)
+    ledger_present = os.path.isfile(os.path.join(root, *ledger_rel.split("/")))
+    print("LEDGER: %s %s" % (ledger_rel, "present" if ledger_present else "absent"))
+    for tree in trees:
+        rel = os.path.relpath(tree, root).replace(os.sep, "/")
+        verdict = omw._compiled_staleness(root, tree)
+        print("STALE: %r %s" % (verdict.get("stale"), rel))
     return 0
 
 

@@ -129,6 +129,32 @@ the exact CI-runner shape) into `.github/om-scripts/`, with a sha256 `MANIFEST.j
 is idempotent and byte-stable, and never overwrites a file a consumer hand-edited without
 `--force`.
 
+**The stale verdict is asked of `om-worker.py`, not read back from its ledger.** The two glue
+scripts load the `om-worker.py` vendored beside them (same `emit`, same `MANIFEST.json` sha)
+and call its own `_model_trees`, `_compiled_staleness` and `ledger_rel` on the checkout; the
+report step prints one `STALE:` line per tree from that call plus an informational `LEDGER:
+<path> present|absent` line. Ship fix round 5 (B1): rounds 1-4 read the last N rows of a
+hardcoded `ledger/om-feedback.jsonl` as "the rows the compile-check step just appended", and
+both halves of that fail on documented `om-worker.py` behaviour -- it resolves the ledger
+through `.claude/hyp.json` `om_feedback_file` (the refuter's measurement on a consumer that set
+the key: `om-worker.py` wrote one file, the report step read another, `STALE: unknown`,
+`COMMIT: no (nothing stale)`, green on a stale tree), and its `append_to_path` dedupes rows by
+exact bytes against the whole file and returns `duplicate` silently, so a committed ledger that
+already carries this checkout's byte-identical `model-evaluated` row (a session hook evaluated
+the same commit locally, session rows followed, the ledger was committed) followed by any other
+row leaves the tail without a row from this pass: no `STALE:` line, the regenerate step never
+runs, green on a stale tree -- the same vacuous-green class as the depth-1 checkout in round 4.
+The second shape surfaced in the self-test itself once the scratch commit dates were pinned
+(A2) and two scenarios' rows became identical: the detached scenario's regenerate commit
+silently did not happen, and the rejected-push scenario still passed because a push to an
+unreachable origin fails with or without a commit; both checks now require the local bot
+commit. The self-test seeds the override consumer (a stale mutant whose `hyp.json` sets
+`om_feedback_file`) on a fresh clone, pre-builds the dedupe shape in its ledger, and requires
+`STALE: True`, exactly one bot commit, the ledger unchanged by the pass and the default path
+still absent. The report step is fail-closed on the one shape that yields no verdict (A1): it
+exits non-zero when the vendored `om-worker.py` cannot be loaded; a `None` verdict (a date
+`om-worker.py` cannot read) is printed as-is and exits 0, as before.
+
 **The bot-loop guard.** The regenerate-and-commit step, and the push step after it, run under
 `if: ${{ github.actor != 'om-check[bot]' }}` — re-checked a second time inside
 `om_check_regen_commit.py` itself, which reads `GITHUB_ACTOR` and no-ops if it is somehow still
@@ -161,8 +187,17 @@ own re-render. Cost: one full-history fetch per job, bounded by `timeout-minutes
 consumer whose history is too large for that cap should say so in an issue rather than lower
 the depth.
 
+**Two departures from the decided doctrine above.** `om-check.yml` references
+`actions/checkout@v4` and `actions/setup-python@v5` by floating tag, not by pinned SHA, and its
+`compile-check` job carries `permissions: contents: write`, not `read` (`lint` stays `read`).
+The tags are the kept ON bytes: the lane graded the rendered template as measured, and a SHA
+pin is a template change no counted look covered, so it is a follow-up ship with its own
+self-test rather than a silent edit here. `write` is what the regenerate push needs, scoped to
+the one job that pushes. Both are recorded so the scaffold's own doctrine lines are not read as
+already satisfied by this template (ship fix round 5, A3).
+
 **What is still owed.** Everything above is proven against a scratch git consumer under a
-simulated CI-runner constraint (`scripts/om-ci.py self-test ci-tier0`, 28 checks; 31-check
+simulated CI-runner constraint (`scripts/om-ci.py self-test ci-tier0`, 31 checks; 34-check
 `scripts/selftest-om-ci.py`), never against the real hosting service. The push step's own `run:`
 skips only on a detached HEAD; a failed push on an attached head fails the job. The detached
 case (ship fix round 2, B1): `actions/checkout@v4`'s default ref state for a `pull_request`

@@ -11,7 +11,12 @@ commit skips only on a detached pull_request checkout, and a push the hosting se
 fails the job rather than reading green; both jobs check out full history with `fetch-depth: 0`,
 because the staleness check dates the model tree and the compiled artifact by each path's last
 commit and the action's default depth-1 checkout would read every stale tree as clean). No secret beyond
-the checkout's own `GITHUB_TOKEN`, no model session, no network beyond the checkout. Why: the
+the checkout's own `GITHUB_TOKEN`, no model session, no network beyond the checkout. The check's
+glue asks the vendored `om-worker.py`'s own staleness function on the checkout rather than
+reading a hardcoded ledger tail, so a repository that moved its feedback ledger through
+`om_feedback_file`, or whose committed ledger already holds this checkout's identical row
+(`om-worker.py` dedupes silently), is still checked for staleness; the report step goes red
+only when that vendored file cannot be loaded (self-test 31 checks, wrapper 34). Why: the
 lab keep `H-DRAFT-a28b91c9-om-ci-tier0` (getfatday/cause-n-effect, VERDICT.json — five counted
 looks, A1-A5 pass in every one, SPRT llr 2.9389 over the 2.8904 promote bound) proved the
 underlying variable; Amendment #1 in that lane is why the trigger renders one `paths:` list
