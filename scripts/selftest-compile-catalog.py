@@ -184,15 +184,25 @@ def main():
         check("ensure-gitignore-rerun-byte-stable",
               read(os.path.join(r2, ".gitignore")) == gi_before and "unchanged .gitignore" in out2)
 
-        # 6b. an un-anchored row already present counts as the row: nothing is appended
+        # 6b. an un-anchored row already present counts as the row: no anchored duplicate of it
+        # is appended; the template's OTHER rows (the derive loop's two .claude/ projections,
+        # lab H-DRAFT-d5a8d9b6-routing-derive) are appended once, and a re-run is byte-stable.
         r2b = os.path.join(tmp, "gitignore-unanchored")
         mk_repo(r2b)
         write(os.path.join(r2b, ".gitignore"), "operating-model/*/model.md\n")
         out2b = run_init(r2b)
         gi2b = read(os.path.join(r2b, ".gitignore"))
         check("ensure-gitignore-unanchored-row-counts-no-duplicate",
-              gi2b == "operating-model/*/model.md\n" and "unchanged .gitignore" in out2b,
+              gi2b.startswith("operating-model/*/model.md\n")
+              and gi2b.count("operating-model/*/model.md") == 1
+              and "/operating-model/*/model.md" not in gi2b
+              and gi2b.count("/.claude/routing-candidates/\n") == 1
+              and gi2b.count("/.claude/routing-derive-cache/\n") == 1
+              and "updated   .gitignore" in out2b,
               gi2b)
+        out2c = run_init(r2b)
+        check("ensure-gitignore-unanchored-rerun-byte-stable",
+              read(os.path.join(r2b, ".gitignore")) == gi2b and "unchanged .gitignore" in out2c)
 
         # 7. retire: removes the index entry once, keeps the work-tree file, no-op once untracked.
         # Simulates an upgrade from the OLD hand-maintained shape: model.md tracked and committed

@@ -8,8 +8,8 @@ Adds a model-routing derive loop: `scripts/routing-derive.py` reads a repository
 the report reflects rows landed by earlier turns, not necessarily this turn's own), proposes
 at most one rule-conformant routing-tier change per
 run as a draft hypothesis spec — never as an automatic table edit (the cadence hook also
-writes a small stopping-rule freeze cache at `.claude/routing-derive-cache/frozen-rule.json`). `scripts/compile-
-dashboard.py` gains a `## 4. ROUTING` section compiled from the new `routing-report.md`,
+writes a small stopping-rule freeze cache at `.claude/routing-derive-cache/frozen-rule.json`).
+`scripts/compile-dashboard.py` gains a `## 4. ROUTING` section compiled from the new `routing-report.md`,
 present only once that file exists. Ships `rules/routing-derive.json` (frozen the same way
 `rules/lineage-sprt.json` is, sibling copy plus a hardcoded sha) and
 `scripts/selftest-routing-derive.py`. Source: lab hypothesis `H-DRAFT-d5a8d9b6-routing-derive`

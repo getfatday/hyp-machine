@@ -275,7 +275,7 @@ promote bound), `hooks/scripts/routing-derive-cadence.py` runs at every `Stop`, 
 routing ledger's own row-append (hooks in one event run in parallel, so it reflects rows landed
 by earlier turns, not necessarily this turn's own), and writes `routing-report.md` plus (if
 this repository's ledger already supports one) a candidate spec under
-`.claude/routing-candidates/` — it never
+`.claude/routing-candidates/` (that directory and `.claude/routing-derive-cache/` are ignore rows `/hyp:init` appends to your `.gitignore`) — it never
 edits a routing table itself; a candidate is only ever a draft hypothesis spec for a human or
 `hyp:hypothesis` to register. `scripts/compile-dashboard.py` gains a `## 4. ROUTING` section
 compiled from `routing-report.md`, present only once that file exists. After upgrading:

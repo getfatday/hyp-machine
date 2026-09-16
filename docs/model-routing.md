@@ -268,8 +268,8 @@ never as a table edit. Five verbs:
   compiled projection the same way `DASHBOARD.md` is (see "The compiled dashboard block"
   below).
 - `propose` — the single largest-saving, rule-conformant candidate (or none), written as
-  `candidate.json` plus a filled `candidate-spec.md` (from `templates/routing-candidate-
-  template.md`) under an out-dir; a human or the `hyp:hypothesis` skill allocates the `H-NNN`
+  `candidate.json` plus a filled `candidate-spec.md` (from
+  `templates/routing-candidate-template.md`) under an out-dir; a human or the `hyp:hypothesis` skill allocates the `H-NNN`
   and registers it — this script never registers anything itself. Also writes `actions.json`:
   rollback and expired-pin advisories, observational only (see "Rollback" below).
 - `apply-rollbacks` / `default-bump` — the only two verbs that persist a table, and only the
@@ -284,13 +284,16 @@ one event run in parallel, so this hook's report reflects rows landed by EARLIER
 guarantee of this turn's own rows — and calls only `report` and `propose` — bounded, fail-open (any error is swallowed, the hook always exits
 0), and silent when `ledger/routing-ledger.jsonl` does not exist yet or carries no rows (a
 repository with no routing history gets no report and no candidate, never an error). It writes
-`<root>/routing-report.md`, `<root>/.claude/routing-candidates/{candidate.json,candidate-
-spec.md,actions.json}`, `<root>/.claude/routing-derive-cache/frozen-rule.json` (the
+`<root>/routing-report.md`,
+`<root>/.claude/routing-candidates/{candidate.json,candidate-spec.md,actions.json}`, `<root>/.claude/routing-derive-cache/frozen-rule.json` (the
 stopping-rule freeze copy, keyed by this hook's own `--workdir`), and reads (never writes)
 `<root>/ledger/routing-derive-state.json` if present. (The on-keep spec names "the
 `emit-event.py` `run-completed` cadence hook"; `scripts/emit-event.py` carries six
 choke-point verbs and no `run-completed` event, so this `Stop` hook is a by-intent
-substitution for that named hook, not an extension of it.)
+substitution for that named hook, not an extension of it.) Both `.claude/` directories are
+ignore rows in `templates/gitignore` (appended by `/hyp:init`); `routing-report.md` is not,
+being a committed projection like `DASHBOARD.md`. Every write is compare-then-replace, so an
+unchanged report keeps its bytes and mtime.
 
 **The state file.** `ledger/routing-derive-state.json` is new: a small, per-CLASS record this
 script owns (`basis: prior|evidence|pin`, `tier`, `since_row`, and — for `think`/`adversarial`
@@ -305,11 +308,15 @@ file, and only when the caller names an existing (or freshly-seeded) path explic
 rollback decision; this plugin does not yet write that kind of row (no A/B pairing mechanism
 ships yet), so on a real ledger this path is live-safe but dormant — it can raise a
 `rollback-advisory` (observational-only covariate) or a `routing-ceiling-advisory` (a
-top-tier class holding), but never an applied `rollback`, until a future release ships matched-
-pair rows. `apply-rollbacks` stays correct and tested for that day (`scripts/selftest-routing-
-derive.py` scenarios S6/S7/R2/R3) without depending on it. A future matched-pair writer
+top-tier class holding), but never an applied `rollback`, until a future release ships
+matched-pair rows. `apply-rollbacks` stays correct and tested for that day
+(`scripts/selftest-routing-derive.py` scenarios S6/S7/R2/R3) without depending on it. A future matched-pair writer
 must also emit a `class` field on every row, never only `role`: `rows_for_class(...,
 kind="matched-pair")` keys on `class`, the same field the selftest's own fixture rows carry.
+At class granularity, distinct per-role pair ids merge into one class stream -- the source
+fixture's F6 family carries `P-F6` (role build2) and `P-F6b` (role build4), which this port
+reads as a single `execute` matched-pair stream (a consequence of drift 1 below, not a rule
+change).
 
 **The compiled dashboard block.** `scripts/compile-dashboard.py` adds a `## 4. ROUTING` section
 compiled from `routing-report.md` — one line per class (`n`, cost, pass share, tiers, stream
@@ -365,13 +372,13 @@ before hashing, or the recomputed sha will not match.
    so stay ungraded; that is why the `execute` class reads `evidence-insufficient n=0` on most
    real ledgers, not a defect in the helper.
 
-**The frozen rule.** `rules/routing-derive.json` is frozen the same way `rules/lineage-
-sprt.json` is: a byte-identical sibling copy at `rules/frozen/routing-derive.json`, and its
+**The frozen rule.** `rules/routing-derive.json` is frozen the same way
+`rules/lineage-sprt.json` is: a byte-identical sibling copy at `rules/frozen/routing-derive.json`, and its
 sha256 hardcoded in `scripts/routing-derive.py` (`FROZEN_REF_SHA256`, mirroring
 `scripts/lineage-stopping.py`'s `FROZEN_REF_REL`/`FROZEN_REF_SHA256` constants for
 `rules/lineage-sprt.json`). A rule edit that does not refresh both the sibling copy and the
 hardcoded sha is refused (`rule-tampered`), never silently read.
 
-**Undo.** Revert the merge commit that landed this release, or remove the `routing-derive-
-cadence.py` row from the `Stop` hook in `hooks/hooks.json` locally to stop the cadence alone
+**Undo.** Revert the merge commit that landed this release, or remove the
+`routing-derive-cadence.py` row from the `Stop` hook in `hooks/hooks.json` locally to stop the cadence alone
 (the CLI, the dashboard block, and the state file are all inert with no consumer calling them).

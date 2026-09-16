@@ -344,7 +344,8 @@ def _resolve_lineage_policy(rule):
     path = lp.get("path", "rules/lineage-sprt.json")
     env = os.environ.get("ROUTING_DERIVE_LINEAGE_POLICY", "")
     candidates = [env] if env else []
-    candidates += [path, os.path.join(_plugin_root(), path)]
+    # plugin-root copy first: a consumer's own (stale, forked) rules/lineage-sprt.json must never mask the copy this rule's sha pins
+    candidates += [os.path.join(_plugin_root(), path), path]
     for candidate in candidates:
         if candidate and os.path.isfile(candidate):
             actual_sha = sha256_bytes(open(candidate, "rb").read())

@@ -21,6 +21,8 @@ Writes (consumer checkout, never the plugin tree):
                                                              hook's --workdir); undeclared before
                                                              this fix
   <root>/ledger/routing-derive-state.json          -- read if present; NEVER written here
+
+Every write is compare-then-replace: unchanged bytes are left untouched (mtime included).
 """
 import json
 import os
@@ -38,6 +40,23 @@ CANDIDATES_RELDIR = os.path.join(".claude", "routing-candidates")
 
 def _plugin_root():
     return os.environ.get("CLAUDE_PLUGIN_ROOT", os.path.dirname(HERE))
+
+
+def _write_if_changed(path, text):
+    """compare-then-replace, as scripts/compile-dashboard.py does: an unchanged projection keeps
+    its bytes AND its mtime (the lab commits routing-report.md; a rewrite of identical bytes is
+    dirty-tree churn). Written via tmp + os.replace so a reader never sees a torn file."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if fh.read() == text:
+                return False
+    except (OSError, UnicodeDecodeError):
+        pass
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+    return True
 
 
 def _load_rd():
@@ -71,25 +90,21 @@ def run(root):
     rule = rd.load_rule(rule_path)
 
     report_text, per_class = rd.build_report(rows, table, rule, workdir)
-    with open(os.path.join(root, REPORT_RELPATH), "w", encoding="utf-8") as fh:
-        fh.write(report_text)
+    _write_if_changed(os.path.join(root, REPORT_RELPATH), report_text)
 
     out_dir = os.path.join(root, CANDIDATES_RELDIR)
     os.makedirs(out_dir, exist_ok=True)
     prices_doc = json.load(open(prices_path)) if os.path.isfile(prices_path) else {}
     prices = rd.prices_by_tier(prices_doc, rule.get("tier_order", ["haiku", "sonnet", "opus", "fable"]))
     cand = rd.propose_candidate(rows, table, rule, prices, workdir, 1.3)
-    with open(os.path.join(out_dir, "candidate.json"), "w", encoding="utf-8") as fh:
-        fh.write(rd.canon_pretty({"candidate": cand}))
+    _write_if_changed(os.path.join(out_dir, "candidate.json"), rd.canon_pretty({"candidate": cand}))
     if cand and os.path.isfile(template_path):
         template_text = open(template_path, encoding="utf-8").read()
         body = rd.candidate_spec_body(cand, template_text)
-        with open(os.path.join(out_dir, "candidate-spec.md"), "w", encoding="utf-8") as fh:
-            fh.write(body)
+        _write_if_changed(os.path.join(out_dir, "candidate-spec.md"), body)
     rb = rd.rollback_check(rows, table, rule, workdir)
     pins = rd.pin_advisories(table)
-    with open(os.path.join(out_dir, "actions.json"), "w", encoding="utf-8") as fh:
-        fh.write(rd.canon_pretty({"rollbacks": rb, "pin_advisories": pins}))
+    _write_if_changed(os.path.join(out_dir, "actions.json"), rd.canon_pretty({"rollbacks": rb, "pin_advisories": pins}))
 
     return {"ran": True, "classes": sorted(per_class), "candidate": bool(cand),
             "rollbacks": len(rb), "pin_advisories": len(pins)}
