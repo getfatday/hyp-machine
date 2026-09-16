@@ -17,10 +17,20 @@ promote bound) — see that lane for the full evidence trail.
 | class | model | effort | why |
 |---|---|---|---|
 | `mechanical` | haiku | low | rote, deterministic steps |
-| `execute` | sonnet | high | building, fixing, shipping, syncing |
+| `execute` | sonnet | high | building, fixing, shipping, syncing -- lab keep `H-DRAFT-f6ce02b7-sonnet-builders-mechanical` |
 | `think` | fable | high | design, research, synthesis, judgment |
 | `adversarial` | fable | high | refuting, verifying, reviewing |
 | `unmodeled` | sonnet | high | explicit escape valve, used only under `advise` |
+
+The `execute` row carries as its prior (basis: prior; a keep in one repository is a prior in
+another, never evidence) the lab keep `H-DRAFT-f6ce02b7-sonnet-builders-mechanical`
+(`experiments/runs/H-DRAFT-f6ce02b7-sonnet-builders-mechanical/VERDICT.json`): on one sealed
+single-file build task, a sonnet builder matched a fable builder's sealed-suite pass set and
+planted-mutant kill rate at 4.0-4.2x lower US$ per passing build, across five counted looks
+decided by a mechanical grader alone (no LLM judge in any assertion; the sealed refuter, when
+run, is advisory-only). What this reading does not measure, as the leaderboards publish
+alongside their own rows: fix rounds (single-shot builds only), non-correctness qualities
+(readability, structure, docs), and other task classes (one task, T1, one fixture).
 
 ...and a `roles` map from label head (`build`, `fix`, `design`, `refute`, ...) to one of those
 classes. `frontier: [fable, opus]` names the expensive tier; an `execute`-class role on a
