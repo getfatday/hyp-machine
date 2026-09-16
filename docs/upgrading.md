@@ -268,3 +268,16 @@ model from this same table instead of a hardcoded `haiku` literal. After upgradi
 install the project-scope copy a consumer repository's own `.claude/agents/` needs (the
 surface the lab lane measured live; see docs/model-routing.md, "The compiled agent
 surface", for what remains unmeasured). Undo: revert the release's merge commit.
+
+From the release that carries the integrator (source lab `H-DRAFT-e2a5e911-om-integrate-probe`,
+kept 2026-09-15: five counted looks, A1-A5 pass in every one), the plugin ships
+`scripts/om-integrate.py` and the `integrate` skill: probe this machine for a background
+mechanism that can drive the passive feedback worker, compose exactly one on-device and one
+remote candidate from what actually probed usable, and emit -- never load or activate -- a plist
+or (delegated to the already-shipped `om-ci.py`) a GitHub Actions workflow, with a `test` step
+and a one-command `uninstall`. After upgrading: nothing runs differently -- no verb in this file
+is called by any hook or session-start step; run the `integrate` skill (or
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" probe --root . --json`) when you want to
+see what this host can offer. Undo: revert the release's merge commit, or run
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" uninstall --root .` first if you already
+had it emit something.
