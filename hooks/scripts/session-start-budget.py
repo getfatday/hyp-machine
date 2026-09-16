@@ -65,6 +65,33 @@ wrapper's own crc32+adler32 recipe (`state_dir()`'s, never a hashlib import) whe
 resolves, else the old `sha256(root)[:16]` fallback -- mirroring the shipped worker's own
 `_resolve_inbox_root` branch exactly, so the pointer lands where a default drain actually looks.
 
+ON patch (H-DRAFT-3aef12a5-om-startup-reading-surface, the reading surface): inside `cmd_run`,
+right after `do_also_wake` forks the side-runner and before the primary command's own budget
+wait, `print_om_feedback(sd, also)` reads the side-runner's own cached `<name2>.out` (the SAME
+`sd = state_dir(root)` this wrapper already keys every name under -- never the worker's own
+sha256/common_dir inbox key, so a session in the wrong worktree never shows another root's
+reading) and prints at most 8 of its lines, each prefixed `OM-FEEDBACK: `, the first carrying
+`age=<seconds>` (the file's mtime age) ahead of its own text. A ninth `OM-FEEDBACK: ... <n>
+more` line is added when the file holds more than 8 lines; nothing is printed when the file is
+absent or empty. Every line is passed through `_feedback_forbidden`, the SAME two structural
+checks `scripts/om-worker.py`'s own `_forbidden_hit` applies before it ever writes a row --
+three forbidden JSON-shaped keys (`tool_input`, `prompt`, `last_assistant_message`) and the
+`/users/`/`$home` path markers, case-folded -- never the worker's fixture-only canary literals
+(a startup print must hold a class of leak, not memorize a test vocabulary); a line that
+matches either check is replaced with exactly one literal `<held: 1 line>` line, every other
+line printed unchanged. No new process, no subprocess and no interpreter start: the read and
+the print happen inside this wrapper's own foreground path, the same one `do_also_wake`
+already runs on. The `om-worker` name joins the `resume|clear|compact` row's argument list in
+`hooks.json` so `cmd_cached`'s existing loop reports it in the `SESSION-START-CACHE:` line the
+same way it reports every other name.
+
+Fixture fix round 1 (REFUTE-FIXTURE-1 finding 1): `cached` was claimed to need no code change,
+but a `cached` replay over a planted canary printed it verbatim (`cmd_cached` dumps every named
+`.out` raw) -- the surface's content-free claim applies to every path that shows the
+`om-worker` reading, not only `run`'s. `cmd_cached` now passes the `om-worker` name's bytes
+through `_held_bytes`, the same per-line structural hold `print_om_feedback` applies, before
+printing them; every other cached name is untouched (this lane owns no claim about them).
+
 Stale-lock amendment (same lane): the RUNNER script now also captures `ps -o lstart= -p "$$"`
 into a third pid-file line, and `reclaim_if_stale` reads it: a lock whose recorded pid is
 alive AND whose current `ps -o lstart=` still matches the recorded one is never reclaimed by
@@ -627,6 +654,58 @@ def do_also_wake(also, root, sd, source, raw, t_epoch):
         return
 
 
+# ------------------------------------------------------------- the reading surface (ON, this lane)
+FEEDBACK_MAX_LINES = 8
+FEEDBACK_PREFIX = "OM-FEEDBACK: "
+# The SAME structural checks scripts/om-worker.py's own _forbidden_hit applies before it ever
+# writes a row -- reused verbatim so this surface holds a CLASS of leak, never the fixture's
+# own test-only canary literals (a production redactor must not memorize a test vocabulary).
+FEEDBACK_FORBIDDEN_KEYS = ("tool_input", "prompt", "last_assistant_message")
+FEEDBACK_FORBIDDEN_MARKERS = ("/users/", "$home")
+
+
+def _feedback_forbidden(line):
+    for k in FEEDBACK_FORBIDDEN_KEYS:
+        if ('"%s"' % k) in line:
+            return True
+    low = line.lower()
+    for m in FEEDBACK_FORBIDDEN_MARKERS:
+        if m in low:
+            return True
+    return False
+
+
+def print_om_feedback(sd, also):
+    """Prints the side-runner's cached `<name2>.out` (this wrapper's OWN state key -- never the
+    worker's own inbox key) at most 8 lines, each prefixed `OM-FEEDBACK: `, the first carrying
+    `age=<seconds>` ahead of its own text; a ninth `... <n> more` line when the file holds more
+    than 8; nothing when the file is absent or empty. Never raises past this function (a hook
+    must never crash a session start over a feedback side-channel it did not ask to see)."""
+    if not also:
+        return
+    also_name, _also_cmd = also
+    try:
+        path = os.path.join(sd, also_name + ".out")
+        data = read_text(path)
+        if not data:
+            return
+        lines = data.splitlines()
+        if not lines:
+            return
+        a = age_s(path)
+        shown = lines[:FEEDBACK_MAX_LINES]
+        for i, line in enumerate(shown):
+            text = "<held: 1 line>" if _feedback_forbidden(line) else line
+            if i == 0:
+                out("%sage=%d %s\n" % (FEEDBACK_PREFIX, a or 0, text))
+            else:
+                out("%s%s\n" % (FEEDBACK_PREFIX, text))
+        if len(lines) > FEEDBACK_MAX_LINES:
+            out("%s... %d more\n" % (FEEDBACK_PREFIX, len(lines) - FEEDBACK_MAX_LINES))
+    except Exception:
+        return
+
+
 def cmd_run(name, command, t_start, also=None):
     t_epoch = time.time()
     try:
@@ -638,6 +717,8 @@ def cmd_run(name, command, t_start, also=None):
     sd = state_dir(root)
     # the wake: after the root is resolved, before any waiting on the primary runner below
     do_also_wake(also, root, sd, source, raw, t_epoch)
+    # the reading surface: after the fork, before the wrapper's own output (this lane)
+    print_om_feedback(sd, also)
     budget = budget_s()
     lock = os.path.join(sd, name + ".lock")
     out_p = os.path.join(sd, name + ".out")
@@ -709,6 +790,28 @@ def cmd_run(name, command, t_start, also=None):
     return 0
 
 
+def _held_bytes(data):
+    """Fixture fix round 1 (H-DRAFT-3aef12a5..., REFUTE-FIXTURE-1 finding 1): the SAME
+    per-line hold `print_om_feedback` applies, over raw bytes rather than a prefixed line list
+    -- `cmd_cached` dumps every named `.out` verbatim, and an ON `cached` replay over a planted
+    canary printed it unfiltered (probe B). Line endings are preserved so the byte count a
+    caller might depend on stays close to the original; only a forbidden line's TEXT changes."""
+    try:
+        text = data.decode("utf-8", "replace")
+    except Exception:
+        return data
+    out_lines = []
+    for line in text.splitlines(True):
+        ending = ""
+        body = line
+        for e in ("\r\n", "\n", "\r"):
+            if body.endswith(e):
+                body, ending = body[: -len(e)], e
+                break
+        out_lines.append(("<held: 1 line>" if _feedback_forbidden(body) else body) + ending)
+    return "".join(out_lines).encode("utf-8")
+
+
 def cmd_cached(names):
     try:
         raw = sys.stdin.buffer.read().decode("utf-8", "replace")
@@ -722,7 +825,10 @@ def cmd_cached(names):
         if data is None:
             none.append(name)
             continue
-        out(data)
+        # Fixture fix round 1 (finding 1): `om-worker`'s cached reading is the SAME
+        # content-free surface as the startup print, so it passes through the SAME hold --
+        # never the fixture's canary literals verbatim, the same structural checks only.
+        out(_held_bytes(data) if name == "om-worker" else data)
         have.append("%s %ds" % (name, age_s(os.path.join(sd, name + ".out")) or 0))
     out("SESSION-START-CACHE: source=%s; readings: %s; none: %s; heavy work runs on startup only\n"
         % (source, ", ".join(have) if have else "-", ", ".join(none) if none else "-"))

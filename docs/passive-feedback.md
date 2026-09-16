@@ -151,6 +151,44 @@ cold-verified (`VERDICT.json`, `VERIFY.md`, journal fragment 0547). The keep cla
 same-session freshness, the row's own content, how a reading is shown, or landing under load
 beyond the measured margins above.
 
+## The reading surface
+
+Every session start that runs the wake (see "The startup wake" above) also shows you, right
+after the fork and before the wrapper's own output, the LAST reading the side-runner already
+landed for this checkout: at most 8 lines from `<state>/<key>/om-worker.out` (this wrapper's
+OWN state key, `state_dir(root)` -- never the worker's separate sha256/`common_dir` inbox key,
+so a session in another worktree or repository never shows another root's reading), each
+prefixed `OM-FEEDBACK: `, the first carrying `age=<seconds>` (the file's mtime age) ahead of
+its own text. A ninth `OM-FEEDBACK: ... <n> more` line is added when the reading holds more
+than 8 lines; nothing prints when the file is absent or empty -- a fresh checkout, or one that
+has not yet completed a second startup, shows nothing extra. Every line passes through the SAME
+two structural checks `scripts/om-worker.py`'s own `_forbidden_hit` applies before it ever
+writes a row -- the three forbidden JSON-shaped keys (`tool_input`, `prompt`,
+`last_assistant_message`) and the `/users/`/`$home` path markers, case-folded -- never the
+worker's own test-only canary vocabulary, so the hold catches a CLASS of leak rather than
+memorizing a fixture's literals; a line that matches either check prints as one literal
+`<held: 1 line>` line instead of its own text, every other line printed unchanged. No new
+process: the read and the print happen inside the wrapper's own foreground path, the same one
+`do_also_wake` already runs on, so they cost nothing beyond the fork the wake already pays for
+(one fork per startup, exactly as before this lane).
+
+The `resume|clear|compact` `SessionStart` row's `cached` call gains the same `om-worker` name
+the other cached readings already carry, so `cmd_cached` reports it in its own
+`SESSION-START-CACHE:` line the same way it reports every other name -- and applies the SAME
+per-line hold before printing its body: a `cached` replay of a 12-line reading prints all 12
+lines (not capped at 8 -- that bound is `print_om_feedback`'s own, startup-only) plus the
+`SESSION-START-CACHE:` summary line, each held line replaced the same way. A session working in
+a DIFFERENT worktree or repository shows nothing for `om-worker` on either route: its own state
+key resolves to a different `<key>` directory, which never holds another checkout's reading.
+
+Evidence: lab `H-DRAFT-3aef12a5-om-startup-reading-surface`, kept 2026-09-15 -- five counted
+looks, A1-A5 passing in every one, the frozen SPRT walking to 2.9389 over the 2.8904 promote
+bound, cold-verified (`VERDICT.json`, `VERIFY.md`, journal fragment
+`0553-3aef12a5-verdict.md`; five cold fixture refute rounds preceded the looks). The keep claims
+nothing about the judgment tier reading these lines, and nothing about a reading landing
+same-session (see "The startup wake" above for that caveat, which this surface inherits
+unchanged).
+
 ## Running it by hand
 
 ```
@@ -560,6 +598,17 @@ worker (carried finding, `VERIFY.md` section 10): `free_bytes` crashing `statvfs
 consumer whose `ledger/` does not exist yet -- the shipped version already walks up to the nearest
 existing ancestor directory (landed by the outbox carry-forward lane's own fix rounds, unrelated to
 this one); no fix was needed here.
+
+`H-DRAFT-3aef12a5-om-startup-reading-surface`'s kept bytes are the lane fixture's
+`impl/session-start-budget.py` and `impl/hooks.json`, patched onto this release's own copies --
+byte-identical between the lane's pinned 0.32.0 baseline and this release (`patch_on.py`'s own
+`BASELINE_SHA256` check), so the port applied with no wrapper-side merge and no drift to
+resolve. `scripts/om-worker.py`'s `CANARY_KEYS_FORBIDDEN` and its two path markers are asserted,
+not merely assumed, equal to the two constants this surface mirrors
+(`scripts/selftest-session-start-budget.py`) -- the same "mirrored, not imported" shape the
+commit path's own hold already uses (see above), for the same reason: the wrapper's own minimal
+import set (`os`, `sys`, `time`, `zlib`, `hashlib`) must not grow to import `scripts/om-worker.py`
+on every session's hot path.
 
 Undo: revert the release's merge commit. Rows already written are plain JSON lines in your ledger;
 the attribute row is plain text in your `.gitattributes`; a staged-but-uncommitted ledger unstages

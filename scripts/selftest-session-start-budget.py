@@ -48,6 +48,37 @@ the fixture's own approach):
   ported-file-stdlib-only         the installed wrapper imports only os, sys, time, zlib, hashlib
   installed-copy-executable       the file this test exercises is the one hooks.json actually runs
 
+  reading-absent-no-feedback-lines         no om-worker.out at all: no OM-FEEDBACK: line printed
+  reading-empty-no-feedback-lines          an empty om-worker.out: no OM-FEEDBACK: line printed
+  reading-3-lines-prints-3 / reading-8-lines-prints-8   a reading of 3 (or 8) lines prints
+                                 exactly that many OM-FEEDBACK: lines, the first carrying
+                                 age=<seconds>, no more-line
+  reading-12-lines-prints-8-plus-more      a 12-line reading prints 8 OM-FEEDBACK: lines plus one
+                                 OM-FEEDBACK: ... 4 more line (the cap is startup-only)
+  reading-canary-forbidden-key-held        a line containing a forbidden JSON-shaped key prints
+                                 as <held: 1 line>; every other line prints unchanged
+  reading-canary-marker-held               a line containing /Users/ or $HOME prints as
+                                 <held: 1 line>
+  wrong-key-not-shown                      a reading planted under the WORKER's own sha256/
+                                 common_dir inbox key never shows: only this wrapper's own
+                                 state_dir(root) key is read
+  reading-surface-no-added-spawn           a planted reading (any size) never adds a fork: the
+                                 primary command's own .fg row is always exactly one row
+  cached-route-holds-content               the resume|clear|compact cached row applies the SAME
+                                 hold to a planted canary reading under the om-worker name
+  cached-route-off-shaped-no-om-worker      a cached call that never names om-worker (the
+                                 pre-upgrade row shape) never mentions it
+  reading-surface-static-no-spawn-calls    print_om_feedback/_feedback_forbidden/_held_bytes
+                                 contain no call to any process-spawning name (os.fork,
+                                 subprocess, posix, _posixsubprocess, asyncio, concurrent.futures,
+                                 multiprocessing) -- a static census the source-token scan cannot
+                                 evade (REFUTE-FIXTURE-5 advisory 1)
+  reading-surface-forbidden-keys-mirror-worker-canary / -markers-mirror-worker-canary
+                                 the wrapper's mirrored FEEDBACK_FORBIDDEN_KEYS/MARKERS constants
+                                 are asserted equal to scripts/om-worker.py's own
+                                 CANARY_KEYS_FORBIDDEN/CANARY_MARKERS, parsed via ast (neither
+                                 module executed to compare) -- proves the two never drift apart
+
 Usage: python3 scripts/selftest-session-start-budget.py     exit 0 = all PASS, 1 = any FAIL
 Standard library only, Python 3.9.
 """
@@ -267,6 +298,208 @@ def test_two_worktrees(ssb, om):
           (main_sessions, wt_sessions, err3[:200], err4[:200]))
 
 
+def _plant_reading(sd, name, lines):
+    path = os.path.join(sd, name + ".out")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + ("\n" if lines else ""))
+    return path
+
+
+def feedback_lines(out_text):
+    return [l for l in out_text.splitlines() if l.startswith("OM-FEEDBACK: ")]
+
+
+def run_reading(root, state, home, om_cmd="true", hold_om_lock=True):
+    """Runs the wrapper's `run resolver true --also om-worker <om_cmd>` once. When
+    `hold_om_lock` (default), pre-holds the om-worker spawn lock so `do_also_wake` never forks a
+    real side-runner and never touches a planted `.out` file out from under the read this test
+    is checking -- the only real spawn in every call below is the primary `true` command."""
+    sd = state_dir_for(root, state)
+    os.makedirs(sd, exist_ok=True)
+    lock = None
+    if hold_om_lock:
+        self_lstart = load_ps_fields("lstart", os.getpid())
+        lock = make_lock(sd, "om-worker", os.getpid(), self_lstart, 1)
+    try:
+        payload = json.dumps({"session_id": "s1", "transcript_path": os.path.join(state, "t.jsonl"),
+                              "cwd": root, "source": "startup"})
+        env = dict(os.environ)
+        env["HYP_STATE_DIR"] = state
+        env["HOME"] = home
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        rc, out_text, err = sh_stdin([PY, "-S", "-E", WRAPPER, "run", "resolver", "true",
+                                      "--also", "om-worker", om_cmd], root, env, payload)
+        return sd, rc, out_text, err
+    finally:
+        if lock:
+            shutil.rmtree(lock, ignore_errors=True)
+
+
+def test_reading_surface_startup(ssb):
+    base = os.path.join(TMP, "rs")
+    root = os.path.join(base, "root")
+    home = os.path.join(base, "home")
+    state = os.path.join(base, "state")
+    os.makedirs(home, exist_ok=True)
+    os.makedirs(state, exist_ok=True)
+    git_repo(root)
+
+    sd, rc, out_text, err = run_reading(root, state, home)
+    check("reading-absent-no-feedback-lines", rc == 0 and not feedback_lines(out_text), (rc, out_text, err[:200]))
+
+    _plant_reading(sd, "om-worker", [])
+    sd, rc, out_text, err = run_reading(root, state, home)
+    check("reading-empty-no-feedback-lines", rc == 0 and not feedback_lines(out_text), (rc, out_text))
+
+    _plant_reading(sd, "om-worker", ["l1", "l2", "l3"])
+    sd, rc, out_text, err = run_reading(root, state, home)
+    fb = feedback_lines(out_text)
+    check("reading-3-lines-prints-3",
+          rc == 0 and len(fb) == 3 and fb[0].startswith("OM-FEEDBACK: age=") and fb[0].endswith("l1")
+          and fb[1] == "OM-FEEDBACK: l2" and fb[2] == "OM-FEEDBACK: l3", (fb,))
+
+    _plant_reading(sd, "om-worker", ["r%d" % i for i in range(8)])
+    sd, rc, out_text, err = run_reading(root, state, home)
+    fb = feedback_lines(out_text)
+    check("reading-8-lines-prints-8", rc == 0 and len(fb) == 8 and not any("more" in l for l in fb), (fb,))
+
+    _plant_reading(sd, "om-worker", ["r%d" % i for i in range(12)])
+    sd, rc, out_text, err = run_reading(root, state, home)
+    fb = feedback_lines(out_text)
+    check("reading-12-lines-prints-8-plus-more",
+          rc == 0 and len(fb) == 9 and fb[-1] == "OM-FEEDBACK: ... 4 more", (fb,))
+
+    _plant_reading(sd, "om-worker", ['line with "prompt" key', "clean-line"])
+    sd, rc, out_text, err = run_reading(root, state, home)
+    fb = feedback_lines(out_text)
+    check("reading-canary-forbidden-key-held",
+          rc == 0 and len(fb) == 2 and fb[0].endswith("<held: 1 line>") and fb[1] == "OM-FEEDBACK: clean-line",
+          (fb,))
+
+    _plant_reading(sd, "om-worker", ["path /Users/example/secret", "found $HOME/x", "clean-line-2"])
+    sd, rc, out_text, err = run_reading(root, state, home)
+    fb = feedback_lines(out_text)
+    check("reading-canary-marker-held",
+          rc == 0 and len(fb) == 3 and fb[0].endswith("<held: 1 line>")
+          and fb[1] == "OM-FEEDBACK: <held: 1 line>" and fb[2] == "OM-FEEDBACK: clean-line-2",
+          (fb,))
+
+    decoy_root = ssb.om_state_root(root)
+    os.makedirs(decoy_root, exist_ok=True)
+    with open(os.path.join(decoy_root, "om-worker.out"), "w", encoding="utf-8") as f:
+        f.write("decoy-should-never-print\n")
+    own = os.path.join(sd, "om-worker.out")
+    if os.path.exists(own):
+        os.remove(own)
+    sd, rc, out_text, err = run_reading(root, state, home)
+    check("wrong-key-not-shown",
+          rc == 0 and "decoy-should-never-print" not in out_text and not feedback_lines(out_text), (out_text,))
+
+    _plant_reading(sd, "om-worker", ["r%d" % i for i in range(12)])
+    sd, rc, out_text, err = run_reading(root, state, home)
+    fg = read_json(os.path.join(sd, "resolver.fg"))
+    check("reading-surface-no-added-spawn", rc == 0 and len(fg) == 1 and fg[0].get("mode") == "finished", (fg,))
+
+
+def test_cached_route_holds():
+    base = os.path.join(TMP, "rs-cached")
+    root = os.path.join(base, "root")
+    home = os.path.join(base, "home")
+    state = os.path.join(base, "state")
+    os.makedirs(home, exist_ok=True)
+    os.makedirs(state, exist_ok=True)
+    git_repo(root)
+    sd = state_dir_for(root, state)
+    os.makedirs(sd, exist_ok=True)
+    _plant_reading(sd, "om-worker", ['line with "prompt" key', "clean-line"])
+
+    payload = json.dumps({"cwd": root, "source": "resume"})
+    env = dict(os.environ)
+    env["HYP_STATE_DIR"] = state
+    env["HOME"] = home
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+
+    rc, out_text, err = sh_stdin([PY, "-S", "-E", WRAPPER, "cached", "harden-check", "recovery-warning",
+                                  "dashboard-check", "resolver", "dashboard-refresh", "om-worker"],
+                                 root, env, payload)
+    check("cached-route-holds-content",
+          rc == 0 and '"prompt"' not in out_text and "<held: 1 line>" in out_text
+          and "clean-line" in out_text and "om-worker" in out_text, (out_text,))
+
+    rc, out_text, err = sh_stdin([PY, "-S", "-E", WRAPPER, "cached", "harden-check", "recovery-warning",
+                                  "dashboard-check", "resolver", "dashboard-refresh"],
+                                 root, env, payload)
+    check("cached-route-off-shaped-no-om-worker", rc == 0 and "om-worker" not in out_text, (out_text,))
+
+
+BANNED_SPAWN_NAMES = {
+    "fork", "forkpty", "posix_spawn", "posix_spawnp", "system", "popen", "spawnv", "spawnve",
+    "spawnl", "spawnle", "execv", "execve", "execvp", "execvpe", "startfile",
+}
+BANNED_SPAWN_MODULES = {"subprocess", "posix", "_posixsubprocess", "asyncio", "concurrent",
+                        "multiprocessing", "threading"}
+
+
+def _call_name_chain(node):
+    parts = []
+    f = node.func
+    while isinstance(f, ast.Attribute):
+        parts.append(f.attr)
+        f = f.value
+    if isinstance(f, ast.Name):
+        parts.append(f.id)
+    return list(reversed(parts))
+
+
+def test_reading_surface_static_census():
+    src = open(WRAPPER, "r", encoding="utf-8").read()
+    tree = ast.parse(src)
+    targets = {"print_om_feedback", "_feedback_forbidden", "_held_bytes"}
+    found = set()
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in targets:
+            found.add(node.name)
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call):
+                    chain = _call_name_chain(sub)
+                    if any(part in BANNED_SPAWN_MODULES or part in BANNED_SPAWN_NAMES for part in chain):
+                        offenders.append((node.name, chain))
+    check("reading-surface-static-no-spawn-calls",
+          found == targets and not offenders, (sorted(found), offenders))
+
+
+def module_level_tuple_constant(path, name):
+    """The literal tuple a module-level `<name> = (...)` assignment holds, parsed with `ast`
+    (never imported, so this selftest never executes either module to compare them). None if
+    the file has no such top-level assignment. Same approach
+    `scripts/selftest-commit-backstop.py` uses for its own mirrored constant."""
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        if node.targets[0].id != name:
+            continue
+        return ast.literal_eval(node.value)
+    return None
+
+
+def test_reading_surface_mirrors_worker_canary():
+    wrapper_keys = module_level_tuple_constant(WRAPPER, "FEEDBACK_FORBIDDEN_KEYS")
+    wrapper_markers = module_level_tuple_constant(WRAPPER, "FEEDBACK_FORBIDDEN_MARKERS")
+    worker_keys = module_level_tuple_constant(WORKER, "CANARY_KEYS_FORBIDDEN")
+    worker_markers = module_level_tuple_constant(WORKER, "CANARY_MARKERS")
+    check("reading-surface-forbidden-keys-mirror-worker-canary",
+          wrapper_keys is not None and wrapper_keys == worker_keys,
+          "wrapper=%r worker=%r" % (wrapper_keys, worker_keys))
+    check("reading-surface-forbidden-markers-mirror-worker-canary",
+          wrapper_markers is not None and wrapper_markers == worker_markers,
+          "wrapper=%r worker=%r" % (wrapper_markers, worker_markers))
+
+
 def test_ported_file():
     src = open(WRAPPER, "r", encoding="utf-8").read()
     tree = ast.parse(src)
@@ -288,6 +521,10 @@ def main():
         om = import_module("om_under_test", WORKER)
         test_lock_replay(ssb)
         test_two_worktrees(ssb, om)
+        test_reading_surface_startup(ssb)
+        test_cached_route_holds()
+        test_reading_surface_static_census()
+        test_reading_surface_mirrors_worker_canary()
         test_ported_file()
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
