@@ -669,7 +669,8 @@ same probe rows: `authors_90d` > 1 and class `shared-subscription-token` prints 
 `OFFER` lines (`api-key repository-owned`, `federation workload-identity`, `platform-identity
 oidc`, in that order), `emit` writes no `credential` entry into `.claude/om-offload.lock.json`
 for that tier and exits 3; `authors_90d` = 1, or any of the three offered classes, proceeds
-silently and `emit`'s lock carries `credential: {tier, class, allowed: true}`. An OAuth token
+with no refusal (a single CREDENTIAL-OK line) and `emit`'s lock carries `credential: {tier,
+class, allowed: true}`. An OAuth token
 from `claude setup-token` is tied to the subscription of the person who ran it, so wiring it into
 a repository more than one person commits to makes every model call by every author look like
 one person's -- the attribution failure GOVERNANCE.md's Recoverability invariant names, and its

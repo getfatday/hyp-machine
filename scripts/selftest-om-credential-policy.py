@@ -194,12 +194,78 @@ def b3_emit_cli(scratch):
           lock1.get("credential", {}).get("allowed") is True, lock1)
 
 
+def b4_compose_cli(scratch):
+    root2 = build_consumer_with_authors(os.path.join(scratch, "b4-two"), 2)
+    p2 = run_integrate(["compose", "--root", root2,
+                       "--tier", "b4-tier", "--credential-class", "shared-subscription-token"],
+                      cwd=root2)
+    check("b4-two-authors-compose-exit-3", p2.returncode == 3,
+          (p2.returncode, p2.stdout[-400:], p2.stderr[-300:]))
+    check("b4-two-authors-compose-refused-line",
+          sum(1 for l in p2.stdout.splitlines() if l.startswith("CREDENTIAL-REFUSED")) == 1,
+          p2.stdout)
+
+    root1 = build_consumer_with_authors(os.path.join(scratch, "b4-one"), 1)
+    p1 = run_integrate(["compose", "--root", root1,
+                       "--tier", "b4-tier", "--credential-class", "shared-subscription-token"],
+                      cwd=root1)
+    check("b4-one-author-compose-exit-0", p1.returncode == 0,
+          (p1.returncode, p1.stdout[-400:], p1.stderr[-300:]))
+
+
+def b5_half_request_cli(scratch):
+    root = build_consumer_with_authors(os.path.join(scratch, "b5-root"), 1)
+    p_tier_only = run_integrate(["compose", "--root", root, "--tier", "b5-tier"], cwd=root)
+    check("b5-tier-only-exit-2", p_tier_only.returncode == 2, p_tier_only.stdout)
+    p_class_only = run_integrate(["compose", "--root", root,
+                                 "--credential-class", "shared-subscription-token"], cwd=root)
+    check("b5-class-only-exit-2", p_class_only.returncode == 2, p_class_only.stdout)
+
+
+def b6_half_request_hyp_json(scratch):
+    root = build_consumer_with_authors(os.path.join(scratch, "b6-root"), 1)
+    claude_dir = os.path.join(root, ".claude")
+    os.makedirs(claude_dir, exist_ok=True)
+    with open(os.path.join(claude_dir, "hyp.json"), "w", encoding="utf-8") as fh:
+        json.dump({"om_credential_tier": "b6-tier"}, fh)
+    agents_dir = os.path.join(scratch, "b6-agents")
+    p = run_integrate(["emit", "--root", root, "--agents-dir", agents_dir,
+                      "--plugin-scripts", HERE], cwd=root)
+    check("b6-half-request-diagnostic-printed",
+          "CREDENTIAL-UNDECIDABLE half request" in p.stdout, p.stdout)
+    check("b6-half-request-exit-0", p.returncode == 0, (p.returncode, p.stdout[-400:]))
+    lock_path = os.path.join(root, ".claude", "om-offload.lock.json")
+    lock = json.load(open(lock_path)) if os.path.isfile(lock_path) else {}
+    check("b6-half-request-no-credential-in-lock", "credential" not in lock, lock)
+
+
+def b7_policy_missing_void(scratch):
+    vendor_dir = os.path.join(scratch, "b7-vendor")
+    os.makedirs(vendor_dir, exist_ok=True)
+    shutil.copy(OM_INTEGRATE, os.path.join(vendor_dir, "om-integrate.py"))
+    # deliberately do NOT copy om-credential-policy.py beside it
+    om_integrate_missing_policy = _load_module(os.path.join(vendor_dir, "om-integrate.py"),
+                                                "om_integrate_selftest_missing_policy")
+    decision = om_integrate_missing_policy.compose([synthetic_row(2)],
+                                                    credential_class="shared-subscription-token",
+                                                    tier="b7-tier")
+    cred = decision.get("credential", {})
+    check("b7-policy-missing-exit-2", cred.get("exit") == 2, cred)
+    check("b7-policy-missing-allowed-false", cred.get("allowed") is False, cred)
+    check("b7-policy-missing-typed-void",
+          any(l.startswith("void: policy-missing") for l in cred.get("lines", [])), cred)
+
+
 def main():
     scratch = tempfile.mkdtemp(prefix="selftest-om-credential-policy-")
     try:
         b1_standalone_check(scratch)
         b2_compose_import()
         b3_emit_cli(scratch)
+        b4_compose_cli(scratch)
+        b5_half_request_cli(scratch)
+        b6_half_request_hyp_json(scratch)
+        b7_policy_missing_void(scratch)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 

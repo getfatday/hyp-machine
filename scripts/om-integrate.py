@@ -439,24 +439,45 @@ def _print_lying_rows(rows):
 
 def _load_credential_policy():
     """Imports `om-credential-policy.py` by path (never re-implemented here) the same way the
-    source lane's fixture shim imported the pinned `compose` it wrapped."""
+    source lane's fixture shim imported the pinned `compose` it wrapped. Returns
+    `(module, None)` on success, or `(None, "void: policy-missing <path>")` if the file is
+    missing or unreadable -- never an uncaught traceback."""
     path = os.path.join(HERE, "om-credential-policy.py")
-    spec = importlib.util.spec_from_file_location("om_credential_policy_pinned", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    try:
+        spec = importlib.util.spec_from_file_location("om_credential_policy_pinned", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except OSError as exc:
+        return None, "void: policy-missing %s (%s)" % (path, exc)
+    return mod, None
+
+
+def _half_credential_request(args):
+    """True (and prints a typed diagnostic) when exactly one of the CLI's `--tier` /
+    `--credential-class` flags was given -- a cold caller's half request must error, never
+    silently discard the one flag it did pass."""
+    if (args.tier is None) != (args.credential_class is None):
+        print("om-integrate: --tier and --credential-class must be given together (half "
+              "request: tier=%r class=%r)" % (args.tier, args.credential_class))
+        return True
+    return False
 
 
 def _consumer_credential_request(root):
     """The consumer's own recorded request for a model-calling tier's credential --
     `.claude/hyp.json` `om_credential_tier` / `om_credential_class`. Both keys must be present
-    together, or neither is treated as a request (never a half-request, never a default class
-    invented here). No consumer sets these keys today -- no handle in this file calls a model
-    yet -- so this reads `(None, None)` on every repository until one does."""
+    together, or neither is treated as a request (never a default class invented here). A
+    half request (exactly one key set) prints a typed `CREDENTIAL-UNDECIDABLE half request`
+    line instead of being silently dropped. No consumer sets these keys today -- no handle in
+    this file calls a model yet -- so this reads `(None, None)` on every repository until one
+    does."""
     cfg = _consumer_config(root)
     tier = cfg.get("om_credential_tier")
     credential_class = cfg.get("om_credential_class")
     if not tier or not credential_class:
+        if tier or credential_class:
+            print("CREDENTIAL-UNDECIDABLE half request: .claude/hyp.json om_credential_tier=%r "
+                  "om_credential_class=%r" % (tier, credential_class))
         return None, None
     return tier, credential_class
 
@@ -499,14 +520,20 @@ def compose(rows, credential_class=None, tier=None):
             break
     result = {"on_device": on_device, "remote": remote}
     if tier and credential_class:
-        policy = _load_credential_policy()
-        lines, code = policy.evaluate(rows, tier, credential_class)
-        result["credential"] = {"tier": tier, "class": credential_class,
-                                "allowed": code == 0, "exit": code, "lines": lines}
+        policy, policy_void = _load_credential_policy()
+        if policy_void:
+            result["credential"] = {"tier": tier, "class": credential_class,
+                                    "allowed": False, "exit": 2, "lines": [policy_void]}
+        else:
+            lines, code = policy.evaluate(rows, tier, credential_class)
+            result["credential"] = {"tier": tier, "class": credential_class,
+                                    "allowed": code == 0, "exit": code, "lines": lines}
     return result
 
 
 def cmd_compose(args):
+    if _half_credential_request(args):
+        return 2
     rows = probe_all(args.root, args.remote_host)
     _print_lying_rows(rows)
     tier, credential_class = args.tier, args.credential_class
@@ -520,6 +547,9 @@ def cmd_compose(args):
     _print_probe_voids(rows)
     if result["on_device"] == "none":
         print("om-integrate: no probe-verified on-device handle; nothing to compose (handle=none)")
+    cred = result.get("credential")
+    if cred and not cred.get("allowed"):
+        return cred["exit"]
     return 0
 
 
@@ -673,6 +703,8 @@ def emit(root, agents_dir, worker_path, plugin_scripts, remote_host="github.com"
 
 
 def cmd_emit(args):
+    if _half_credential_request(args):
+        return 2
     launch_agents_dir = os.path.realpath(os.path.expanduser("~/Library/LaunchAgents"))
     if os.path.realpath(args.agents_dir) == launch_agents_dir:
         print("om-integrate: refusing --agents-dir ~/Library/LaunchAgents -- staging a plist "
@@ -698,7 +730,7 @@ def cmd_emit(args):
               "~/Library/LaunchAgents/%s.plist" % (plist_path, label))
     cred = result["decision"].get("credential")
     if cred and not cred.get("allowed"):
-        return 3
+        return cred["exit"]
     return 0
 
 
