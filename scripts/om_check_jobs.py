@@ -5,11 +5,12 @@ byte-for-byte by the renderer (`render_yaml`, emitted into `.github/workflows/om
 ci-tier0`, which walks `iter_steps()` under the CI-runner constraint). Self-test equals CI by
 construction: both read this one list, never a second copy. This file is ALSO vendored
 byte-for-byte into every consumer's `.github/om-scripts/om_check_jobs.py`; nothing the rendered
-workflow currently shells out to imports it there (each glue script carries its own inline copy
-of the one config rule it needs instead, mirroring how there is no `${CLAUDE_PLUGIN_ROOT}` on a
-GitHub-hosted runner) -- it rides along so a future glue script needing the shared table/config
-constants has something to import without a plugin install, not because anything on the runner
-imports it today (advisory A4, ship fix round 1).
+workflow currently shells out to imports it there (the two glue scripts, `om_check_report_stale.py`
+and `om_check_regen_commit.py`, instead load the `om-worker.py` vendored beside them and call its
+own path rules -- `_model_trees`, `ledger_rel`, `_compiled_staleness` -- rather than mirroring any
+config rule inline; ship fix round 5) -- it rides along so a future glue script needing the shared
+table/config constants has something to import without a plugin install, not because anything on
+the runner imports it today (advisory A4, ship fix round 1).
 
 Ported from the lab keep (getfatday/cause-n-effect H-DRAFT-a28b91c9-om-ci-tier0, kept
 2026-09-15: five counted looks, A1-A5 pass in every one, SPRT llr 2.9389 over the 2.8904 promote

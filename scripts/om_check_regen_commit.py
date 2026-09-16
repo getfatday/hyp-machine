@@ -9,9 +9,9 @@ regenerate the compiled artifacts, stages ONLY `compiled/**` (never the model di
 docs/passive-feedback.md, "The catalogue projection"; `git add` on a gitignored path would
 refuse without `-f` anyway, and this script never forces it), and commits exactly once IF that
 staged diff is non-empty. Never pushes -- the workflow's own "push regenerated commit if any"
-step does that with the checkout-persisted `GITHUB_TOKEN`. Exits 0 always; failures are
-reported on the `COMMIT:` line, never raised, so one missing `compile_command` reads as "no
-commit", not a crash.
+step does that with the checkout-persisted `GITHUB_TOKEN`. Exits 0 on every no-commit shape (each
+is reported on the `COMMIT:` line, so one missing `compile_command` reads as "no commit", not a
+crash); a failed `git commit` raises and fails the step.
 
 Loop guard (belt and suspenders): even though the workflow's `if: actor != bot` step predicate
 is meant to keep this script from running at all when `GITHUB_ACTOR` is the bot identity, this
