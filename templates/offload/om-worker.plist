@@ -22,7 +22,7 @@
 	<array>
 		<string>{inbox}</string>
 	</array>
-	<key>StartInterval</key>
+{env_block}	<key>StartInterval</key>
 	<integer>1800</integer>
 	<key>StandardOutPath</key>
 	<string>{state_dir}/launchd.out.log</string>

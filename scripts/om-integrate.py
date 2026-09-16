@@ -53,16 +53,25 @@ diff:
    default from `.claude/hyp.json` / this file's own directory instead of being required on every
    call (`hyp_config.resolve_root`, the plugin's own path-resolution contract), and `emit` no
    longer takes a `--workflows-dir` (the om-ci.py delegation computes that path itself).
+5. `compose` refuses a lying probe row (`usable: true` with an empty `probe_cmd` or a non-zero
+   `exit`) instead of trusting the boolean (VERIFY.md finding 11 of that lane); `report` also
+   checks the recorded plist's absolute `ProgramArguments` paths still exist; `uninstall` removes
+   the `test` verb's `.claude/om-state` scratch and the emptied `.github/workflows` directory and
+   prints the `~/Library/LaunchAgents/<label>` unload+rm line (the activation step's exact
+   reversal); a corrupt lock / hyp.json / --installed-plugins file is a typed
+   `void: corrupt-json <path>` (exit 2, nothing changed), never a traceback.
 """
 import argparse
 import hashlib
 import json
 import os
+import plistlib
 import shutil
 import socket
 import subprocess
 import sys
 import zlib
+from xml.sax.saxutils import escape as _xml_escape
 
 SCHEMA = 1
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -100,6 +109,17 @@ def _run(cmd, timeout=8, env=None, cwd=None):
         return {"exit": None, "stdout": "", "stderr": "", "void": "not-found"}
     except OSError as exc:
         return {"exit": None, "stdout": "", "stderr": "", "void": "os-error:%s" % type(exc).__name__}
+
+
+def _load_json(path):
+    """(data, None) when `path` parses, else (None, "void: corrupt-json <path>") -- a corrupt
+    lock / hyp.json / --installed-plugins file is a typed void the caller prints and exits 2 on,
+    never a traceback and never silently rewritten."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh), None
+    except ValueError:
+        return None, "void: corrupt-json %s" % path
 
 
 def authors_90d(root):
@@ -382,10 +402,32 @@ def cmd_probe(args):
 
 
 # --------------------------------------------------------------------------- compose
+def _verified_usable(row):
+    """`usable` counts for compose only when the row's own probe backs the claim: `usable` true
+    AND a non-empty `probe_cmd` AND recorded `exit` 0. A probe that lies (usable true, exit
+    non-zero, or no probe at all) is refused, never composed -- the source lane's A1 discard-bank
+    case (VERIFY.md finding 11)."""
+    return bool(row.get("usable")) and bool(row.get("probe_cmd")) and row.get("exit") == 0
+
+
+def lying_rows(rows):
+    """Handles whose row claims `usable` true but fails `_verified_usable`."""
+    return [r["handle"] for r in rows if r.get("usable") and not _verified_usable(r)]
+
+
+def _print_lying_rows(rows):
+    for r in rows:
+        if r.get("usable") and not _verified_usable(r):
+            print("om-integrate: refused %s: usable claimed without a probe exit 0 (probe_cmd=%r exit=%r)"
+                  % (r["handle"], r.get("probe_cmd"), r.get("exit")))
+
+
 def compose(rows):
     """Pick exactly one on-device handle and at most one remote handle from the `usable` rows
-    ALONE -- covariates (`authors_90d`, `disk`, `host_key`) are never a compose input."""
-    usable = {r["handle"]: r["usable"] for r in rows}
+    ALONE -- covariates (`authors_90d`, `disk`, `host_key`) are never a compose input; a
+    `usable: true` row whose `probe_cmd` is empty or whose `exit` is not 0 is refused
+    (`_verified_usable`)."""
+    usable = {r["handle"]: _verified_usable(r) for r in rows}
     on_device = "none"
     for h in ON_DEVICE_ORDER:
         if h == "none":
@@ -405,6 +447,7 @@ def compose(rows):
 
 def cmd_compose(args):
     rows = probe_all(args.root, args.remote_host)
+    _print_lying_rows(rows)
     result = compose(rows)
     print(json.dumps(result, sort_keys=True))
     _print_probe_voids(rows)
@@ -428,7 +471,10 @@ def _emit_launchd_plist(root, agents_dir, worker_path, plugin_scripts):
     """Writes (never loads) the `launchd-queue` plist. Returns its path. `QueueDirectories` and
     the log paths name `worker_state_root(root)` -- the same directory the worker's own default
     `drain` reads from -- so `ProgramArguments` runs plain `drain --root ... --plugin-scripts ...`
-    with no `--inbox` override, matching what a real launchd load would actually fire against."""
+    with no `--inbox` override, matching what a real launchd load would actually fire against.
+    When `HYP_STATE_DIR` is set at emit time the plist carries it as `EnvironmentVariables`, so
+    the worker launchd starts drains the override directory `QueueDirectories` watches instead
+    of `~/.hyp-state`."""
     agents_dir = os.path.abspath(agents_dir)
     os.makedirs(agents_dir, exist_ok=True)
     state_dir = worker_state_root(root)
@@ -436,11 +482,16 @@ def _emit_launchd_plist(root, agents_dir, worker_path, plugin_scripts):
     os.makedirs(state_dir, exist_ok=True)
     label = "com.hyp-machine.om-worker.%s" % _rootkey(root)
     plist_path = os.path.join(agents_dir, label + ".plist")
+    override = os.environ.get("HYP_STATE_DIR")
+    env_block = ""
+    if override:
+        env_block = ("\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>HYP_STATE_DIR</key>\n"
+                     "\t\t<string>%s</string>\n\t</dict>\n" % _xml_escape(os.path.abspath(override)))
     body = _read_plist_template().format(
         label=label, python3=os.path.abspath(shutil.which("python3") or "/usr/bin/python3"),
         worker=os.path.abspath(worker_path), root=os.path.abspath(root),
         plugin_scripts=os.path.abspath(plugin_scripts), inbox=os.path.abspath(inbox),
-        state_dir=os.path.abspath(state_dir))
+        state_dir=os.path.abspath(state_dir), env_block=env_block)
     with open(plist_path, "w", encoding="utf-8") as fh:
         fh.write(body)
     return plist_path
@@ -471,6 +522,7 @@ def _emit_ci_tier0(root, plugin_scripts):
 
 def emit(root, agents_dir, worker_path, plugin_scripts, remote_host="github.com"):
     rows = probe_all(root, remote_host)
+    _print_lying_rows(rows)
     decision = compose(rows)
     emitted = []
     ci_relpaths = []
@@ -499,15 +551,23 @@ def emit(root, agents_dir, worker_path, plugin_scripts, remote_host="github.com"
     hyp_json_path = os.path.join(root, HYP_JSON_REL)
     os.makedirs(os.path.dirname(hyp_json_path), exist_ok=True)
     data = {}
+    hyp_void = None
     if os.path.isfile(hyp_json_path):
-        try:
-            data = json.load(open(hyp_json_path))
-        except ValueError:
+        data, hyp_void = _load_json(hyp_json_path)
+    if hyp_void:
+        print(hyp_void + " (om_offload not recorded; fix the file and re-run emit)")
+    else:
+        if not isinstance(data, dict):
             data = {}
-    if decision["on_device"] != "none" or decision["remote"] != "none":
-        data["om_offload"] = decision["on_device"] if decision["on_device"] != "none" else decision["remote"]
-    with open(hyp_json_path, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=1, sort_keys=True)
+        chosen = None
+        if decision["on_device"] != "none" or decision["remote"] != "none":
+            chosen = decision["on_device"] if decision["on_device"] != "none" else decision["remote"]
+        # written only when the value actually changes: a tracked hyp.json is not reformatted by
+        # an emit that decided the same thing, and a no-op re-run touches nothing.
+        if chosen is not None and data.get("om_offload") != chosen:
+            data["om_offload"] = chosen
+            with open(hyp_json_path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=1, sort_keys=True)
 
     return {"decision": decision, "emitted": emitted, "lock": lock_path,
             "probe_voids": lock["probe_voids"]}
@@ -689,10 +749,13 @@ def _worktrees_sharing(root):
 
 def _mixed_installs_line(root, installed_plugins):
     """The `mixed-installs: <v1>,<v2> (<checkout>=<v> ...)` line when the checkouts sharing this
-    root's git common dir carry more than one plugin version in `installed_plugins`, else None."""
+    root's git common dir carry more than one plugin version in `installed_plugins`, else None
+    (or the `void: corrupt-json` line when the file does not parse)."""
     if not installed_plugins or not os.path.isfile(installed_plugins):
         return None
-    data = json.load(open(installed_plugins))
+    data, void = _load_json(installed_plugins)
+    if void:
+        return void
     trees = _worktrees_sharing(root)
     versions = {}
     for wt in trees:
@@ -706,6 +769,26 @@ def _mixed_installs_line(root, installed_plugins):
     return None
 
 
+def _missing_plist_paths(lock):
+    """Absolute paths a recorded plist's `ProgramArguments` name that no longer exist on disk,
+    plus the plist itself when it is gone or unreadable: a `holds` that only re-probes the
+    substrate would miss a plugin-cache upgrade that removed the worker the plist points at."""
+    missing = []
+    for path in lock.get("emitted", []):
+        if not str(path).endswith(".plist"):
+            continue
+        try:
+            with open(path, "rb") as fh:
+                data = plistlib.load(fh)
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            missing.append(path)
+            continue
+        for arg in data.get("ProgramArguments", []):
+            if isinstance(arg, str) and os.path.isabs(arg) and not os.path.exists(arg):
+                missing.append(arg)
+    return missing
+
+
 def cmd_report(args):
     root = os.path.abspath(args.root)
     # the mixed-installs drift report runs FIRST, independent of whether this root carries a
@@ -717,17 +800,25 @@ def cmd_report(args):
     if not os.path.isfile(lock_path):
         print("not installed")
         return 0
-    lock = json.load(open(lock_path))
+    lock, void = _load_json(lock_path)
+    if void:
+        print(void)
+        return 2
     handle = lock.get("on_device_handle") or lock.get("remote_handle")
     rows = probe_all(root, args.remote_host)
     _print_probe_voids(rows)
-    usable = {r["handle"]: r["usable"] for r in rows}
-    if handle and handle != "none" and usable.get(handle):
+    _print_lying_rows(rows)
+    usable = {r["handle"]: _verified_usable(r) for r in rows}
+    missing = _missing_plist_paths(lock)
+    if handle and handle != "none" and usable.get(handle) and not missing:
         print("holds")
     else:
         decision = compose(rows)
         proposal = decision["on_device"] if decision["on_device"] != "none" else decision["remote"]
-        print("no longer holds: %s (propose: %s)" % (handle, proposal))
+        line = "no longer holds: %s (propose: %s)" % (handle, proposal)
+        if missing:
+            line += " -- missing path: %s (re-run emit)" % ", ".join(missing)
+        print(line)
     return 0
 
 
@@ -736,41 +827,61 @@ def uninstall(root, dry_run=False):
     root = os.path.abspath(root)
     lock_path = os.path.join(root, LOCK_REL)
     reversal = []
+    voids = []
     removed = []
     if os.path.isfile(lock_path):
-        lock = json.load(open(lock_path))
-        for path in lock.get("emitted", []):
-            if path.endswith(".plist"):
-                reversal.append("launchctl unload %s" % path)
-            elif os.path.relpath(path, root) == WORKFLOW_REL:
-                reversal.append("git rm -r %s %s  # and push to disable the workflow" %
-                                (WORKFLOW_REL, os.path.join(".github", "om-scripts")))
-            if not dry_run and os.path.isfile(path):
-                os.remove(path)
-                removed.append(path)
+        lock, void = _load_json(lock_path)
+        if void:
+            voids.append(void)
+            lock = None
+        if lock is not None:
+            for path in lock.get("emitted", []):
+                if path.endswith(".plist"):
+                    label = os.path.basename(path)
+                    reversal.append("launchctl unload ~/Library/LaunchAgents/%s && rm "
+                                    "~/Library/LaunchAgents/%s  # only if you ran the activation "
+                                    "step; the staged copy is removed by this verb" % (label, label))
+                elif os.path.relpath(path, root) == WORKFLOW_REL:
+                    reversal.append("git rm -r %s %s  # and push to disable the workflow" %
+                                    (WORKFLOW_REL, os.path.join(".github", "om-scripts")))
+                if not dry_run and os.path.isfile(path):
+                    os.remove(path)
+                    removed.append(path)
+            if not dry_run:
+                os.remove(lock_path)
+                # best-effort cleanup of now-empty vendor and workflow directories the ci-tier0
+                # delegation made; deepest first, never raises on a non-empty or absent directory.
+                vendor_dir = os.path.join(root, ".github", "om-scripts")
+                dirs = [os.path.join(vendor_dir, "pyyaml", "yaml"),
+                        os.path.join(vendor_dir, "pyyaml"), vendor_dir]
+                if any(os.path.relpath(p, root) == WORKFLOW_REL for p in lock.get("emitted", [])):
+                    dirs.append(os.path.join(root, ".github", "workflows"))
+                for d in dirs:
+                    try:
+                        os.rmdir(d)
+                    except OSError:
+                        pass
+            else:
+                removed.append(lock_path)
+    # the `test` verb's scratch (inbox seeds, the poison transcript, launch logs) -- written
+    # without a lock, so it is removed whether or not one exists.
+    test_state_dir = os.path.join(root, ".claude", "om-state")
+    if os.path.isdir(test_state_dir):
         if not dry_run:
-            os.remove(lock_path)
-            # best-effort cleanup of now-empty vendor directories the ci-tier0 delegation made;
-            # deepest first, never raises on a non-empty or absent directory.
-            vendor_dir = os.path.join(root, ".github", "om-scripts")
-            for d in (os.path.join(vendor_dir, "pyyaml", "yaml"),
-                      os.path.join(vendor_dir, "pyyaml"), vendor_dir):
-                try:
-                    os.rmdir(d)
-                except OSError:
-                    pass
-        else:
-            removed.append(lock_path)
+            shutil.rmtree(test_state_dir, ignore_errors=True)
+        removed.append(test_state_dir)
     hyp_json_path = os.path.join(root, HYP_JSON_REL)
     if os.path.isfile(hyp_json_path):
-        data = json.load(open(hyp_json_path))
-        if "om_offload" in data:
+        data, void = _load_json(hyp_json_path)
+        if void:
+            voids.append(void)
+        elif isinstance(data, dict) and "om_offload" in data:
             reversal.append("(no reversal command needed: dropping the .claude/hyp.json om_offload key)")
             if not dry_run:
                 data.pop("om_offload", None)
                 with open(hyp_json_path, "w", encoding="utf-8") as fh:
                     json.dump(data, fh, indent=1, sort_keys=True)
-    return {"removed": removed, "reversal": reversal, "dry_run": dry_run}
+    return {"removed": removed, "reversal": reversal, "dry_run": dry_run, "voids": voids}
 
 
 def cmd_uninstall(args):
@@ -778,7 +889,9 @@ def cmd_uninstall(args):
     print(json.dumps(result, sort_keys=True))
     for line in result["reversal"]:
         print(line)
-    return 0
+    for line in result["voids"]:
+        print(line)
+    return 2 if result["voids"] else 0
 
 
 # --------------------------------------------------------------------------- CLI

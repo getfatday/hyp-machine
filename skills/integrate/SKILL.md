@@ -64,6 +64,13 @@ Nine candidate background mechanisms, in this frozen priority order (first probe
    - Records the decision in `.claude/om-offload.lock.json` and sets `.claude/hyp.json`
      `om_offload` to the chosen handle. Re-running `emit` with nothing changed on the host is a
      byte-for-byte no-op.
+   - The lock, the staged plist and the `test` verb's `.claude/om-state/` scratch all carry
+     absolute paths of THIS machine: `/hyp:init` appends ignore rows for
+     `.claude/om-offload.lock.json`, `.claude/om-staged-agents/` and `.claude/om-state/` to your
+     `.gitignore` (`templates/gitignore`); until you have run it, expect them in `git status`.
+     If `HYP_STATE_DIR` is set when you run `emit`, the plist bakes it in as
+     `EnvironmentVariables`, so the worker launchd starts drains the same override directory
+     `QueueDirectories` watches.
    - Tell the user plainly: "nothing is running yet — this wrote the job description; loading it
      is a separate step you run yourself" and give them the exact printed command.
 
@@ -77,13 +84,23 @@ Nine candidate background mechanisms, in this frozen priority order (first probe
    stages the stub substrate ahead of the real binary on `PATH` for the duration of that one
    check and reports the same `session-observed` / `quarantine` outcome this step describes.
    Skip straight to step 5 (report) on a real host.
+   A direct run leaves its seeds and logs under `.claude/om-state/` (`inbox/scn-session-0.json`,
+   `inbox/poison-*.json`, `poison-transcript.jsonl`, `launch-log.*.jsonl`); step 6's `uninstall`
+   removes that directory, lock or no lock.
 
 5. **Report drift.** Any time later, from any worktree:
    ```
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" report --root .
    ```
    Prints `holds` when the recorded handle still probes usable, or `no longer holds: <handle>
-   (propose: <new-handle>)` when it does not (a host capability changed). Add
+   (propose: <new-handle>)` when it does not (a host capability changed).
+   `report` also checks that every absolute path the recorded plist's `ProgramArguments` names
+   still exists, so a plugin-cache upgrade that removed the worker the plist points at reads
+   `no longer holds: ... -- missing path: <p> (re-run emit)` instead of `holds`. A `usable: true`
+   probe row whose recorded exit is not 0 is refused with one `om-integrate: refused <handle>`
+   line and never counted (a probe that lies is not a probe). A lock, `.claude/hyp.json` or
+   `--installed-plugins` file that does not parse prints `void: corrupt-json <path>`; `report`
+   and `uninstall` then exit 2 and change nothing. Add
    `--installed-plugins <path>` to also get a `mixed-installs:` line naming which of this
    repository's worktrees carry which plugin version, when they differ: `<path>` names a JSON
    file YOU build, shaped `{"<absolute worktree path>": "<version>", ...}` — one entry per
@@ -96,10 +113,16 @@ Nine candidate background mechanisms, in this frozen priority order (first probe
    ```
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" uninstall --root . --dry-run
    ```
-   Prints exactly what would be removed and the reversal commands (`launchctl unload ...` for a
-   loaded plist, `git rm ...` for the workflow) without changing anything. Drop `--dry-run` to
-   actually remove: the plist, the workflow and its vendored tree, the lock file, and the
-   `om_offload` key — zero artifacts left behind.
+   Prints exactly what would be removed and the reversal commands without changing anything. For
+   a plist the reversal line is
+   `launchctl unload ~/Library/LaunchAgents/<label> && rm ~/Library/LaunchAgents/<label>  # only if you ran the activation step; the staged copy is removed by this verb`
+   — the staged copy under `--agents-dir` is removed by the verb itself; the `~/Library/LaunchAgents/`
+   copy exists only if you ran step 3's activation command, and leaving it there would let
+   launchd re-register the job at your next login, so run that line yourself. For the workflow
+   the line is `git rm ...` (and push). Drop `--dry-run` to actually remove: the staged plist,
+   the workflow and its vendored tree (plus the emptied `.github/workflows/` directory when the
+   workflow was the only file in it), the lock file, the `.claude/om-state/` test scratch, and
+   the `om_offload` key — zero artifacts left behind.
 
 ## What this skill does not do
 

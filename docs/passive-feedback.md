@@ -632,8 +632,14 @@ invoked with `--installed-plugins <path>` naming a hand-built `{<worktree-path>:
 JSON map, flags mixed plugin versions across a repository's worktrees (the real
 `~/.claude/plugins/installed_plugins.json` has a different shape and is not read directly);
 `uninstall --dry-run` prints the exact
-removal and reversal commands, and `uninstall` leaves zero emitted artifacts and drops the
-`.claude/hyp.json` `om_offload` key.
+removal and reversal commands (for a plist: `launchctl unload ~/Library/LaunchAgents/<label>
+&& rm ~/Library/LaunchAgents/<label>`, to run only if you ran the disclosed activation step --
+the staged copy the verb removes itself), and `uninstall` leaves zero emitted artifacts (the
+staged plist, the workflow and its vendored tree, the `test` verb's `.claude/om-state/`
+scratch) and drops the `.claude/hyp.json` `om_offload` key; `compose` refuses a probe row that
+claims `usable` without a recorded exit 0; `report` also flags a plist whose baked worker path
+no longer exists (`-- missing path: <p>`); a lock, hyp.json or `--installed-plugins` file that
+does not parse is a typed `void: corrupt-json <path>` (exit 2, nothing changed).
 
 Ported by intent from the lab keep `H-DRAFT-e2a5e911-om-integrate-probe` (kept 2026-09-15: five
 counted looks, A1-A5 pass in every one). Three drifts from the kept fixture bytes: the `ci-tier0`
@@ -649,6 +655,10 @@ from; and every probe row gains a `host_key` field beside `authors_90d` and `dis
 throwaway consumer and a selftest-only stub substrate, never against the real host's launchd or
 GitHub Actions.
 
-Undo: revert the release's merge commit. Rows already written are plain JSON lines in your ledger;
-the attribute row is plain text in your `.gitattributes`; a staged-but-uncommitted ledger unstages
-with `git restore --staged -- ledger/om-feedback.jsonl`.
+Undo: revert the release's merge commit; if you already ran `emit` or `test`, run
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" uninstall --root .` first (dry-run with
+`--dry-run`) -- it removes everything those verbs wrote and prints the one
+`launchctl unload ... && rm ~/Library/LaunchAgents/<label>` line you run only if you had
+activated the plist. Rows already written are plain JSON lines in your ledger; the attribute
+row is plain text in your `.gitattributes`; a staged-but-uncommitted ledger unstages with
+`git restore --staged -- ledger/om-feedback.jsonl`.

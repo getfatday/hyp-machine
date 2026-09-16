@@ -5,8 +5,9 @@ bump: minor
 Adds `scripts/om-integrate.py` and the `integrate` skill: a probe tells you which background
 mechanism your machine and repository actually support for the passive operating-model feedback
 loop (a launchd job on a Mac, GitHub Actions via the already-shipped `om-ci.py` on any host with
-`gh`), sets one up with a `test` and a one-command `uninstall`, and never activates anything by
-itself -- every claim is the exit code of a command it actually ran, and `emit` only ever prints
+`gh`), sets one up with a `test` and a one-command `uninstall` (whose dry-run prints the exact
+`launchctl unload ... && rm ~/Library/LaunchAgents/<label>` reversal of the one disclosed
+activation step), and never activates anything by itself -- every claim is the exit code of a command it actually ran, and `emit` only ever prints
 the activation command it did not run. Nine candidate handles are probed for real
 (`launchd-queue`, `systemd-user`, `cron-anacron`, `schtasks-idle`, `desktop-task`,
 `hook-oneshot`, `ci-tier0`, `ampersand`, `routine`); rows land in `ledger/om-substrates.jsonl`

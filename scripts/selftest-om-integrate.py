@@ -19,18 +19,25 @@ Cases (numbered A1-A7 below, ported by intent from the source lab's assertions):
       carries a non-empty `probe_cmd` and `exit == 0`; a custom `om_substrates_file` override
       is honoured (rows land at the configured path, not the default)
   A2  `compose` selects by the probe rows alone -- zeroing the `authors_90d`/`disk` covariates
-      on the same rows never changes the decision
+      on the same rows never changes the decision; a lying probe row (usable true, exit
+      non-zero, or no probe_cmd) is refused
   A3  `emit`'s plist passes `plutil -lint` (skipped with one clear line where `plutil` is
       absent), carries only absolute paths, the `com.hyp-machine.om-worker.` label prefix and
-      `ProcessType Background`; the delegated `ci-tier0` workflow parses as YAML
+      `ProcessType Background`; the delegated `ci-tier0` workflow parses as YAML; the plist
+      bakes `HYP_STATE_DIR` as `EnvironmentVariables`
   A4  a second `emit` with nothing changed on the host is a byte-level no-op (every emitted
       file's sha256 unchanged)
   A5  `test` lands exactly one `session-observed` row under the stub substrate within the cited
       window, and the two poison seeds land as exactly two `quarantine` rows, in at most 2
-      launches, with the inbox left empty
+      launches, with the inbox left empty; `uninstall` removes the `.claude/om-state` test
+      scratch even with no lock
   A6  `uninstall --dry-run` prints the exact removal/reversal and changes nothing; `uninstall`
-      leaves zero emitted artifacts and drops the `.claude/hyp.json` `om_offload` key
-  A7  `report` reads `holds` right after install and `not installed` right after uninstall
+      leaves zero emitted artifacts and drops the `.claude/hyp.json` `om_offload` key; the
+      dry-run names the `~/Library/LaunchAgents/<label>` unload+rm reversal and the emptied
+      `.github/workflows` directory is gone
+  A7  `report` reads `holds` right after install and `not installed` right after uninstall; a
+      plist whose baked worker path is gone reads `no longer holds ... missing path`; a corrupt
+      lock is a typed `void: corrupt-json` exit 2 that changes nothing
 
 The raw evidence this run collected (every probe row, the compose decision, emitted file
 hashes, the test-verb phase reports) is written beside this run's PASS/FAIL lines to
@@ -248,9 +255,9 @@ def a2_compose():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    def row(handle, usable, authors=3, free=1):
-        return {"handle": handle, "usable": usable, "authors_90d": authors,
-                "disk": {"free_bytes": free, "plugin_cache_bytes": free}}
+    def row(handle, usable, authors=3, free=1, exit_code=0, probe_cmd="true"):
+        return {"handle": handle, "usable": usable, "authors_90d": authors, "probe_cmd": probe_cmd,
+                "exit": exit_code, "disk": {"free_bytes": free, "plugin_cache_bytes": free}}
 
     rows = [row("launchd-queue", False), row("systemd-user", True), row("cron-anacron", True),
             row("schtasks-idle", False), row("desktop-task", False), row("hook-oneshot", False),
@@ -266,6 +273,17 @@ def a2_compose():
                                           "schtasks-idle", "desktop-task", "hook-oneshot",
                                           "ci-tier0", "ampersand", "routine")]
     check("a2-none-when-nothing-usable", mod.compose(none_rows) == {"on_device": "none", "remote": "none"})
+
+    # VERIFY.md finding 11 (source lane): a probe that LIES -- usable true with a non-zero exit --
+    # must be refused by compose, never selected; the next verified handle wins instead.
+    lying = [row("launchd-queue", True, exit_code=127)] + rows[1:]
+    d3 = mod.compose(lying)
+    check("a2-lying-probe-refused", d3 == {"on_device": "systemd-user", "remote": "ci-tier0"}
+          and mod.lying_rows(lying) == ["launchd-queue"], (d3, mod.lying_rows(lying)))
+    no_probe = [dict(row("launchd-queue", True), probe_cmd="")] + rows[1:]
+    check("a2-usable-without-probe-refused", mod.compose(no_probe)["on_device"] == "systemd-user"
+          and mod.lying_rows(no_probe) == ["launchd-queue"])
+    RAW["a2_lying_rows"] = mod.lying_rows(lying)
 
 
 def a3_a4_emit(scratch):
@@ -286,6 +304,9 @@ def a3_a4_emit(scratch):
         body = open(plist_path, encoding="utf-8").read() if plist_path else ""
         check("a3-plist-absolute-paths", "<string>/" in body or "<string>%s" % os.sep in body, body[:200])
         check("a3-plist-process-type-background", "<key>ProcessType</key>\n\t<string>Background</string>" in body)
+        check("a3-plist-bakes-hyp-state-dir-env",
+              "<key>EnvironmentVariables</key>" in body and "<key>HYP_STATE_DIR</key>" in body
+              and _SCRATCH_HYP_STATE_DIR in body, body[-700:])
         plutil = shutil.which("plutil")
         if plutil and plist_path:
             r = subprocess.run([plutil, "-lint", plist_path], capture_output=True, text=True, timeout=20)
@@ -327,6 +348,41 @@ def a3_a4_emit(scratch):
     return root, agents_dir
 
 
+def a7_report_holds(root, agents_dir):
+    """A7 first half: `report` reads `holds` right after emit, and flags a plist whose baked
+    worker path no longer exists (the plugin-cache-upgrade drift) as `no longer holds`."""
+    import plistlib
+    lock_path = os.path.join(root, ".claude", "om-offload.lock.json")
+    lock = json.load(open(lock_path)) if os.path.isfile(lock_path) else {}
+    if lock.get("on_device_handle") == "none" and lock.get("remote_handle") == "none":
+        print("SKIP a7-report-holds-after-emit: nothing composed on this host")
+        return
+    p = run_integrate(["report", "--root", root])
+    RAW["a7_report_after_emit"] = p.stdout
+    check("a7-report-holds-after-emit", p.returncode == 0 and "holds" in p.stdout.splitlines(),
+          p.stdout + p.stderr)
+    plists = [q for q in lock.get("emitted", []) if str(q).endswith(".plist")]
+    if not plists:
+        print("SKIP a7-report-missing-path-flags-drift: no plist was emitted on this host")
+        return
+    plist_path = plists[0]
+    original = open(plist_path, "rb").read()
+    with open(plist_path, "rb") as fh:
+        data = plistlib.load(fh)
+    data["ProgramArguments"][1] = os.path.join(os.path.dirname(plist_path), "gone", "om-worker.py")
+    with open(plist_path, "wb") as fh:
+        plistlib.dump(data, fh)
+    try:
+        p2 = run_integrate(["report", "--root", root])
+        RAW["a7_report_missing_path"] = p2.stdout
+        check("a7-report-missing-path-flags-drift",
+              p2.returncode == 0 and "no longer holds" in p2.stdout and "missing path" in p2.stdout,
+              p2.stdout + p2.stderr)
+    finally:
+        with open(plist_path, "wb") as fh:
+            fh.write(original)
+
+
 def a5_test(scratch):
     root = build_consumer(os.path.join(scratch, "a5"))
     stub_bin = write_stub_launchctl(os.path.join(scratch, "a5-bin"))
@@ -347,6 +403,24 @@ def a5_test(scratch):
     inbox = os.path.join(root, ".claude", "om-state", "inbox")
     remaining = os.listdir(inbox) if os.path.isdir(inbox) else ["<inbox missing>"]
     check("a5-inbox-empty", remaining == [], remaining)
+    return root
+
+
+def a5_uninstall_test_scratch(root):
+    """A3 (refute round 3): a direct `test` run leaves seeds and launch logs under
+    `.claude/om-state`; `uninstall` (dry-run names it, the real run removes it) even with no lock."""
+    state_dir = os.path.join(root, ".claude", "om-state")
+    check("a5-test-scratch-present-before-uninstall", os.path.isdir(state_dir))
+    p = run_integrate(["uninstall", "--root", root, "--dry-run"])
+    try:
+        result = json.loads(p.stdout.splitlines()[0])
+    except (ValueError, IndexError):
+        result = {}
+    check("a5-uninstall-dry-run-names-test-scratch", p.returncode == 0 and state_dir in result.get("removed", [])
+          and os.path.isdir(state_dir), (p.returncode, result, os.path.isdir(state_dir)))
+    p2 = run_integrate(["uninstall", "--root", root])
+    check("a5-uninstall-removes-test-scratch", p2.returncode == 0 and not os.path.isdir(state_dir),
+          (p2.returncode, p2.stdout[-300:], p2.stderr[-300:]))
 
 
 def a6_uninstall(root, agents_dir):
@@ -359,6 +433,17 @@ def a6_uninstall(root, agents_dir):
     check("a6-dry-run-reports-removal", bool(result.get("removed")) or bool(result.get("reversal")), result)
     lock_path = os.path.join(root, ".claude", "om-offload.lock.json")
     check("a6-dry-run-changes-nothing", os.path.isfile(lock_path))
+    lock = json.load(open(lock_path)) if os.path.isfile(lock_path) else {}
+    plist_labels = [os.path.basename(p) for p in lock.get("emitted", []) if str(p).endswith(".plist")]
+    if plist_labels:
+        label = plist_labels[0]
+        check("a6-dry-run-names-launchagents-reversal",
+              ("launchctl unload ~/Library/LaunchAgents/%s" % label) in p.stdout
+              and ("rm ~/Library/LaunchAgents/%s" % label) in p.stdout
+              and "only if you ran the activation step" in p.stdout, p.stdout[-600:])
+    else:
+        print("SKIP a6-dry-run-names-launchagents-reversal: no plist was emitted on this host")
+    workflow_emitted = any(str(p).endswith(os.path.join("workflows", "om-check.yml")) for p in lock.get("emitted", []))
 
     p2 = run_integrate(["uninstall", "--root", root])
     check("a6-uninstall-exit0", p2.returncode == 0, p2.stderr[-300:])
@@ -369,6 +454,10 @@ def a6_uninstall(root, agents_dir):
     vendor = os.path.join(root, ".github", "om-scripts")
     check("a6-workflow-and-vendor-removed", not os.path.isfile(wf) and not os.path.isdir(vendor),
           (os.path.isfile(wf), os.path.isdir(vendor)))
+    if workflow_emitted:
+        check("a6-empty-workflows-dir-removed", not os.path.isdir(os.path.join(root, ".github", "workflows")))
+    else:
+        print("SKIP a6-empty-workflows-dir-removed: no workflow was emitted on this host")
     hyp_json = os.path.join(root, ".claude", "hyp.json")
     data = json.load(open(hyp_json)) if os.path.isfile(hyp_json) else {}
     check("a6-om-offload-key-dropped", "om_offload" not in data, data)
@@ -381,6 +470,23 @@ def a7_report(root):
           p.stdout + p.stderr)
 
 
+def a7_corrupt_lock(scratch):
+    """A7 (refute round 3): a corrupt lock is a typed void -- `report` and `uninstall` print
+    `void: corrupt-json <path>`, exit 2 and change nothing."""
+    root = build_consumer(os.path.join(scratch, "a7-corrupt"))
+    lock_path = os.path.join(root, ".claude", "om-offload.lock.json")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "w", encoding="utf-8") as fh:
+        fh.write("{not json")
+    p = run_integrate(["report", "--root", root])
+    check("a7-corrupt-lock-report-typed-void", p.returncode == 2 and "void: corrupt-json" in p.stdout,
+          (p.returncode, p.stdout[-300:], p.stderr[-300:]))
+    p2 = run_integrate(["uninstall", "--root", root])
+    check("a7-corrupt-lock-uninstall-changes-nothing",
+          p2.returncode == 2 and "void: corrupt-json" in p2.stdout and os.path.isfile(lock_path),
+          (p2.returncode, p2.stdout[-300:], p2.stderr[-300:]))
+
+
 def main():
     global _SCRATCH_HYP_STATE_DIR
     scratch = tempfile.mkdtemp(prefix="selftest-om-integrate-")
@@ -389,9 +495,12 @@ def main():
         a1_probe(scratch)
         a2_compose()
         root, agents_dir = a3_a4_emit(scratch)
-        a5_test(scratch)
+        a7_report_holds(root, agents_dir)
+        a5_root = a5_test(scratch)
+        a5_uninstall_test_scratch(a5_root)
         a6_uninstall(root, agents_dir)
         a7_report(root)
+        a7_corrupt_lock(scratch)
     finally:
         try:
             with open("selftest-om-integrate.raw.json", "w", encoding="utf-8") as fh:
