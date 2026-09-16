@@ -57,7 +57,9 @@ Run `/hyp:init --profile experiments` once per repository to scaffold everything
   skill discipline — journal the registration as a write-once fragment (`type: capture`) even
   if no run follows in the same session.
 - The spec must have: one falsifiable sentence, exactly one variable under test, a baseline, a
-  fixed budget per run, 3–5 binary assertions, and a verdict rule.
+  fixed budget per run, one to five binary assertions (fewer than three only when the Verdict
+  rule carries a `SUBSTANTIVE-ASSERTIONS:` line naming the primary and a typed void), and a
+  verdict rule.
 - If the user's idea has multiple variables, split it into multiple hypotheses and say so. Give
   the split hypotheses a shared fixture and identical assertions so their results are
   comparable, and run them independently first. If the user asked about the variables

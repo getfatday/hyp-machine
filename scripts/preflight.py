@@ -111,7 +111,7 @@ def main(path):
 
     assertions = text.split('## Binary assertions',1)[1].split('## Verdict rule',1)[0]
     n = len(re.findall(r'^\d+\.', assertions, re.M))
-    check("binary-assertions", 3 <= n <= 5, f"{n} numbered assertions")
+    check("binary-assertions", (lambda vb: 1 <= n <= 5 and (n >= 3 or bool(re.search(r'^SUBSTANTIVE-ASSERTIONS:', vb, re.M) and re.search(r'\bvoids?\b', vb, re.I))))(text.split('## Verdict rule',1)[1].split('## Runs',1)[0]), f"{n} decision assertions (fewer than 3 admitted only with a SUBSTANTIVE-ASSERTIONS: line and a typed void in the Verdict rule)")
 
     verdict = text.split('## Verdict rule',1)[1].split('## Runs',1)[0]
     mech = bool(re.search(r'[Kk]eep if .*assertions pass', verdict)) and bool(re.search(r'refine|discard', verdict))
