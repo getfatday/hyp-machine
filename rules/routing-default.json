@@ -4,7 +4,7 @@
     "mechanical": {"model": "haiku", "effort": "low", "basis": "prior",
       "reason": "compiler literal at compile-model-workflow.py:909", "evidence": "experiments/runs/DESIGN-model-routing/DESIGN.md#4.1"},
     "execute": {"model": "sonnet", "effort": "high", "basis": "prior",
-      "reason": "maintainer directive raw capture lines 16-20", "evidence": "research/raw/2026-09-13-model-routing-hypothesis-directive.md"},
+      "reason": "prior from cause-n-effect H-DRAFT-f6ce02b7-sonnet-builders-mechanical (mechanical pass set and planted-mutant kill at lower US$ per passing build)", "evidence": "experiments/runs/H-DRAFT-f6ce02b7-sonnet-builders-mechanical/VERDICT.json"},
     "think": {"model": "fable", "effort": "high", "basis": "prior",
       "reason": "platform default effort for fable is high", "evidence": "experiments/runs/DESIGN-model-routing/DESIGN.md#4.1"},
     "adversarial": {"model": "fable", "effort": "high", "basis": "prior",
