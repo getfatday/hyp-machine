@@ -142,7 +142,7 @@
           },
           {
             "type": "command",
-            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" cached harden-check recovery-warning dashboard-check resolver dashboard-refresh",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start-budget.py\" cached harden-check recovery-warning dashboard-check resolver dashboard-refresh om-worker",
             "timeout": 60
           }
         ]
