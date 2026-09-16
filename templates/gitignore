@@ -12,3 +12,11 @@
 # like DASHBOARD.md.
 /.claude/routing-candidates/
 /.claude/routing-derive-cache/
+
+# hyp: the integrate skill's host-specific files (scripts/om-integrate.py, lab
+# H-DRAFT-e2a5e911-om-integrate-probe): the lock and the staged plist carry this machine's
+# absolute paths, om-state is the `test` verb's scratch. None belongs in a shared tree;
+# `om-integrate.py uninstall` removes all three.
+/.claude/om-offload.lock.json
+/.claude/om-staged-agents/
+/.claude/om-state/

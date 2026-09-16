@@ -284,3 +284,16 @@ repository with no routing history yet gets no report, no candidate, and no dash
 at all. Undo: revert the release's merge commit, or remove the `routing-derive-cadence.py` row
 from the `Stop` hook in `hooks/hooks.json` if you have forked it — the CLI
 (`scripts/routing-derive.py`) and its selftest keep working standalone either way.
+
+From the release that carries the integrator (source lab `H-DRAFT-e2a5e911-om-integrate-probe`,
+kept 2026-09-15: five counted looks, A1-A5 pass in every one), the plugin ships
+`scripts/om-integrate.py` and the `integrate` skill: probe this machine for a background
+mechanism that can drive the passive feedback worker, compose exactly one on-device and one
+remote candidate from what actually probed usable, and emit -- never load or activate -- a plist
+or (delegated to the already-shipped `om-ci.py`) a GitHub Actions workflow, with a `test` step
+and a one-command `uninstall`. After upgrading: nothing runs differently -- no verb in this file
+is called by any hook or session-start step; run the `integrate` skill (or
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" probe --root . --json`) when you want to
+see what this host can offer. Undo: revert the release's merge commit, or run
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/om-integrate.py" uninstall --root .` first if you already
+had it emit something.

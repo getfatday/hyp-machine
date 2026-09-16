@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>{label}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{python3}</string>
+		<string>{worker}</string>
+		<string>drain</string>
+		<string>--root</string>
+		<string>{root}</string>
+		<string>--plugin-scripts</string>
+		<string>{plugin_scripts}</string>
+	</array>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>LowPriorityIO</key>
+	<true/>
+	<key>QueueDirectories</key>
+	<array>
+		<string>{inbox}</string>
+	</array>
+{env_block}	<key>StartInterval</key>
+	<integer>1800</integer>
+	<key>StandardOutPath</key>
+	<string>{state_dir}/launchd.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>{state_dir}/launchd.err.log</string>
+</dict>
+</plist>
