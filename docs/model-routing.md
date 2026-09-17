@@ -213,6 +213,19 @@ stderr line) rather than silently overwritten.
 | `mismatch`, `void` | `true`/`"annulled"` when `declared`'s tier disagrees with `observed`'s tier |
 | `host_load_1m`, `transcript_truncated` | Covariates: 1-minute load average at sweep time, and whether the transcript exceeded the 8 MB head+tail read cap |
 
+**Price reconciliation (2026-09-17).** `rules/model-prices.json`'s rows were 1.5x-2.2x too high
+(Fable 5.1 cache reads were priced at US$1.50/MTok against the real US$0.25); the table was
+reconciled against the claude-api skill bundled with Claude Code and reproduces Claude Code's
+own `cost-state` transcript row within 1% -- see the lab program's
+`experiments/runs/DESIGN-rtk-token-cost/research/token-baseline.md` section 1 and `FINDINGS.md`.
+Three model-specific rows (`claude-fable-5-1`, `claude-mythos-5-1`, `claude-sonnet-5`) were added
+alongside the four tier rows; `cost_usd` matches the longest prefix, so a model-specific row wins
+over its tier row and an unlisted model in a known family falls back to the tier row. A ledger
+row's `cost_usd` is computed once, at sweep time, against whatever table is shipped then; this
+change does not rewrite any historical row (only its `tokens` fields are load-bearing), and
+`scripts/routing-derive.py`'s `report`/`propose` verbs re-price from the current table on their
+next run.
+
 **The join pointer.** A workflow driver that wants its rows joined to a specific run writes
 `<checkout>/.claude/routing-outcomes/<wf>.json` `{"lane", "run", "outcome_ref"}` before the
 workflow's agents finish; the writer copies the three fields onto every row of that
@@ -362,12 +375,17 @@ recomputing it over the raw ledger bytes must inject the same 1-based-by-file-po
 before hashing, or the recomputed sha will not match.
 4. **Prices are the live list-of-prefixes shape**, not the fixture's tier-keyed placeholder
    dict — `prices_by_tier` adapts `rules/model-prices.json`'s `{"prefix": "claude-<tier>", ...}`
-   rows into the tier-keyed dict `saving()` reads. Under the CURRENT live prices, `opus` and
-   `fable` are priced identically (both 15/75 per million tokens); a one-step-down candidate
-   from `fable` to `opus` therefore always measures a saving of exactly `$0.00` and never opens
-   — disclosed, not a defect. `tier_order` stays the fixed canonical rank `[haiku, sonnet,
-   opus, fable]`; the rule goes quiet at a price plateau rather than being re-tuned to today's
-   numbers, and re-opens on its own if a future price update reintroduces a gap.
+   rows into the tier-keyed dict `saving()` reads, using only the four tier prefixes
+   (`claude-haiku`/`claude-sonnet`/`claude-fable`/`claude-opus`) — the model-specific rows the
+   2026-09-17 price reconciliation added (`claude-fable-5-1`, `claude-mythos-5-1`,
+   `claude-sonnet-5`) are read by the ledger's own `cost_usd` longest-prefix match, never by
+   `prices_by_tier`, so this adapter is unaffected by them. Since that reconciliation, `opus`
+   and `fable` are no longer priced identically (opus 5/25 vs. the fable tier's 10/50 per
+   million tokens), so a one-step-down candidate from `fable` to `opus` can now measure a real,
+   nonzero saving where it previously always measured `$0.00` — a consequence of the price
+   correction, not a rule change. `tier_order` stays the fixed canonical rank `[haiku, sonnet,
+   opus, fable]`; the rule still goes quiet at whatever price plateau the live table gives it,
+   and still re-opens on its own if a future price update reintroduces or removes a gap.
 5. **Outcome is the real object, not a bare string.** The real `agent-route/v1` row's
    `outcome` is `{schema_valid, verdict, refuted}` (from
    `hooks/scripts/routing_lib.py`'s `outcome_from_result`), or `None` when the workflow never

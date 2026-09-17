@@ -250,11 +250,30 @@ def test_library():
     prices = R.read_json(os.path.join(PLUGIN, "rules", "model-prices.json"))
     check("model-prices-json-readable", isinstance(prices, dict) and prices.get("prices"))
     tokens = {"in": 1_000_000, "out": 1_000_000, "cache_read": 1_000_000, "cache_create": 1_000_000}
-    expect_sonnet = round(3.00 + 15.00 + 0.30 + 3.75, 6)
+    expect_sonnet = round(2.00 + 10.00 + 0.20 + 2.50, 6)
     check("cost-usd-sonnet-prefix-match", R.cost_usd(tokens, "claude-sonnet-5", prices) == expect_sonnet)
     check("cost-usd-no-match", R.cost_usd(tokens, "some-unlisted-model", prices) == 0.0)
     check("cost-usd-no-model", R.cost_usd(tokens, None, prices) == 0.0)
     check("cost-usd-no-table", R.cost_usd(tokens, "claude-sonnet-5", None) == 0.0)
+
+    # Reconciled price table (2026-09-17, lab DESIGN-rtk-token-cost): a model-specific row
+    # wins over its tier row by longest-prefix match, and an unknown model within a known
+    # tier family falls back to the tier row.
+    expect_fable_5_1 = round(10.00 + 50.00 + 0.25 + 12.50, 6)
+    check("cost-usd-fable-5-1-specific-row-wins-over-tier",
+          R.cost_usd(tokens, "claude-fable-5-1", prices) == expect_fable_5_1)
+    expect_fable_tier = round(10.00 + 50.00 + 1.00 + 12.50, 6)
+    check("cost-usd-fable-5-no-specific-row-falls-back-to-tier",
+          R.cost_usd(tokens, "claude-fable-5", prices) == expect_fable_tier
+          and expect_fable_tier != expect_fable_5_1)
+    expect_sonnet_5 = round(2.00 + 10.00 + 0.20 + 2.50, 6)
+    check("cost-usd-sonnet-5-specific-row",
+          R.cost_usd(tokens, "claude-sonnet-5", prices) == expect_sonnet_5)
+    price_rows = prices.get("prices") or []
+    check("model-prices-json-exactly-seven-prefixes", len(price_rows) == 7)
+    check("model-prices-json-every-row-carries-required-keys",
+          all(all(k in row for k in ("prefix", "in", "out", "cache_read", "cache_create", "seen", "source"))
+              for row in price_rows))
 
 
 def test_writer():
