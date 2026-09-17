@@ -1,9 +1,12 @@
 {
   "schema": "model-prices/v1",
   "prices": [
-    {"prefix": "claude-haiku", "in": 0.80, "out": 4.00, "cache_read": 0.08, "cache_create": 1.00, "seen": "2026-09-13", "source": "docs mirror"},
-    {"prefix": "claude-sonnet", "in": 3.00, "out": 15.00, "cache_read": 0.30, "cache_create": 3.75, "seen": "2026-09-13", "source": "docs mirror"},
-    {"prefix": "claude-fable", "in": 15.00, "out": 75.00, "cache_read": 1.50, "cache_create": 18.75, "seen": "2026-09-13", "source": "docs mirror"},
-    {"prefix": "claude-opus", "in": 15.00, "out": 75.00, "cache_read": 1.50, "cache_create": 18.75, "seen": "2026-09-13", "source": "docs mirror"}
+    {"prefix": "claude-fable-5-1", "in": 10.0, "out": 50.0, "cache_read": 0.25, "cache_create": 12.5, "seen": "2026-09-17", "source": "claude-api skill bundled with Claude Code 2.1.273 (SKILL.md model table cached 2026-06-24; shared/prompt-caching.md:144; shared/models.md:73-74); verified against the cost-state row, see cost_state.reconciliation_by_model"},
+    {"prefix": "claude-mythos-5-1", "in": 10.0, "out": 50.0, "cache_read": 0.25, "cache_create": 12.5, "seen": "2026-09-17", "source": "claude-api skill bundled with Claude Code 2.1.273 (SKILL.md model table cached 2026-06-24; shared/prompt-caching.md:144; shared/models.md:73-74); verified against the cost-state row, see cost_state.reconciliation_by_model"},
+    {"prefix": "claude-fable", "in": 10.0, "out": 50.0, "cache_read": 1.0, "cache_create": 12.5, "seen": "2026-09-17", "source": "claude-api skill bundled with Claude Code 2.1.273 (SKILL.md model table cached 2026-06-24; shared/prompt-caching.md:144; shared/models.md:73-74); verified against the cost-state row, see cost_state.reconciliation_by_model"},
+    {"prefix": "claude-opus", "in": 5.0, "out": 25.0, "cache_read": 0.5, "cache_create": 6.25, "seen": "2026-09-17", "source": "claude-api skill bundled with Claude Code 2.1.273 (SKILL.md model table cached 2026-06-24; shared/prompt-caching.md:144; shared/models.md:73-74); verified against the cost-state row, see cost_state.reconciliation_by_model"},
+    {"prefix": "claude-sonnet-5", "in": 2.0, "out": 10.0, "cache_read": 0.2, "cache_create": 2.5, "seen": "2026-09-17", "source": "claude-api skill bundled with Claude Code 2.1.273 (SKILL.md model table cached 2026-06-24; shared/prompt-caching.md:144; shared/models.md:73-74); verified against the cost-state row, see cost_state.reconciliation_by_model"},
+    {"prefix": "claude-sonnet", "in": 3.0, "out": 15.0, "cache_read": 0.3, "cache_create": 3.75, "seen": "2026-09-17", "source": "claude-api skill bundled with Claude Code 2.1.273 (SKILL.md model table cached 2026-06-24; shared/prompt-caching.md:144; shared/models.md:73-74); verified against the cost-state row, see cost_state.reconciliation_by_model"},
+    {"prefix": "claude-haiku", "in": 1.0, "out": 5.0, "cache_read": 0.1, "cache_create": 1.25, "seen": "2026-09-17", "source": "claude-api skill bundled with Claude Code 2.1.273 (SKILL.md model table cached 2026-06-24; shared/prompt-caching.md:144; shared/models.md:73-74); verified against the cost-state row, see cost_state.reconciliation_by_model"}
   ]
 }

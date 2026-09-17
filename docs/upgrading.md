@@ -308,3 +308,15 @@ class when the repository's recorded `authors_90d` exceeds one and offers `api-k
 for that tier and its process exits 3. After upgrading: nothing runs differently -- no shipped
 handle requests a model-calling tier's credential yet, so this guard is silent on every
 repository until one does. Undo: revert the release's merge commit.
+
+From the release that carries the price-table reconciliation (source lab program
+`experiments/runs/DESIGN-rtk-token-cost/`, `research/token-baseline.md` section 1),
+`rules/model-prices.json` is corrected: the previous table overstated every dollar figure by
+about 1.5x-2.2x (Fable 5.1 cache reads were priced at US$1.50/MTok against the real US$0.25),
+and the corrected table reproduces Claude Code's own `cost-state` transcript row within 1%.
+Three model-specific rows (`claude-fable-5-1`, `claude-mythos-5-1`, `claude-sonnet-5`) were added
+alongside the four tier rows, matched by longest prefix. After upgrading: every `cost_usd` the
+plugin prints from here on is about 2.2x lower for Fable-heavy work; historical
+`ledger/routing-ledger.jsonl` rows keep their `tokens` fields unchanged (only `cost_usd` was ever
+derived from the price table) and re-price on the next `routing-derive` cadence run. Undo:
+revert the release's merge commit.
