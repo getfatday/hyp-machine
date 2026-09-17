@@ -52,7 +52,7 @@ HOOK_HEAD_CUT = 40   # experiments/deploy/hyp-machine/hooks/hooks.json: the reso
 
 STAGES = (
     ("lint-selftest", "decision_card_lint.py", "lint-selftest: 0 failure(s)", "LINT-SELFTEST-",
-     ("b0-brief-missing", "b1-flipped-sha", "b2-26-words", "b3-six-sentences", "b4-121-words", "b5-unglossed-house-only",
+     ("b0-brief-missing", "b1-flipped-sha", "b2-26-words", "b3-six-sentences", "b4-121-words-under-ceiling", "b4-over-238-words", "b5-unglossed-house-only",
       "b6-unadmitted-stays-report", "b7-undated", "b8-none-without-cannot-be-undone", "b9-two-token-author-string",
       "b10-admitted-blocks", "b11-sha-unresolved")),
     ("render-selftest", "decision_brief_render.py", "render-selftest: 0 failure(s)", "RENDER-SELFTEST-", ()),

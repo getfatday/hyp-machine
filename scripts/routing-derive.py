@@ -53,11 +53,15 @@ docs/model-routing.md for every drift this port resolved and why. In short:
     observed model id -- this plugin's own `routing_lib.cost_usd` shape), not the fixture's
     tier-keyed placeholder dict. `prices_by_tier` adapts the live list into the tier-keyed
     dict `saving()` already expects (`saving()` itself is unchanged). Under the live prices,
-    `opus` and `fable` are priced identically (both 15/75 per million); a one-step-down
-    candidate from `fable` to `opus` therefore always measures a saving of exactly 0.0 and
-    never opens (needs > `--budget-usd`) -- disclosed, not a defect: `tier_order` stays the
-    fixed canonical rank `[haiku, sonnet, opus, fable]` and the rule goes quiet at a price
-    plateau rather than being re-tuned to today's numbers.
+    since the 2026-09-17 price reconciliation, `opus` and `fable` are no longer priced
+    identically (opus 5/25 vs. the fable tier's 10/50 per million tokens), so a one-step-down
+    candidate from `fable` to `opus` can now measure a real, nonzero saving where it
+    previously always measured $0.00 -- a consequence of the price correction, not a rule
+    change: `tier_order` stays the fixed canonical rank `[haiku, sonnet, opus, fable]`, and
+    the rule still goes quiet at whatever price plateau the live table gives it, re-opening
+    on its own if a future price update reintroduces or removes a gap. The derive loop's
+    outputs re-price on their next cadence (see docs/model-routing.md item 4, which this
+    mirrors).
   * STATE FILE is new: this repository has no prior per-class routing-derive bookkeeping
     (basis/tier/since_row/license_id/retest_by/bank), so `--table` names a small new JSON
     file this script owns (suggested path `ledger/routing-derive-state.json`, mirroring

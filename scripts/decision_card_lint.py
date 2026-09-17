@@ -233,7 +233,8 @@ BRIEF_ADMISSION_TIERED = ("B6", "B9", "B10")
 BRIEF_ADMITTED_KEY = "decision_brief_admitted_rules"
 BRIEF_SENTENCE_MAX_WORDS = 25
 BRIEF_FIELD_MAX_SENTENCES = 5
-BRIEF_BODY_MAX_WORDS = 120
+# derived as one minute of silent adult reading at 238 words per minute, Brysbaert 2019 J. Mem. Lang. doi 10.1016/j.jml.2019.104047; evidence: the cause-n-effect repository's decision-brief-comprehension program, EVIDENCE.md M6 in its successor run directory and the v2 lineage directory beside it, both under that repository's experiments/runs/
+BRIEF_BODY_MAX_WORDS = 238
 BRIEF_GLOSS_WINDOW = 80
 BRIEF_NEVER_AUTO_CLASSES = ("publish", "spend", "live-surface", "schema")
 BRIEF_TONE_BANNED = ("like a", "as if", "imagine", "think of it as", "!", "simply", "just", "easy",
@@ -1461,7 +1462,9 @@ def _selftest():
         ok("b3-six-sentences", brules(run(mut(bcard(), situation="One. Two. Three. Four. Five. Six."))) == ["B3"])
         ok("b3-decide-two-sentences", brules(run(mut(bcard(), decide="Decide now. Or later."))) == ["B3"])
         five = " ".join([" ".join(["word"] * 20) + "."] * 5)
-        r = run(mut(bcard(), situation=five)); ok("b4-121-words", brules(r) == ["B4"], str(brules(r)))
+        r = run(mut(bcard(), situation=five)); ok("b4-121-words-under-ceiling", "B4" not in brules(r), str(brules(r)))
+        five25 = " ".join([" ".join(["word"] * 25) + "."] * 5)   # 125 words in five 25-word sentences: B2 and B3 stay silent
+        r = run(mut(bcard(), situation=five25, yours_because=five25)); ok("b4-over-238-words", brules(r) == ["B4"], str(brules(r)))
         r = run(mut(bcard(), situation="The lane is ready. Nothing else depends on it.")); ok("b5-unglossed-house-only", brules(r) == ["B5"], str(brules(r)))
         r = run(mut(bcard(), situation="The lane (one experiment's pipeline) is ready. Nothing else depends on it.")); ok("b5-paren-gloss-within-80", r.exit_code == 0, str(brules(r)))
         r = run(mut(bcard(), situation="The lane is ready. Nothing else depends on it.", terms={"lane": "one experiment's pipeline"})); ok("b5-terms-gloss", r.exit_code == 0, str(brules(r)))
