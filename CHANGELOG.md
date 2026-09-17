@@ -4,6 +4,19 @@ Newest first. This file is written by `scripts/release.py` from the pending
 `.changeset/*.md` files on every push to main; do not edit it by hand (see
 `.changeset/README.md`).
 
+## 0.38.2 (2026-09-17)
+
+### Fixed
+
+- A decision brief's six authored fields may now run up to 238 words together (glosses
+  included, labels excluded) instead of 120 -- about one minute of silent adult reading --
+  because measurement showed writers dropping required facts when held to the 120-word
+  ceiling. Also, the `routing-derive.py` module docstring now correctly describes that
+  `opus` and `fable` are no longer identically priced after the price-table reconciliation,
+  so a fable-to-opus one-step-down candidate can show a real nonzero saving (a
+  comment/doc correction only, no behavior change). Nothing to do after upgrading; revert
+  the merge to undo. (card-ceiling.md)
+
 ## 0.38.1 (2026-09-17)
 
 ### Fixed
